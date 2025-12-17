@@ -23,6 +23,99 @@ function getCkValue() {
     return cookieValue || '';
 }
 
+// 打开豆列对话框但不覆盖原有表单提交事件（仅打开对话框，供丛书页面使用）
+// @param {string} title - 书籍标题（可选）
+// @param {string} picture - 书籍图片URL（可选）
+function openDoulistDialogNoOverride(sid, title, picture) {
+    try {
+        const options = {
+            cate: "1001",
+            catename: "图书",
+            title: title || ((document.querySelector("h1") && document.querySelector("h1").textContent) || document.title),
+            url: location.href,
+            picture: picture || "",
+            canview: "True",
+            id: sid,
+        };
+        // 仅打开对话框，不解绑或重绑表单的 submit
+        $().doulistDialog({ ...options });
+    } catch (e) {
+        console.error('打开豆列对话框失败', e);
+        alert('打开豆列对话框失败，详情见控制台');
+    }
+}
+
+// 在丛书页面中，为每一本书在 .cart-actions 内（.cart-info 后面）插入"添加到书单"按钮，样式与豆瓣原生一致
+function injectDoulistButtonOnSeries() {
+    if (!location.pathname.match(/\/series\//)) return;
+
+    // 防止重复注入
+    if (document.querySelectorAll('.doulist-add-btn-custom').length > 0) return;
+
+    // 遍历所有书籍项
+    const items = document.querySelectorAll('li.subject-item');
+    if (!items.length) return;
+
+    items.forEach((item) => {
+        // 防止重复
+        if (item.querySelector('.doulist-add-btn-custom')) return;
+
+        // 从 subject-item 中提取标题和图片
+        const titleEl = item.querySelector('.info h2 a');
+        const title = titleEl ? titleEl.textContent.trim() : '';
+        
+        const imgEl = item.querySelector('.pic img');
+        const picture = imgEl ? imgEl.getAttribute('src') : '';
+        // 从titleEl href或onclick中提取 subjectId
+
+        const sid =  titleEl.getAttribute('href').match(/\/subject\/(\d+)\//)?.[1] 
+        
+        // 找到 .cart-actions 容器，在 .cart-info 后插入按钮
+        const cartActions = item.querySelector('.cart-actions');
+        if (!cartActions) return;
+
+        const cartInfo = cartActions.querySelector('.cart-info');
+        if (!cartInfo) return;
+
+        // 创建按钮容器
+        const btn = document.createElement('div');
+        btn.className = 'doulist-add-btn-custom';
+        btn.style.display = 'inline-block';
+        btn.style.marginLeft = '8px';
+
+        // 创建链接，使用豆瓣原生样式
+        const link = document.createElement('a');
+        link.href = 'javascript:void(0);';
+        link.className = 'lnk-doulist-add-custom';
+        link.innerHTML = '添加到书单';
+        link.style.color = '#42BD56';
+        link.style.textDecoration = 'none';
+        link.style.cursor = 'pointer';
+        link.style.display = 'inline-flex';
+        link.style.alignItems = 'center';
+
+        link.addEventListener('click', function (e) {
+            e.preventDefault();
+            openDoulistDialogNoOverride(sid, title, picture);
+        });
+
+        btn.appendChild(link);
+        // 插入到 .cart-info 后面
+        if (cartInfo.nextSibling) {
+            cartActions.insertBefore(btn, cartInfo.nextSibling);
+        } else {
+            cartActions.appendChild(btn);
+        }
+    });
+}
+
+// 在 DOM 就绪后尝试注入按钮
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', injectDoulistButtonOnSeries);
+} else {
+    injectDoulistButtonOnSeries();
+}
+
 
 // 9. 通过API更新书籍状态
 function updateBookStatus(subjectId, status) {
@@ -181,7 +274,7 @@ function createBulkReadButton() {
         onClick: async (btn) => {
             const ids = extractSubjectIds();
             if (!ids.length) { alert('未找到任何书籍项'); return; }
-            if (!confirmDialog(`检测到 ${ids.length} 本书，确定全部标记为“读过”吗？`)) return;
+            if (!await confirmDialog(`检测到 ${ids.length} 本书，确定全部标记为“读过”吗？`)) return;
             const res = await markSubjectsAsRead(ids);
             alert(`完成：${res.success}/${res.total} 标记成功`);
         }
@@ -196,13 +289,13 @@ function createBulkReadAllPagesButton() {
         bottom: 60,
         background: '#8bd46e',
         onClick: async (btn) => {
-            if (!confirmDialog('将尝试抓取系列各页并标记为读过，确认继续？')) return;
+            if (!await confirmDialog('将尝试抓取系列各页并标记为读过，确认继续？')) return;
             // collect progress
             const collectProgress = createProgressBar('抓取系列页面...');
             const ids = await collectAllSeriesSubjectIds(50, 600, collectProgress);
             collectProgress.close();
             if (!ids.length) { alert('未找到任何书籍'); return; }
-            if (!confirmDialog(`检测到 ${ids.length} 本书，确定全部标记为“读过”吗？`)) return;
+            if (!await confirmDialog(`检测到 ${ids.length} 本书，确定全部标记为“读过”吗？`)) return;
             // marking progress
             const markProgress = createProgressBar('批量标记为读过...');
             const res = await markSubjectsAsRead(ids, markProgress);
@@ -273,7 +366,7 @@ async function startDoulistDialog() {
                         alert('请选择一个豆列');
                         return;
                     }
-                    if (!confirmDialog(`检测到 ${ids.length} 本书，确定全部添加到豆列吗？`)) return;
+                    if (!await confirmDialog(`检测到 ${ids.length} 本书，确定全部添加到豆列吗？`)) return;
                     const requestUrl = `https://book.douban.com/j/doulist/${doulistId}/additem`
                     // 显示进度条并在每次添加后更新
                     const addProgress = createProgressBar('添加到豆列中...');
@@ -595,7 +688,7 @@ function createProgressBar(title = '处理中...') {
 async function detectZlibForCurrentPage(options = { delayMs: 700 }) {
     const ids = extractSubjectIds();
     if (!ids.length) { alert('未找到本页书籍项'); return; }
-    if (!confirmDialog(`将依次查询 ${ids.length} 本书（先获取 ISBN 再搜索 Z-Lib），继续？`)) return;
+    if (!await confirmDialog(`将依次查询 ${ids.length} 本书（先获取 ISBN 再搜索 Z-Lib），继续？`)) return;
 
     const progress = createProgressBar('检测 Z-Lib 可下载情况...');
     let found = 0;
