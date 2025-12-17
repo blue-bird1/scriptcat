@@ -107,55 +107,86 @@ function findEarliestYear(versions) {
 }
 
 /**
- * 在出版信息处添加最早出版时间标注
+ * 在出版信息处添加最早出版时间标注（同时判断本页面是否为最早版本）
  */
 function annotateEarliestPublicationYear(earliestYear) {
-    if (!earliestYear) return false;
-    
-    // 查找 #info 区块（豆瓣图书页的出版信息区块）
+    // earliestYear 可能来自其他版本列表，可能为 null
+    // 本函数会尝试从当前页面 info 中提取出版年，与 earliestYear 比较并标注
+    // 如果找不到 #info 或任何年份，返回 false
+    if (earliestYear === undefined) earliestYear = null;
+
     const infoEl = document.getElementById('info');
     if (!infoEl) {
         console.log('未找到 #info 元素');
         return false;
     }
-    
-    // 查找包含"出版年"的文本
-    const infoText = infoEl.innerText || infoEl.textContent;
-    const lines = infoText.split('\n');
-    
-    let publicationLine = null;
-    for (const line of lines) {
-        if (line.includes('出版年') || line.includes('出版時間')) {
-            publicationLine = line;
-            break;
-        }
+
+    const infoText = infoEl.innerText || infoEl.textContent || '';
+    const lines = infoText.split('\n').map(l => l.trim()).filter(Boolean);
+
+    // 优先寻找包含“出版年”或“出版時間/出版时间”的行；否则寻找包含 4 位年份的行
+    let publicationLine = lines.find(l => /出版年|出版時間|出版时间/.test(l));
+    if (!publicationLine) {
+        publicationLine = lines.find(l => /\d{4}/.test(l));
     }
-    
     if (!publicationLine) {
         console.log('未找到出版年信息');
         return false;
     }
-    
-    console.log('找到出版年信息:', publicationLine);
-    
-    // 在 #info 末尾或合适位置添加标注
-    const annotationDiv = document.createElement('div');
-    annotationDiv.id = 'earliest-publication-annotation';
-    annotationDiv.style.marginTop = '8px';
-    annotationDiv.style.padding = '8px';
-    annotationDiv.style.background = '#fffacd';
-    annotationDiv.style.border = '1px solid #f0e68c';
-    annotationDiv.style.borderRadius = '4px';
-    annotationDiv.style.fontSize = '12px';
-    annotationDiv.style.color = '#333';
-    annotationDiv.style.lineHeight = '1.6';
-    
-    annotationDiv.innerHTML = `<strong>💡 真正最早出版时间：</strong> ${earliestYear}年（根据其他版本推断）`;
-    
-    // 在 #info 块末尾插入
-    infoEl.appendChild(annotationDiv);
-    
-    console.log(`已标注最早出版年: ${earliestYear}`);
+
+    // 从行中提取 4 位年份
+    const yearMatch = publicationLine.match(/(\d{4})/);
+    const currentYear = yearMatch ? parseInt(yearMatch[1], 10) : null;
+
+    // 如果本页面就是最早版本（没有其他更早年份，或当前年份 <= 其他版本最早年份），则不添加多余提示
+    if (currentYear) {
+        if (!earliestYear) {
+            console.log('本页面已是已知最早版本，跳过注释');
+            return false;
+        }
+        if (currentYear <= earliestYear) {
+            console.log('本页面为最早版本或与最早年份相同，跳过注释');
+            return false;
+        }
+    }
+
+    // 若当前页面没有年份但有其他版本的最早年份，则根据其他版本标注
+    if (!currentYear && !earliestYear) {
+        console.log('既无法从其他版本也无法从本页提取年份');
+        return false;
+    }
+
+    const finalEarliest = earliestYear || currentYear;
+    if (!finalEarliest) return false;
+
+    // 创建并插入注释节点（若已存在则更新）
+    let annotationDiv = document.getElementById('earliest-publication-annotation');
+    if (!annotationDiv) {
+        annotationDiv = document.createElement('div');
+        annotationDiv.id = 'earliest-publication-annotation';
+        annotationDiv.style.marginTop = '8px';
+        annotationDiv.style.padding = '8px';
+        annotationDiv.style.background = '#fffacd';
+        annotationDiv.style.border = '1px solid #f0e68c';
+        annotationDiv.style.borderRadius = '4px';
+        annotationDiv.style.fontSize = '12px';
+        annotationDiv.style.color = '#333';
+        annotationDiv.style.lineHeight = '1.6';
+        infoEl.appendChild(annotationDiv);
+    }
+
+    // 构建显示内容：仅在本页晚于其他版本或本页无年份时显示
+    let content = `<strong>💡 真正最早出版时间：</strong> ${finalEarliest}年`;
+    if (currentYear) {
+        // 到这里说明 currentYear > earliestYear（否则已在上面返回）
+        content += `（其他版本显示更早出版年：${earliestYear}年）`;
+        content += `<br><small>本页面标注的出版年：${currentYear}年</small>`;
+    } else {
+        content += `<br><small>根据其他版本推断，本页无明确出版年标注</small>`;
+    }
+
+    annotationDiv.innerHTML = content;
+    console.log(`已标注最早出版年: ${finalEarliest}`, { currentYear, earliestYear });
     return true;
 }
 

@@ -309,7 +309,7 @@
             if ((this.downloaded || ZLibrary.checkIsDownloaded(this.id, this.isbn)) && !this.markButton && this.id !== get_bookId()) {
                 // 如果this.downloaded为true，则隐藏该元素
                 // check is z-carousel elemet <z-carousel  
-                if($(this).parent().parent().prop('tagName') === 'Z-CAROUSEL'){
+                if ($(this).parent().parent().prop('tagName') === 'Z-CAROUSEL') {
                     return
                 }
                 $(this).parent().parent().remove()
@@ -891,10 +891,11 @@
                     }
                 })
             });
+            if (enable_collapse_same_isbn) {
+                collapser();
+            }
         })
-        if(enable_collapse_same_isbn){
-            collapser();
-        }
+
 
     }
 

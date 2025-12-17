@@ -688,7 +688,12 @@ function createProgressBar(title = '处理中...') {
 async function detectZlibForCurrentPage(options = { delayMs: 700 }) {
     const ids = extractSubjectIds();
     if (!ids.length) { alert('未找到本页书籍项'); return; }
-    if (!await confirmDialog(`将依次查询 ${ids.length} 本书（先获取 ISBN 再搜索 Z-Lib），继续？`)) return;
+    const isConfirm = await confirmDialog(`将依次查询 ${ids.length} 本书），继续？`);
+    if (!isConfirm) {
+      console.log("用户取消 Z-Lib 检测");
+      return;
+    }
+
 
     const progress = createProgressBar('检测 Z-Lib 可下载情况...');
     let found = 0;
@@ -836,8 +841,10 @@ async function confirmDialog(content = '确定要继续吗？', title = '确认'
 
             
             dialog.node.find('#confirm-btn').on('click', function () {
-                dialog.close();
+                
+                console.log("dialog:confirm");
                 resolve(true);
+                dialog.close();
             });
 
             dialog.node.find('#cancel-btn').on('click', function () {
@@ -853,8 +860,3 @@ async function confirmDialog(content = '确定要继续吗？', title = '确认'
         }
     });
 }
-
-GM_registerMenuCommand('测试确认对话框', async () => {
-    const ok = await confirmDialog('测试确认对话框', '这是一个测试确认对话框，是否继续？');
-    alert('用户选择：' + (ok ? '确认' : '取消'));
-});
