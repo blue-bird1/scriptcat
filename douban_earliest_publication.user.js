@@ -24,78 +24,170 @@ function extractYear(text) {
  */
 function findOtherVersions() {
     const versions = [];
-    
-    // 方案 1：通过标题文本找到区块，然后找相邻的列表
-    const headings = document.querySelectorAll('h2, h3, strong, [role="heading"]');
-    let versionList = null;
-    
-    for (const heading of headings) {
-        if (heading.textContent.includes('其他版本')) {
-            // 找到标题后，查找相邻的 list 或 ul 元素
-            let nextEl = heading.parentElement;
-            while (nextEl) {
-                // 查找列表
-                const list = nextEl.querySelector('ul, [role="list"], list');
-                if (list) {
-                    versionList = list;
-                    break;
-                }
-                // 或者查找下一个兄弟元素中的列表
-                const sibling = nextEl.nextElementSibling;
-                if (sibling) {
-                    const siblingList = sibling.querySelector('ul, [role="list"], list');
-                    if (siblingList) {
-                        versionList = siblingList;
-                        break;
-                    }
-                    nextEl = sibling;
-                } else {
-                    break;
-                }
-            }
-            if (versionList) break;
-        }
-    }
-    
-    // 方案 2：如果方案 1 失败，直接查找所有包含"其他版本"的通用容器
-    if (!versionList) {
-        const allGenerics = document.querySelectorAll('[role="region"], div');
-        for (const generic of allGenerics) {
-            const heading = generic.querySelector('h2, h3');
-            if (heading && heading.textContent.includes('其他版本')) {
-                // 查找该容器内的列表
-                versionList = generic.querySelector('ul, [role="list"], list');
-                if (versionList) break;
-            }
-        }
-    }
-    
-    if (!versionList) {
-        console.log('未找到其他版本列表');
+    // 优先通过精确类名匹配豆瓣页面上的“其他版本”容器
+    let container = document.querySelector('div.gray_ad.version_works');
+
+    if (!container) {
+        console.log('未找到其他版本容器（div.gray_ad.version_works）');
         return versions;
     }
-    
-    console.log('找到版本列表，开始提取...');
-    
-    // 从列表中提取所有链接
-    const links = versionList.querySelectorAll('a');
-    for (const link of links) {
-        const text = link.innerText || link.textContent;
-        // 版本格式为："[出版社] （YYYY）"
-        // 提取 （YYYY） 格式中的年份
-        const yearMatch = text.match(/（(\d{4})）/);
-        if (yearMatch) {
-            const year = parseInt(yearMatch[1]);
-            versions.push({
-                text: text.trim(),
-                year: year,
-                link: link.href
-            });
-            console.log(`提取版本: ${text.trim()} (${year})`);
+
+    // 列表条目通常为 li.mb8.pl
+    let items = Array.from(container.querySelectorAll('li.mb8.pl'));
+    console.log(`初步在页面找到 ${items.length} 个版本条目`);
+
+    // 优先读取标题处显示的“全部X”数字来判断全部版本数
+    let worksLinkEl = null;
+    let totalCount = null;
+    const heading = container.querySelector('h2');
+    if (heading) {
+        worksLinkEl = heading.querySelector('a[href*="/works/"]') || heading.querySelector('a');
+        if (worksLinkEl && worksLinkEl.textContent) {
+            const m = worksLinkEl.textContent.match(/全部\s*(\d+)/);
+            if (m) totalCount = parseInt(m[1], 10);
         }
     }
-    
-    return versions;
+
+    // 退回到在容器内搜索 works 链接（兼容旧结构）
+    if (!worksLinkEl) {
+        worksLinkEl = container.querySelector('a[href*="/works/"]');
+    }
+
+    // 如果标题中没有给出总数，则退回到条目数量判断
+    const needFetchWorks = (totalCount !== null) ? (totalCount > 4) : false;
+
+    // 如果判断需要到 works 页面抓取全部版本
+    if (needFetchWorks) {
+        if (worksLinkEl && worksLinkEl.href) {
+            try {
+                console.log('需要获取全部版本（依据标题总数或条目数量判断），开始 fetch works 页面：', worksLinkEl.href);
+                const resp = fetch(worksLinkEl.href, { credentials: 'include' });
+                // 解析并合并版本信息（异步处理）
+                return resp.then(r => {
+                    if (!r.ok) {
+                        console.warn('无法获取 works 页面', r.status);
+                        // 退回到当前页面的少量版本
+                        return parseItems(items);
+                    }
+                    return r.text().then(html => {
+                        const parser = new DOMParser();
+                        const doc = parser.parseFromString(html, 'text/html');
+
+                        // 精确解析 works 页面：每个版本条目使用 class="bkses clearfix"
+                        const entryNodes = Array.from(doc.querySelectorAll('div.bkses.clearfix'));
+                        const candidates = [];
+                        const seen = new Set();
+
+                        for (const node of entryNodes) {
+                            try {
+                                // 链接通常在 .bkdesc a.pl2
+                                const a = node.querySelector('.bkdesc a.pl2') || node.querySelector('a[href*="/subject/"]');
+                                const href = a ? a.href : null;
+                                if (!href || seen.has(href)) continue;
+
+                                // 在 .bkdesc 中查找标注为“出版年”的 span.pl，然后取其紧接的文本节点
+                                const bkdesc = node.querySelector('.bkdesc');
+                                let year = null;
+                                if (bkdesc) {
+                                    const spans = Array.from(bkdesc.querySelectorAll('span.pl'));
+                                    for (const s of spans) {
+                                        const label = (s.textContent || '').trim().replace(/\s+/g, '');
+                                        if (label.indexOf('出版年') !== -1) {
+                                            // 紧接的文本节点可能是 s.nextSibling
+                                            let next = s.nextSibling;
+                                            let txt = '';
+                                            if (next) {
+                                                if (next.nodeType === Node.TEXT_NODE) txt = next.nodeValue.trim();
+                                                else txt = (next.textContent || '').trim();
+                                            }
+                                            // 如果紧接文本为空，尝试查找下一个 element sibling or following text
+                                            if (!txt) {
+                                                const el = s.nextElementSibling;
+                                                if (el) txt = (el.textContent || '').trim();
+                                            }
+                                            const m = txt.match(/(\d{4})/);
+                                            if (m) {
+                                                year = parseInt(m[1], 10);
+                                            }
+                                            break;
+                                        }
+                                    }
+                                }
+
+                                const desc = bkdesc ? bkdesc.textContent.trim().replace(/\s+/g, ' ') : (a ? a.textContent.trim() : '');
+                                seen.add(href);
+                                candidates.push({ text: desc, link: href, year: year || null });
+                            } catch (e) {
+                                // 忽略单个解析错误
+                            }
+                        }
+
+                        const merged = mergeVersionCandidates(items, candidates);
+                        console.log(`从 works 页面解析并合并后，共有 ${merged.length} 个版本`);
+                        return merged;
+                    });
+                }).catch(err => {
+                    console.warn('fetch works 页面失败：', err);
+                    return parseItems(items);
+                });
+            } catch (e) {
+                console.warn('处理 works 页面时发生异常：', e);
+            }
+        } else {
+            console.log('未找到 works 页面链接，使用当前页面列出的版本');
+        }
+    }
+
+    // 如果没有超过 4 个，或者未能 fetch works 页面，则解析当前 items
+    return parseItems(items);
+
+    // ----------------- 内部辅助函数 -----------------
+    function parseItems(nodeList) {
+        const out = [];
+        for (const li of nodeList) {
+            try {
+                const a = li.querySelector('a[href*="/subject/"]');
+                const text = a ? (a.textContent || a.innerText || '').trim() : (li.textContent || '').trim();
+                const yearMatch = text.match(/（(\d{4})）|（(\d{4})年/);
+                const pm = text.match(/(\d{4})年|（(\d{4})）|(\d{4})/);
+                const year = yearMatch ? parseInt(yearMatch[1] || yearMatch[2], 10) : (pm ? parseInt(pm[1] || pm[2] || pm[3], 10) : null);
+                const link = a ? a.href : null;
+                if (year) {
+                    out.push({ text: text, year: year, link: link });
+                    console.log(`提取版本: ${text} (${year})`);
+                }
+            } catch (e) {
+                // 忽略单个条目错误
+            }
+        }
+        return out;
+    }
+
+    function mergeVersionCandidates(currentItems, candidates) {
+        const map = new Map();
+        // 先放当前页面 items
+        for (const li of currentItems) {
+            try {
+                const a = li.querySelector && li.querySelector('a[href*="/subject/"]');
+                const text = a ? (a.textContent || a.innerText || '').trim() : (li.textContent || '').trim();
+                const yearMatch = text.match(/（(\d{4})）|（(\d{4})年/);
+                const pm = text.match(/(\d{4})年|（(\d{4})）|(\d{4})/);
+                const year = yearMatch ? parseInt(yearMatch[1] || yearMatch[2], 10) : (pm ? parseInt(pm[1] || pm[2] || pm[3], 10) : null);
+                const link = a ? a.href : null;
+                if (link) map.set(link, { text, year, link });
+                else if (text) map.set(text, { text, year, link });
+            } catch (e) {}
+        }
+        // 再放 works 页面 candidates
+        for (const c of candidates) {
+            if (!c.link && !c.text) continue;
+            const key = c.link || c.text;
+            if (!map.has(key)) {
+                map.set(key, { text: c.text, year: c.year || null, link: c.link || null });
+            }
+        }
+        return Array.from(map.values()).filter(v => v && v.year);
+    }
 }
 
 /**
@@ -177,13 +269,6 @@ function annotateEarliestPublicationYear(earliestYear) {
 
     // 构建显示内容：仅在本页晚于其他版本或本页无年份时显示
     let content = `<strong>💡 真正最早出版时间：</strong> ${finalEarliest}年`;
-    if (currentYear) {
-        // 到这里说明 currentYear > earliestYear（否则已在上面返回）
-        content += `（其他版本显示更早出版年：${earliestYear}年）`;
-        content += `<br><small>本页面标注的出版年：${currentYear}年</small>`;
-    } else {
-        content += `<br><small>根据其他版本推断，本页无明确出版年标注</small>`;
-    }
 
     annotationDiv.innerHTML = content;
     console.log(`已标注最早出版年: ${finalEarliest}`, { currentYear, earliestYear });
@@ -193,7 +278,7 @@ function annotateEarliestPublicationYear(earliestYear) {
 /**
  * 主函数
  */
-function main() {
+async function main() {
     try {
         console.log('=== 豆瓣图书最早出版时间标注脚本启动 ===');
         
@@ -206,11 +291,13 @@ function main() {
         
         console.log(`检测到图书 ID: ${subjectId[1]}`);
         
-        // 1. 查找其他版本
-        const versions = findOtherVersions();
-        console.log(`找到 ${versions.length} 个版本`);
+        // 1. 查找其他版本（可能返回 Promise）
+        const maybePromise = findOtherVersions();
+        const versions = (maybePromise && typeof maybePromise.then === 'function') ? await maybePromise : maybePromise;
+        const count = Array.isArray(versions) ? versions.length : 0;
+        console.log(`找到 ${count} 个版本`);
         
-        if (versions.length === 0) {
+        if (!versions || versions.length === 0) {
             console.log('未找到其他版本信息');
             return;
         }
