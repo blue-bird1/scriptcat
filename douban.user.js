@@ -1,11 +1,10 @@
 // ==UserScript==
-// @name         豆瓣丛书批量工具
+// @name         豆瓣丛书增强
 // @namespace    https://github.com/yourname/scriptcat
 // @version      0.1.0
 // @description  针对豆瓣丛书页的批量操作脚本
 // @author       GitHub Copilot
 // @match        https://book.douban.com/series/*
-// @match        https://book.douban.com/series/*/
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
 // @connect      book.douban.com
