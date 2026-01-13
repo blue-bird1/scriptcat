@@ -3,9 +3,9 @@
 // @name:zh-CN         Z-Library 增强脚本
 // @name:en            Z-Library UI Enhance
 // @namespace          out
-// @version            2025.10.20
-// @description        Z-Library 页面功能改善
-// @description:zh-CN  Z-Library 页面功能改善
+// @version            2026.1.13
+// @description        改善 Zlibray 页面功能的油猴脚本
+// @description:zh-CN  给 Z-Library 一个更友好的使用体验
 // @description:en     give Z-Library  a more user friendly experience
 // @author             blue-bird
 // @match              https://*.z-library.sk/*
@@ -22,6 +22,9 @@
 // @match              https://*.1lib.sk/s/*
 // @match              https://*.1lib.sk/users/downloads
 // @match              https://*.1lib.sk/users/zrecommended*
+// @match              https://*.z-lib.gd/*
+// @match              https://*.z-lib.gl/*
+// @match              https://*.z-library.mn/* 
 // @run-at             document-end
 // @icon               https://www.google.com/s2/favicons?sz=64&domain=1lib.sk
 // @grant              GM_xmlhttpRequest
