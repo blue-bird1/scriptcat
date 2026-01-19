@@ -7,8 +7,8 @@
 // @match https://book.douban.com/subject/*/
 // @icon https://www.google.com/s2/favicons?sz=64&domain=douban.com
 // @grant none
+// @license GPL
 // ==/UserScript==
-
 
 (function() {
     'use strict';
@@ -187,6 +187,6 @@
         }
 
         // 执行新功能
-        addTagsToPopularTags ();
+        addTagsToPopularTags();
     });
 })();
