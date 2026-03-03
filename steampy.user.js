@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.4
+// @version         5.5
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -159,8 +159,9 @@
 
         // 优先读取真实图片地址（data-src），再兼容src
         const imgUrl = iconImg.dataset.src || iconImg.src;
-        // 从图片地址中匹配游戏ID（例如从steam/apps/1651560/中提取1651560）
-        const match = imgUrl.match(/steam\/apps\/(\d+)\/header/);
+        // 从图片地址中匹配游戏ID
+        // 兼容两种格式: steam/apps/1651560/header 或 steam/apps/4158040/xxx/header_schinese.jpg
+        const match = imgUrl.match(/steam\/apps\/(\d+)/);
         // to int
         return match ? parseInt(match[1]) : null;
     }
@@ -181,7 +182,8 @@
         },
         getRatingByAppId(appId) {
             const gameList = this.getGameData().result.content;
-            const targetGame = gameList.find(game => game.appId === appId);
+            const appIdNum = Number(appId);
+            const targetGame = gameList.find(game => Number(game.appId) === appIdNum);
             return targetGame?.rating || 0;
         },
     };
@@ -225,6 +227,10 @@
         if (!gameBlock) return;
 
         const appId = getSteamAppId(gameBlock);
+        if (!appId) {
+            console.error('[updateGameRating] 找不到 appid', gameBlock);
+            return;
+        }
         if (steamGameList.wish.includes(appId)) {
             // add blue borader class
             const gameName = gameBlock.querySelector('.gameName')
@@ -293,8 +299,11 @@
                 }
             }
             // 无评分数据则移除标签
-            else if (ratingEl) {
-                ratingEl.remove();
+            else {
+                console.error('[updateGameRating] 没有评分数据 appid:', appId);
+                if (ratingEl) {
+                    ratingEl.remove();
+                }
             }
         }
     }
