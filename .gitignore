@@ -1,1 +1,4 @@
 .vscode/
+.agents/
+.cursor/
+skills-lock.json

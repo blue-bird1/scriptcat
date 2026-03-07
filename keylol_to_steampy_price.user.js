@@ -1,6 +1,6 @@
 // ==UserScript==
 // @name         KeyLol SteamPY 价格及总价显示
-// @version      1.7
+// @version      1.8
 // @description  在Keylol帖子显示Steam游戏的SteamPY CDKey价格，并计算每个引用块内的总价
 // @author       bluebird
 // @match        https://keylol.com/t*
@@ -59,6 +59,8 @@
     );
 
     const quotePrices = new Map();
+    /** 全局已添加价格的 appId 集合，每个 appId 整页只添加一次 */
+    const addedPriceAppIds = new Set();
 
     const CacheUtils = {
         // 唯一总缓存Key（所有AppID数据都存在这里）
@@ -518,8 +520,6 @@
      * @param {HTMLElement} linkElement 链接元素
      */
     const getPriceWithCacheAndSubId = async (appId, placeholder, linkElement, includeInQuote = true) => {
-
-
         try {
             const cachedData = CacheUtils.getCache(appId);
             var priceData = null;
@@ -543,23 +543,43 @@
     };
 
     /**
+     * 检查链接的后续兄弟节点中是否已有价格显示（Keylol 的 steam-info-wrapper 会插入到链接后，导致 nextElementSibling 不是我们的容器）
+     * @param {HTMLElement} link Steam链接元素
+     * @returns {boolean}
+     */
+    const linkHasSteampyPriceSibling = (link) => {
+        let sibling = link.nextElementSibling;
+        while (sibling) {
+            if (sibling.classList.contains('steampy-key-price-container') || sibling.classList.contains('steampy-key-price-placeholder')) {
+                return true;
+            }
+            sibling = sibling.nextElementSibling;
+        }
+        return false;
+    };
+
+    /**
      * 为Steam链接添加价格显示
      * @param {HTMLElement} link Steam链接元素
      */
     const addPriceToSteamLink = (link) => {
         const appId = link.dataset.appId;
         if (!appId) return;
+        const appIdStr = String(appId);
 
-        const nextSibling = link.nextElementSibling;
-        if (nextSibling && (nextSibling.classList.contains('steampy-key-price-container') ||
-            nextSibling.classList.contains('steampy-key-price-placeholder'))) {
+        if (addedPriceAppIds.has(appIdStr)) return;
+        if (linkHasSteampyPriceSibling(link)) return;
+
+        addedPriceAppIds.add(appIdStr); // 先占用，防止并发
+        const placeholder = createPricePlaceholder();
+        try {
+            link.parentNode.insertBefore(placeholder, link.nextSibling);
+        } catch (e) {
+            addedPriceAppIds.delete(appIdStr);
             return;
         }
 
-        const placeholder = createPricePlaceholder();
-        link.parentNode.insertBefore(placeholder, link.nextSibling);
-
-        getPriceWithCacheAndSubId(appId, placeholder, link);
+        getPriceWithCacheAndSubId(appIdStr, placeholder, link);
     };
 
     /**
@@ -629,6 +649,7 @@
 
     /**
      * 对任意 Steam 商店链接启用鼠标悬停抓取（不计入引用块总价）
+     * 用于 addPriceToSteamLink 识别不到的链接，需手动悬停添加
      */
     const addHoverFetchForSteamLinks = () => {
         document.addEventListener('mouseover', (event) => {
@@ -637,27 +658,34 @@
             const link = (target.closest && target.closest('a[href*="store.steampowered.com/app/"]')) || null;
             if (!link) return;
 
-            const nextSibling = link.nextElementSibling;
-            if (nextSibling && (nextSibling.classList.contains('steampy-key-price-container') || nextSibling.classList.contains('steampy-key-price-placeholder'))) {
+            // 从链接内部子元素移动时跳过，mouseover 在子元素间移动会重复触发
+            if (event.relatedTarget && link.contains(event.relatedTarget)) {
                 return;
             }
 
             const appId = link.dataset.appId || extractAppIdFromUrl(link.href);
             if (!appId) return;
             link.dataset.appId = appId;
+            const appIdStr = String(appId);
 
-            if (link.dataset.steampyHoverFetched === '1') return;
-            link.dataset.steampyHoverFetched = '1';
+            if (addedPriceAppIds.has(appIdStr)) return;
+            if (linkHasSteampyPriceSibling(link)) return;
 
+            addedPriceAppIds.add(appIdStr); // 先占用，防止并发
             const placeholder = createPricePlaceholder();
+            if (linkHasSteampyPriceSibling(link)) {
+                addedPriceAppIds.delete(appIdStr);
+                return;
+            }
             try {
                 link.parentNode.insertBefore(placeholder, link.nextSibling);
             } catch (e) {
+                addedPriceAppIds.delete(appIdStr);
                 return;
             }
 
             // 不将该链接计入引用块总价（includeInQuote = false）
-            getPriceWithCacheAndSubId(appId, placeholder, link, false);
+            getPriceWithCacheAndSubId(appIdStr, placeholder, link, false);
         }, { capture: true });
     };
 
