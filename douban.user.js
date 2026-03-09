@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         豆瓣丛书增强
 // @namespace    https://github.com/yourname/scriptcat
-// @version      0.1.0
+// @version      0.2.0
 // @description  针对豆瓣丛书页的批量操作脚本
 // @author       GitHub Copilot
 // @match        https://book.douban.com/series/*
@@ -317,6 +317,22 @@ function createZlibCheckButton() {
     });
 }
 
+// 查找最新打开的豆列对话框（ID 格式 dui-dialog0, dui-dialog1, ... 会递增）
+function findLatestDoulistDialog() {
+    const candidates = document.querySelectorAll('[id^="dui-dialog"]');
+    if (!candidates.length) return null;
+    let latest = candidates[0];
+    let maxNum = parseInt((latest.id || '').replace(/\D/g, ''), 10) || 0;
+    for (let i = 1; i < candidates.length; i++) {
+        const n = parseInt((candidates[i].id || '').replace(/\D/g, ''), 10) || 0;
+        if (n > maxNum) {
+            maxNum = n;
+            latest = candidates[i];
+        }
+    }
+    return $(latest);
+}
+
 // startDoulistDialog -> 使用通用按钮启动豆列对话框（保留预加载逻辑）
 async function startDoulistDialog() {
     // 预加载应已在 preloadDialogResources 中处理
@@ -344,7 +360,12 @@ async function startDoulistDialog() {
                     url: location.href,
                 };
                 $().doulistDialog({ ...options });
-                const dialogNode = $('#dui-dialog0');
+                // 豆瓣对话框 ID 会递增 (dui-dialog0, dui-dialog1, ...)，需取最新打开的
+                const dialogNode = findLatestDoulistDialog();
+                if (!dialogNode || !dialogNode.length) {
+                    console.error('未找到豆列对话框节点');
+                    return;
+                }
                 const frm = dialogNode.find('form');
 
                 // 2. 解绑原有submit事件（关键：清除initForm绑定的提交逻辑）
