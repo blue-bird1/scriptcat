@@ -22,6 +22,7 @@
 | keylol_to_steampy_price.user.js | keylol.com, steampy.com | Steam 价格及总价显示 |
 | steampy.user.js | steampy.com | SteamPy 价格对比增强 |
 | snokwo.user.js | sonkwo.hk, steampy.com | Steam AppID 提取 |
+| page-agent.user.js | 通用 (*://*/*) | 自然语言操作网页（基于 alibaba/page-agent） |
 | vue.user.js | 通用 (*://*/*) | scriptcat dev 调试 |
 
 ## 项目结构

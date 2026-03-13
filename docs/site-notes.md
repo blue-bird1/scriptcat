@@ -4,6 +4,13 @@ Agent 探索站点 JS/Network 后，将逆向出的接口、选择器、鉴权�
 
 以下基线从现有脚本代码归纳得出（未改脚本行为），便于后续修 bug、逆向下游 API 时先查此处。
 
+## Page Agent (page-agent.user.js)
+
+- **来源**：基于 [alibaba/page-agent](https://github.com/alibaba/page-agent)，从源码自托管构建，入口已 patch 为无自动初始化。
+- **构建**：`./scripts/build-page-agent.sh`（需 Node 20+、npm、`ulimit -n 65535` 若遇 EMFILE）。`vendor/page-agent.js` 提交到仓库。
+- **@connect**：Demo API `page-ag-testing-ohftxirgbn.cn-shanghai.fcapp.run`；BYOK 常见：`api.openai.com`、`dashscope.aliyuncs.com`、`api.deepseek.com`、`api.anthropic.com`、`generativelanguage.googleapis.com`、`api.groq.com`、`api.x.ai`。自建或非常见 API 需在脚本头添加对应 `@connect`。
+- **customFetch**：LLM 请求通过 `gmFetch` 包装 `GM_xmlhttpRequest` 实现跨域，满足 `fetch` 调用约定（method、headers、body、signal、Response.ok/json/text）。
+
 ## 豆瓣 (book.douban.com)
 
 - **@connect**：`book.douban.com`（douban.user.js）；`zh.1lib.sk`（douban.user.js 跳 Z-Library 搜索）。

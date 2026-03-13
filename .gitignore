@@ -2,3 +2,5 @@
 .agents/
 .cursor/
 skills-lock.json
+.build/
+*.md
