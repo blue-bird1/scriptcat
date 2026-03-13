@@ -20,7 +20,7 @@
 // @connect      api.groq.com
 // @connect      api.x.ai
 // @connect      ark.cn-beijing.volces.com
-// @require      https://raw.githubusercontent.com/blue-bird1/scriptcat/main/vendor/page-agent.js
+// @require      https://raw.githubusercontent.com/blue-bird1/scriptcat/main/vendor/page-agent.js#sha256-2+xpFUjbKjbOMhdDf+Qrtyn1+JUjJuZGJxCrAyhg2N8=
 // @run-at       document-idle
 // @license      MIT
 // ==/UserScript==
