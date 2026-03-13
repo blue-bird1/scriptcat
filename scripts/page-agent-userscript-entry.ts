@@ -5,3 +5,4 @@
 import { PageAgent } from './PageAgent'
 
 window.PageAgent = PageAgent
+export { PageAgent }
