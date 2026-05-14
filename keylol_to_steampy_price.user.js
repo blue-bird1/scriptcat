@@ -61,6 +61,9 @@
     const quotePrices = new Map();
     /** 全局已添加价格的 appId 集合，每个 appId 整页只添加一次 */
     const addedPriceAppIds = new Set();
+    /** AccessToken 是否已被接口判定失效（失效后停止后续请求） */
+    let isAccessTokenInvalid = false;
+    let tokenInvalidNoticeShown = false;
 
     const CacheUtils = {
         // 唯一总缓存Key（所有AppID数据都存在这里）
@@ -272,9 +275,19 @@
      * @param {string} message 错误信息
      * @param {boolean} showAlert 是否弹框提示
      */
-    function showError(message, showAlert = false) {
+    function showError(message) {
         console.error(`[SteamPY价格脚本] ${message}`);
         throw new Error(message);
+    }
+
+    function showTopNotice(message, once = true) {
+        if (!document.body) return;
+        if (once && tokenInvalidNoticeShown) return;
+        if (once) tokenInvalidNoticeShown = true;
+        const notice = document.createElement('div');
+        notice.style.cssText = 'background:#fff3cd;border:1px solid #ffeeba;color:#856404;padding:8px;margin:8px;font-size:13px;';
+        notice.textContent = message;
+        document.body.insertBefore(notice, document.body.firstChild);
     }
 
     /**
@@ -445,6 +458,10 @@
      * @returns {Promise<object>} 价格数据
      */
     async function fetchGamePrice(gameUrl) {
+        if (isAccessTokenInvalid) {
+            throw new Error('AccessToken 已失效，已停止后续请求。请重新登录 steampy.com 后刷新页面。');
+        }
+
         const requestUrl = new URL(API_ENDPOINTS.searchGameByUrl);
         requestUrl.searchParams.set("pageNumber", 1);
         requestUrl.searchParams.set("pageSize", 10);
@@ -478,11 +495,26 @@
                     responseType: "json",
 
                     onload: (res) => {
+                        const finalPathname = res.finalUrl
+                            ? new URL(res.finalUrl, BASE_CONFIG.STEAMPY_BASE_URL).pathname
+                            : '';
+                        // 真实返回判定：未登录/令牌失效时，接口会302跳转到 /xboot/common/needLogin
+                        const redirectedToNeedLogin = res.status === 302
+                            && finalPathname === '/xboot/common/needLogin';
+
+                        if (redirectedToNeedLogin) {
+                            isAccessTokenInvalid = true;
+                            showTopNotice('提示：SteamPY AccessToken 可能已过期。请前往 steampy.com 重新登录后刷新页面。');
+                            reject(new Error('AccessToken 已过期（接口返回 302 跳转至 /xboot/common/needLogin）'));
+                            return;
+                        }
+
                         if (res.status >= 200 && res.status < 300) {
                             resolve(res);
-                        } else {
-                            reject(new Error(`HTTP请求失败，状态码：${res.status}`));
+                            return;
                         }
+
+                        reject(new Error(`HTTP请求失败，状态码：${res.status}`));
                     },
                     onerror: (error) => reject(new Error(`网络请求错误：${error.message || "连接失败"}`)),
                     onabort: () => reject(new Error("请求被中止")),
@@ -494,7 +526,9 @@
             if (!resultData.success || resultData.code !== 200) {
                 const errMsg = `业务请求失败：${resultData.message || "未知错误"}`;
                 if (resultData.message?.includes("token") || resultData.code === 401) {
-                    showError(errMsg + "\n提示：AccessToken可能已过期，请先访问SteamPY网站登录后再试", true);
+                    isAccessTokenInvalid = true;
+                    showTopNotice('提示：SteamPY AccessToken 可能已过期。请前往 steampy.com 重新登录后刷新页面。');
+                    showError(errMsg + "\n提示：AccessToken可能已过期，请先访问SteamPY网站登录后再试");
                 }
                 throw new Error(errMsg);
             }
@@ -729,14 +763,7 @@
             console.warn('[SteamPY价格脚本] 未检测到 AccessToken，价格查询可能失败。请先访问 steampy.com 登录并同步 AccessToken 后刷新页面。');
 
             // 在页面顶部显示提示（非阻塞）
-            try {
-                const notice = document.createElement('div');
-                notice.style.cssText = 'background:#fff3cd;border:1px solid #ffeeba;color:#856404;padding:8px;margin:8px;font-size:13px;';
-                notice.textContent = '提示：未检测到 SteamPY AccessToken。请先访问 steampy.com 登录并同步 AccessToken 后刷新页面以查看价格。';
-                document.body && document.body.insertBefore(notice, document.body.firstChild);
-            } catch (e) {
-                /* ignore */
-            }
+            showTopNotice('提示：未检测到 SteamPY AccessToken。请先访问 steampy.com 登录并同步 AccessToken 后刷新页面以查看价格。', false);
 
             // 不执行初始化，等待用户同步 token 后刷新页面
             return;
