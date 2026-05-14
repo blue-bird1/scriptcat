@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.5
+// @version         5.7
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -153,7 +153,19 @@
     }
 
     
-    function getSteamAppId(gameBlock) {
+    function normalizeAppId(appId) {
+        const appIdNum = parseInt(appId);
+        return Number.isNaN(appIdNum) ? null : appIdNum;
+    }
+
+    function getGameAppId(gameSource) {
+        return normalizeAppId(typeof gameSource === 'object' ? gameSource?.appId : gameSource);
+    }
+
+    function getSteamAppId(gameBlock, gameSource) {
+        const normalizedFallbackAppId = getGameAppId(gameSource);
+        if (normalizedFallbackAppId) return normalizedFallbackAppId;
+
         const iconImg = gameBlock.querySelector('.cdkGameIcon');
         if (!iconImg) return null;
 
@@ -163,7 +175,7 @@
         // 兼容两种格式: steam/apps/1651560/header 或 steam/apps/4158040/xxx/header_schinese.jpg
         const match = imgUrl.match(/steam\/apps\/(\d+)/);
         // to int
-        return match ? parseInt(match[1]) : null;
+        return match ? normalizeAppId(match[1]) : null;
     }
 
     // 游戏数据存储
@@ -181,12 +193,21 @@
             };
         },
         getRatingByAppId(appId) {
-            const gameList = this.getGameData().result.content;
             const appIdNum = Number(appId);
-            const targetGame = gameList.find(game => Number(game.appId) === appIdNum);
+            const gameList = [
+                ...this.getGameData().result.content,
+                ...(proBuyerVm?.gameList || []),
+                ...(proBuyerVm?.__steamPyPlusOriginalGameList || [])
+            ];
+            const targetGame = gameList.find(game => Number(game.appId) === appIdNum && Number(game.rating) > 0);
             return targetGame?.rating || 0;
         },
     };
+
+    function getGameRating(appId, gameSource) {
+        const sourceRating = typeof gameSource === 'object' ? Number(gameSource?.rating) : 0;
+        return sourceRating > 0 ? sourceRating : TempDataStore.getRatingByAppId(appId);
+    }
 
     // 接口拦截
     ajaxHooker.hook(request => {
@@ -223,12 +244,12 @@
     });
 
     // 单个游戏评分更新（使用Steam风格文本描述）
-    function updateGameRating(gameBlock) {
+    function updateGameRating(gameBlock, gameSource) {
         if (!gameBlock) return;
 
-        const appId = getSteamAppId(gameBlock);
+        const appId = getSteamAppId(gameBlock, gameSource);
         if (!appId) {
-            console.error('[updateGameRating] 找不到 appid', gameBlock);
+            console.debug('[updateGameRating] 找不到 appid', gameBlock);
             return;
         }
         if (steamGameList.wish.includes(appId)) {
@@ -242,7 +263,7 @@
 
         // 只有存在有效ID时才处理评分
         if (appId && gameHead) {
-            const rating = TempDataStore.getRatingByAppId(appId);
+            const rating = getGameRating(appId, gameSource);
             const ratingEl = gameHead.querySelector('.gameRating');
 
             // 有评分数据
@@ -300,7 +321,7 @@
             }
             // 无评分数据则移除标签
             else {
-                console.error('[updateGameRating] 没有评分数据 appid:', appId);
+                console.debug('[updateGameRating] 没有评分数据 appid:', appId);
                 if (ratingEl) {
                     ratingEl.remove();
                 }
@@ -559,13 +580,13 @@
     }
 
 
-    function processGameOpen(gameBlock) {
+    function processGameOpen(gameBlock, gameSource) {
         if (gameBlock.dataset.filterProcessed) return;
         gameBlock.dataset.filterProcessed = 'true';
 
         gameBlock.addEventListener('mousedown', e => {
             if (e.button === 1 && !e.ctrlKey && !e.shiftKey) {
-                const appId = getSteamAppId(gameBlock);
+                const appId = getSteamAppId(gameBlock, gameSource);
                 if (appId) {
                     e.preventDefault();
                     window.open(`https://store.steampowered.com/app/${appId}/`, '_blank');
@@ -583,27 +604,189 @@
         return $dom(selector).__vue__;
     }
 
+    function isGameOwned(appId) {
+        const appIdInt = parseInt(appId);
+        return steamGameList && steamGameList.own && steamGameList.own.includes(appIdInt);
+    }
+
+    function shouldShowByFilter(game) {
+        const price = game.keyPrice;
+        const shouldShow = !filterState.isActive ||
+            (price >= filterState.minPrice && price <= filterState.maxPrice);
+        return shouldShow && !isGameOwned(game.appId);
+    }
+
 
     function applyFilterGameList() {
-        const vueData = $dom(".game_layout .game_layout").__vue__
+        if (isProBuyerPath()) {
+            const buyerVm = proBuyerVm || findVue3BuyerVm();
+            if (buyerVm) {
+                applyProFilterGameList(buyerVm);
+            }
+            return;
+        }
+
+        const vueData = $dom(".game_layout .game_layout")?.__vue__
+        if (!vueData || !Array.isArray(vueData.gameList)) return;
         const gameList = vueData.gameList
 
-        const filterGameList = gameList.filter(game => {
-            const price = game.keyPrice;
-
-            const shouldShow = !filterState.isActive ||
-                (price >= filterState.minPrice && price <= filterState.maxPrice);
-            const appId = game.appId;
-            const appIdInt = parseInt(appId);
-
-            if (steamGameList && steamGameList.own && steamGameList.own.includes(appIdInt)) {
-                return false
-            }
-            return shouldShow
-        })
+        const filterGameList = gameList.filter(shouldShowByFilter)
 
         if (filterGameList.length !== gameList.length) {
             vueData.gameList = filterGameList
+        }
+    }
+
+    function walkVue3Components(component, visitor, seen = new Set()) {
+        if (!component || seen.has(component)) return null;
+        seen.add(component);
+
+        const result = visitor(component);
+        if (result) return result;
+
+        return walkVue3VNode(component.subTree, visitor, seen);
+    }
+
+    function walkVue3VNode(vnode, visitor, seen) {
+        if (!vnode) return null;
+        if (vnode.component) {
+            const result = walkVue3Components(vnode.component, visitor, seen);
+            if (result) return result;
+        }
+
+        const children = vnode.children;
+        if (Array.isArray(children)) {
+            for (const child of children) {
+                const result = walkVue3VNode(child, visitor, seen);
+                if (result) return result;
+            }
+            return null;
+        }
+
+        if (children && typeof children === 'object') {
+            for (const child of Object.values(children)) {
+                if (Array.isArray(child)) {
+                    for (const item of child) {
+                        const result = walkVue3VNode(item, visitor, seen);
+                        if (result) return result;
+                    }
+                } else {
+                    const result = walkVue3VNode(child, visitor, seen);
+                    if (result) return result;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    function hasGameBlock(component) {
+        const el = component?.subTree?.el || component?.vnode?.el;
+        return Boolean(el?.querySelector?.('.gameblock') || el?.matches?.('.gameblock'));
+    }
+
+    function findVue3BuyerVm(options = {}) {
+        const silent = options.silent === true;
+        const root = document.querySelector('#app')?._vnode?.component;
+        if (!root) {
+            if (!silent) {
+                console.warn('[SteamPy Plus] 未找到 Vue3 根组件');
+            }
+            return null;
+        }
+
+        const match = walkVue3Components(root, component => {
+            const proxy = component.proxy;
+            if (!proxy) return null;
+            if (!Array.isArray(proxy.gameList)) return null;
+            if (typeof proxy.getGameList !== 'function') return null;
+            if (typeof proxy.goToChoose !== 'function') return null;
+            if (!hasGameBlock(component) && typeof proxy.total !== 'number') return null;
+
+            return { component, proxy };
+        });
+
+        if (!match) {
+            if (!silent) {
+                console.warn('[SteamPy Plus] 未找到新版 CDKey 买家 Vue 实例');
+            }
+            return null;
+        }
+
+        return match.proxy;
+    }
+
+    function getProListSignature(list, buyerVm) {
+        const form = buyerVm.searchForm || {};
+        const formSignature = [
+            form.pageNumber,
+            form.pageSize,
+            form.sort,
+            form.order,
+            form.startDate,
+            form.endDate,
+            form.gameName || form.keywords || form.name || ''
+        ].join('|');
+        const listSignature = list
+            .map(game => game?.id || game?.gameId || game?.appId || game?.gameName || '')
+            .join(',');
+        return `${formSignature}::${listSignature}`;
+    }
+
+    function updateProSourceList(buyerVm) {
+        if (!Array.isArray(buyerVm.gameList)) return;
+        if (buyerVm.__steamPyPlusApplyingFilter) return;
+        if (buyerVm.gameList === buyerVm.__steamPyPlusLastFilteredList) return;
+
+        const signature = getProListSignature(buyerVm.gameList, buyerVm);
+        if (signature === buyerVm.__steamPyPlusLastFilteredSignature) return;
+
+        buyerVm.__steamPyPlusOriginalGameList = buyerVm.gameList.slice();
+        buyerVm.__steamPyPlusOriginalSignature = signature;
+    }
+
+    function applyProFilterGameList(buyerVm) {
+        if (!buyerVm || !Array.isArray(buyerVm.gameList)) return;
+
+        updateProSourceList(buyerVm);
+        const sourceList = buyerVm.__steamPyPlusOriginalGameList || buyerVm.gameList.slice();
+        const filterGameList = sourceList.filter(shouldShowByFilter);
+        const changed = filterGameList.length !== buyerVm.gameList.length ||
+            filterGameList.some((game, index) => game !== buyerVm.gameList[index]);
+
+        if (!changed) return;
+
+        buyerVm.__steamPyPlusApplyingFilter = true;
+        buyerVm.gameList = filterGameList;
+        buyerVm.__steamPyPlusLastFilteredList = filterGameList;
+        buyerVm.__steamPyPlusLastFilteredSignature = getProListSignature(filterGameList, buyerVm);
+        buyerVm.$nextTick?.(() => {
+            buyerVm.__steamPyPlusApplyingFilter = false;
+        });
+    }
+
+    function processGameCards(gameBlocks, gameList) {
+        gameBlocks.forEach((gameBlock, index) => {
+            const game = gameList?.[index];
+            updateGameRating(gameBlock, game);
+            processGameOpen(gameBlock, game);
+        });
+    }
+
+    function processVisibleProBuyerCards() {
+        processGameCards(document.querySelectorAll('.gameblock'), proBuyerVm?.gameList);
+    }
+
+    function installProBuyerWatcher(buyerVm) {
+        if (buyerVm.__steamPyPlusWatcherInstalled) return;
+
+        buyerVm.__steamPyPlusWatcherInstalled = true;
+        if (typeof buyerVm.$watch === 'function') {
+            buyerVm.__steamPyPlusUnwatch = buyerVm.$watch('gameList', function () {
+                updateProSourceList(buyerVm);
+                applyProFilterGameList(buyerVm);
+                buyerVm.$nextTick?.(processVisibleProBuyerCards);
+            }, { deep: false });
         }
     }
 
@@ -614,21 +797,15 @@
             applyFilterGameList();
 
             const gameBlocks = this.$el.querySelectorAll('.gameblock');
-            // 遍历每个.gameblock执行处理
-            gameBlocks.forEach(gameBlock => {
-                // 应用筛选和评分更新
-                updateGameRating(gameBlock);
-                // 处理游戏块核心逻辑
-                processGameOpen(gameBlock);
-            });
+            const vueData = $dom(".game_layout .game_layout")?.__vue__;
+            processGameCards(gameBlocks, vueData?.gameList);
         })
 
         // 初始加载后执行一次
         setTimeout(() => {
             applyFilterGameList();
-            // 初始加载时对所有可见游戏更新评分
-            document.querySelectorAll('.gameblock')
-                .forEach(gameBlock => updateGameRating(gameBlock));
+            const vueData = $dom(".game_layout .game_layout")?.__vue__;
+            processGameCards(document.querySelectorAll('.gameblock'), vueData?.gameList);
         }, 600);
     }
 
@@ -830,13 +1007,20 @@
 
     // 路径处理
     const TARGET_PATH = '/cdKey/cdKey';
+    const PRO_BUYER_PATH = '/pro/cdKey/cdKey';
     const SELLER_CDKEY_PATH = '/pyUserInfo/sellerCDKey'; // 新增路径
     const CdkDeatil_PATH = '/cdkDetail';
     let isInitialized = false;
+    let isProBuyerInitialized = false;
+    let proBuyerVm = null;
     let isSellerInitialized = false; // 新增状态标识
 
     function isTargetPath() {
         return window.location.pathname.startsWith(TARGET_PATH);
+    }
+
+    function isProBuyerPath() {
+        return window.location.pathname.startsWith(PRO_BUYER_PATH);
     }
 
     // 新增：检查是否为卖家CDKey路径
@@ -847,6 +1031,19 @@
     function cleanUp() {
         if (!isInitialized) return;
         isInitialized = false;
+    }
+
+    function proBuyerCleanUp() {
+        if (!isProBuyerInitialized) return;
+        if (proBuyerVm?.__steamPyPlusUnwatch) {
+            proBuyerVm.__steamPyPlusUnwatch();
+            proBuyerVm.__steamPyPlusUnwatch = null;
+        }
+        if (proBuyerVm) {
+            proBuyerVm.__steamPyPlusWatcherInstalled = false;
+        }
+        proBuyerVm = null;
+        isProBuyerInitialized = false;
     }
 
     function sellerCleanUp() {
@@ -862,6 +1059,13 @@
             buyInit();
         } else if (!isTargetPath() && isInitialized) {
             cleanUp();
+        }
+
+        if (isProBuyerPath() && !isProBuyerInitialized) {
+            console.log("run script in pro cdKey path");
+            proBuyInit();
+        } else if (!isProBuyerPath() && isProBuyerInitialized) {
+            proBuyerCleanUp();
         }
 
         // 新增：处理卖家CDKey路径逻辑
@@ -889,6 +1093,34 @@
         insertFilterUI()
         await startContentMonitor();
         isInitialized = true;
+    }
+
+    async function waitForProBuyerVm() {
+        for (let i = 0; i < 60; i++) {
+            const buyerVm = findVue3BuyerVm({ silent: true });
+            if (buyerVm) return buyerVm;
+            await new Promise(resolve => setTimeout(resolve, 250));
+        }
+        return null;
+    }
+
+    async function proBuyInit() {
+        if (isProBuyerInitialized) return;
+        injectRatingStyle();
+        await elmGetter.get('.tag.flex-row.align-items-center');
+        await elmGetter.get('.gameblock');
+        proBuyerVm = await waitForProBuyerVm();
+        if (!proBuyerVm) {
+            console.warn('[SteamPy Plus] 新版 CDKey 买家页初始化失败：未找到 Vue3 买家实例');
+            return;
+        }
+
+        insertFilterUI();
+        updateProSourceList(proBuyerVm);
+        applyProFilterGameList(proBuyerVm);
+        installProBuyerWatcher(proBuyerVm);
+        proBuyerVm.$nextTick?.(processVisibleProBuyerCards);
+        isProBuyerInitialized = true;
     }
 
     function d(...args) {
