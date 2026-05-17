@@ -1,0 +1,14 @@
+{
+  "name": "scriptcat-userscripts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "node scripts/build-userscripts.mjs",
+    "lint:userscripts": "node scripts/userscripts/lint.cjs"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0",
+    "eslint-linter-browserify": "9.26.0",
+    "eslint-plugin-userscripts": "0.5.6"
+  }
+}

@@ -1,6 +1,45 @@
-.vscode/
-.agents/
-.cursor/
-skills-lock.json
-.build/
-*.md
+# Ignore all untracked files by default.
+*
+
+# Repository control files.
+!.gitignore
+
+# Userscripts.
+!*.user.js
+
+# Project documentation that is already part of the repository.
+# !docs/
+# !docs/troubleshooting.md
+# !docs/steampy-pro-cdkey-investigation.md
+# !docs/plans/
+# !docs/plans/steampy-pro-cdkey-adaptation-plan.md
+
+# Build inputs and vendored runtime used by tracked scripts.
+!package.json
+!pnpm-lock.yaml
+!src/
+!src/lib/
+!src/lib/douban/
+!src/lib/douban/*.js
+!src/lib/userscript/
+!src/lib/userscript/*.js
+!src/userscripts/
+!src/userscripts/.gitkeep
+!src/userscripts/*.user.js
+!scripts/
+!scripts/build-page-agent.sh
+!scripts/build-userscripts.mjs
+!scripts/page-agent-userscript-entry.ts
+!scripts/userscripts/
+!scripts/userscripts/lint.cjs
+!scripts/userscripts/scriptcat-eslint/
+!scripts/userscripts/scriptcat-eslint/*.cjs
+!vendor/
+!vendor/page-agent.js
+
+# Project-scoped Codex MCP setup for ScriptCat debugging.
+# !.codex/
+# !.codex/config.toml
+#!scripts/mcp/
+#!scripts/mcp/chrome-devtools-scriptcat-mcp
+#!scripts/mcp/scriptcat-vscode-sync-server.mjs
