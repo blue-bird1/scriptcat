@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         豆瓣图书最早出版时间标注
 // @namespace    https://github.com/yourname/scriptcat
-// @version      0.1.0
-// @description  在豆瓣图书页面提取其他版本中最早的出版日期，并在出版年处标注真正的最早出版时间
+// @version      0.1.1
+// @description  在豆瓣图书页面标注真正最早出版时间，并显示当前是否为最新版
 // @author       GitHub Copilot
 // @match        https://book.douban.com/subject/*
 // @grant        none
@@ -199,13 +199,22 @@ function findEarliestYear(versions) {
 }
 
 /**
- * 在出版信息处添加最早出版时间标注（同时判断本页面是否为最早版本）
+ * 从版本列表中找出最晚的年份
  */
-function annotateEarliestPublicationYear(earliestYear) {
-    // earliestYear 可能来自其他版本列表，可能为 null
-    // 本函数会尝试从当前页面 info 中提取出版年，与 earliestYear 比较并标注
-    // 如果找不到 #info 或任何年份，返回 false
+function findLatestYear(versions) {
+    if (!versions || versions.length === 0) return null;
+    return Math.max(...versions.map(v => v.year));
+}
+
+/**
+ * 在出版信息处添加最早出版时间标注，并显示是否最新版（按出版年）
+ */
+function annotateEarliestPublicationYear(earliestYear, latestYear) {
+    // earliestYear / latestYear 可能来自其他版本列表，可能为 null
+    // 本函数会尝试从当前页面 info 中提取出版年，与它们比较并标注
+    // 如果找不到 #info 或任何可用年份，返回 false
     if (earliestYear === undefined) earliestYear = null;
+    if (latestYear === undefined) latestYear = null;
 
     const infoEl = document.getElementById('info');
     if (!infoEl) {
@@ -230,26 +239,14 @@ function annotateEarliestPublicationYear(earliestYear) {
     const yearMatch = publicationLine.match(/(\d{4})/);
     const currentYear = yearMatch ? parseInt(yearMatch[1], 10) : null;
 
-    // 如果本页面就是最早版本（没有其他更早年份，或当前年份 <= 其他版本最早年份），则不添加多余提示
-    if (currentYear) {
-        if (!earliestYear) {
-            console.log('本页面已是已知最早版本，跳过注释');
-            return false;
-        }
-        if (currentYear <= earliestYear) {
-            console.log('本页面为最早版本或与最早年份相同，跳过注释');
-            return false;
-        }
-    }
-
-    // 若当前页面没有年份但有其他版本的最早年份，则根据其他版本标注
-    if (!currentYear && !earliestYear) {
+    // 若当前页面没有年份，且其他版本也无法提供年份，则无法标注
+    if (!currentYear && !earliestYear && !latestYear) {
         console.log('既无法从其他版本也无法从本页提取年份');
         return false;
     }
 
-    const finalEarliest = earliestYear || currentYear;
-    if (!finalEarliest) return false;
+    const finalEarliest = currentYear && earliestYear ? Math.min(currentYear, earliestYear) : (earliestYear || currentYear);
+    const finalLatest = currentYear && latestYear ? Math.max(currentYear, latestYear) : (latestYear || currentYear);
 
     // 创建并插入注释节点（若已存在则更新）
     let annotationDiv = document.getElementById('earliest-publication-annotation');
@@ -267,11 +264,34 @@ function annotateEarliestPublicationYear(earliestYear) {
         infoEl.appendChild(annotationDiv);
     }
 
-    // 构建显示内容：仅在本页晚于其他版本或本页无年份时显示
-    let content = `<strong>💡 真正最早出版时间：</strong> ${finalEarliest}年`;
+    // 构建显示内容：
+    // 1) 仅在本页晚于最早版本或本页无年份时显示“最早出版时间”
+    // 2) 始终尝试显示“是否最新版”
+    const parts = [];
 
-    annotationDiv.innerHTML = content;
-    console.log(`已标注最早出版年: ${finalEarliest}`, { currentYear, earliestYear });
+    if (finalEarliest && (!currentYear || currentYear > finalEarliest)) {
+        parts.push(`<strong>💡 真正最早出版时间：</strong> ${finalEarliest}年`);
+    }
+
+    if (finalLatest) {
+        if (currentYear) {
+            const isLatest = currentYear >= finalLatest;
+            if (isLatest) {
+                parts.push('<strong>📌 是否最新版：</strong> 是');
+            } else {
+                parts.push(`<strong>📌 是否最新版：</strong> 否（最新版出版年：${finalLatest}年）`);
+            }
+        } else {
+            parts.push(`<strong>📌 是否最新版：</strong> 当前页出版年未知（最新版出版年：${finalLatest}年）`);
+        }
+    }
+
+    if (parts.length === 0) {
+        return false;
+    }
+
+    annotationDiv.innerHTML = parts.join('<br>');
+    console.log('已更新出版信息标注', { currentYear, earliestYear, latestYear, finalEarliest, finalLatest });
     return true;
 }
 
@@ -311,8 +331,10 @@ async function main() {
             return;
         }
         
-        // 3. 标注在出版信息处
-        annotateEarliestPublicationYear(earliestYear);
+        // 3. 找出最晚年份并标注在出版信息处
+        const latestYear = findLatestYear(versions);
+        console.log(`最晚出版年: ${latestYear}`);
+        annotateEarliestPublicationYear(earliestYear, latestYear);
         
     } catch (e) {
         console.error('脚本执行出错:', e);

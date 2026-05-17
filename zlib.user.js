@@ -3,7 +3,7 @@
 // @name:zh-CN         Z-Library 增强脚本
 // @name:en            Z-Library UI Enhance
 // @namespace          out
-// @version            2026.1.13
+// @version            2026.5.17
 // @description        改善 Zlibray 页面功能的油猴脚本
 // @description:zh-CN  给 Z-Library 一个更友好的使用体验
 // @description:en     give Z-Library  a more user friendly experience
@@ -35,6 +35,7 @@
 // @grant              GM_getValue
 // @grant              GM_download
 // @grant              GM_registerMenuCommand
+// @connect            self
 // @connect            book.douban.com
 // @connect            doubanio.com
 // @downloadURL        https://update.greasyfork.org/scripts/497146/Z-Library%20ui%20enhance.user.js
@@ -240,6 +241,11 @@
             "start download": " start download",
             "download_number_big": "download count too big",
             "auto_close_notify": "auto close notify",
+            "collapse_same_isbn": "Collapse books with same ISBN",
+            "enable_cdn_download_redirect": "Enable CDN download redirect",
+            "cdn_download_hostname": "CDN download hostname",
+            "cdn_download_redirect_invalid_host": "CDN download hostname must be a hostname only",
+            "cdn_download_redirect_failed": "CDN download redirect failed: {{error}}",
 
         })
         i18next.addResourceBundle('zh', "translation", {
@@ -272,6 +278,10 @@
             "download_number_big": "下载数量超过了今日剩余下载次数",
             "auto_close_notify": "自动关闭通知",
             "collapse_same_isbn": "折叠相同isbn书籍",
+            "enable_cdn_download_redirect": "启用下载 CDN 重定向",
+            "cdn_download_hostname": "下载 CDN 主机名",
+            "cdn_download_redirect_invalid_host": "下载 CDN 主机名必须是纯 hostname",
+            "cdn_download_redirect_failed": "下载 CDN 重定向失败：{{error}}",
         })
     }
 
@@ -292,12 +302,218 @@
     const auto_close_notify = "auto_close_notify"
     // 折叠相同isbn书籍
     const collapse_same_isbn = "collapse_same_isbn"
+    const enable_cdn_download_redirect_key = "enable_cdn_download_redirect"
+    const cdn_download_hostname_key = "cdn_download_hostname"
     let setting = GM_getValue(config_key, {})
 
     const enable_filter_recom = setting[filter_recommend_key] ?? true
     const enable_lock_search = setting[lock_search_key] ?? true
     const enable_auto_close_notice = setting[auto_close_notify] ?? false
     const enable_collapse_same_isbn = setting[collapse_same_isbn] ?? false
+    const cdnDownloadRedirectLogPrefix = "[ZLibrary CDN Redirect]"
+
+    function safeUrlForLog(url) {
+        try {
+            const parsed = new URL(url, window.location.origin)
+            return `${parsed.origin}${parsed.pathname}`
+        } catch {
+            return "<invalid-url>"
+        }
+    }
+
+    function safeHostForLog(url) {
+        try {
+            return new URL(url, window.location.origin).hostname
+        } catch {
+            return "<invalid-host>"
+        }
+    }
+
+    function normalizeDownloadUrl(href) {
+        try {
+            const url = new URL(href, window.location.origin)
+            if (url.origin !== window.location.origin || !url.pathname.startsWith("/dl/")) {
+                return null
+            }
+            return url.href
+        } catch {
+            return null
+        }
+    }
+
+    function isValidHostname(hostname) {
+        const host = (hostname || "").trim().toLowerCase()
+        if (!host || host.includes("://") || host.includes("/") || host.includes(":")) {
+            return false
+        }
+        return /^(?=.{1,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(host)
+    }
+
+    function normalizeCdnDownloadHostname(hostname) {
+        const host = (hostname || "").trim().toLowerCase()
+        return isValidHostname(host) ? host : ""
+    }
+
+    function applyCdnDownloadHostnamePin(url, pinnedHost) {
+        const host = (pinnedHost || "").trim().toLowerCase()
+        if (!isValidHostname(host)) {
+            return url
+        }
+        const parsed = new URL(url)
+        parsed.hostname = host
+        return parsed.href
+    }
+
+    function getResponseHeader(responseHeaders, headerName) {
+        const target = headerName.toLowerCase()
+        return (responseHeaders || "")
+            .split(/\r?\n/)
+            .map(line => line.trim())
+            .filter(Boolean)
+            .map(line => {
+                const index = line.indexOf(":")
+                if (index < 0) return null
+                return {
+                    name: line.slice(0, index).trim().toLowerCase(),
+                    value: line.slice(index + 1).trim()
+                }
+            })
+            .find(header => header && header.name === target)?.value || ""
+    }
+
+    function requestDownloadLocation(downloadUrl) {
+        console.debug(cdnDownloadRedirectLogPrefix, "request /dl/ location", {
+            downloadUrl: safeUrlForLog(downloadUrl)
+        })
+        return new Promise((resolve, reject) => {
+            GM_xmlhttpRequest({
+                method: "GET",
+                url: downloadUrl,
+                redirect: "manual",
+                timeout: 30000,
+                headers: {
+                    "Accept": "application/pdf,application/epub+zip,*/*",
+                    "Range": "bytes=0-0"
+                },
+                onload: function (response) {
+                    const redirectStatusCodes = [301, 302, 303, 307, 308]
+                    console.debug(cdnDownloadRedirectLogPrefix, "/dl/ response", {
+                        status: response.status,
+                        finalUrl: response.finalUrl ? safeUrlForLog(response.finalUrl) : "",
+                    })
+                    if (!redirectStatusCodes.includes(response.status)) {
+                        console.warn(cdnDownloadRedirectLogPrefix, "/dl/ response is not redirect", {
+                            status: response.status,
+                            finalUrl: response.finalUrl ? safeUrlForLog(response.finalUrl) : "",
+                        })
+                        reject(new Error(`unexpected /dl/ status ${response.status}`))
+                        return
+                    }
+
+                    const locationHeader = getResponseHeader(response.responseHeaders, "location")
+                    if (!locationHeader) {
+                        console.warn(cdnDownloadRedirectLogPrefix, "/dl/ redirect missing Location header", {
+                            status: response.status
+                        })
+                        reject(new Error("missing Location header"))
+                        return
+                    }
+
+                    console.info(cdnDownloadRedirectLogPrefix, "got /dl/ Location", {
+                        locationHost: safeHostForLog(locationHeader),
+                        locationUrl: safeUrlForLog(locationHeader)
+                    })
+                    resolve(new URL(locationHeader, downloadUrl).href)
+                },
+                onerror: function (error) {
+                    console.error(cdnDownloadRedirectLogPrefix, "/dl/ request failed", error)
+                    reject(error instanceof Error ? error : new Error("request failed"))
+                },
+                ontimeout: function () {
+                    console.error(cdnDownloadRedirectLogPrefix, "/dl/ request timeout", {
+                        downloadUrl: safeUrlForLog(downloadUrl)
+                    })
+                    reject(new Error("request timeout"))
+                }
+            })
+        })
+    }
+
+    function getDownloadAnchorFromClick(event) {
+        const path = typeof event.composedPath === "function" ? event.composedPath() : []
+        const fromPath = path.find(node => node instanceof HTMLAnchorElement)
+        if (fromPath) {
+            return fromPath
+        }
+        if (event.target instanceof Element) {
+            return event.target.closest("a")
+        }
+        return null
+    }
+
+    function registerCdnDownloadRedirect() {
+        console.debug(cdnDownloadRedirectLogPrefix, "listener registered")
+
+        document.addEventListener("click", async function (event) {
+            const anchor = getDownloadAnchorFromClick(event)
+            const downloadUrl = anchor ? normalizeDownloadUrl(anchor.getAttribute("href")) : null
+            if (!downloadUrl) {
+                return
+            }
+
+            const latestSettings = GM_getValue(config_key, {})
+            if (!(latestSettings[enable_cdn_download_redirect_key] ?? false)) {
+                console.debug(cdnDownloadRedirectLogPrefix, "skip because feature is disabled", {
+                    downloadUrl: safeUrlForLog(downloadUrl)
+                })
+                return
+            }
+            const rawHost = (latestSettings[cdn_download_hostname_key] || "").trim()
+            const host = normalizeCdnDownloadHostname(rawHost)
+            if (rawHost && !host) {
+                console.warn(cdnDownloadRedirectLogPrefix, "invalid pinned host", {
+                    pinnedHost: rawHost
+                })
+                send_error_msg("cdn_download_redirect_invalid_host")
+                return
+            }
+            if (!host) {
+                console.debug(cdnDownloadRedirectLogPrefix, "skip download redirect because pinned host is empty", {
+                    downloadUrl: safeUrlForLog(downloadUrl)
+                })
+                return
+            }
+
+            console.info(cdnDownloadRedirectLogPrefix, "intercept download click", {
+                downloadUrl: safeUrlForLog(downloadUrl),
+                pinnedHost: host,
+                openInNewTab: event.metaKey || event.ctrlKey || event.shiftKey || anchor.target === "_blank"
+            })
+            event.preventDefault()
+            event.stopPropagation()
+
+            try {
+                const locationUrl = await requestDownloadLocation(downloadUrl)
+                const redirectedUrl = applyCdnDownloadHostnamePin(locationUrl, host)
+                console.info(cdnDownloadRedirectLogPrefix, "redirect browser to CDN URL", {
+                    originalHost: safeHostForLog(locationUrl),
+                    pinnedHost: safeHostForLog(redirectedUrl),
+                    originalUrl: safeUrlForLog(locationUrl),
+                    redirectedUrl: safeUrlForLog(redirectedUrl)
+                })
+                if (event.metaKey || event.ctrlKey || event.shiftKey || anchor.target === "_blank") {
+                    window.open(redirectedUrl, "_blank", "noopener")
+                    return
+                }
+                window.location.assign(redirectedUrl)
+            } catch (error) {
+                console.error("ZLibrary CDN download redirect failed", error)
+                send_error_msg("cdn_download_redirect_failed", {
+                    error: error?.message || String(error)
+                })
+            }
+        }, true)
+    }
 
 
 
@@ -1211,6 +1427,19 @@
                 label: collapse_same_isbn,
                 defaultValue: false
             },
+            {
+                name: enable_cdn_download_redirect_key,
+                label: enable_cdn_download_redirect_key,
+                defaultValue: false,
+                type: "checkbox"
+            },
+            {
+                name: cdn_download_hostname_key,
+                label: cdn_download_hostname_key,
+                defaultValue: "",
+                type: "text",
+                placeholder: "dl-alps-2.gcdn.ac"
+            },
             // 可以继续添加更多设置项
         ];
 
@@ -1220,6 +1449,14 @@
             return savedSettings[key] !== undefined
                 ? savedSettings[key]
                 : setting.defaultValue;
+        }
+
+        function escapeAttr(value) {
+            return String(value ?? "")
+                .replace(/&/g, "&amp;")
+                .replace(/"/g, "&quot;")
+                .replace(/</g, "&lt;")
+                .replace(/>/g, "&gt;")
         }
 
         // 将设置项每两个分成一组，每组占一行
@@ -1244,17 +1481,27 @@
 
                 group.forEach((setting) => {
                     const itemWidthClass = 'col-sm-6';
+                    const settingType = setting.type || "checkbox";
+                    const controlHtml = settingType === "text"
+                        ? `<input type="text"
+                                   class="form-control"
+                                   name="${setting.name}"
+                                   value="${escapeAttr(getSettingValue(setting))}"
+                                   placeholder="${escapeAttr(setting.placeholder || "")}">`
+                        : `<div class="checkbox">
+                            <input type="checkbox"
+                                   name="${setting.name}"
+                                   value="1"
+                                   ${getSettingValue(setting) ? "checked" : ""}>
+                        </div>`;
                     itemsHtml += `
                 <div class="${itemWidthClass}">
                     <div class="form-group">
                         <label class="control-label col-sm-5 mr-10" for="${setting.name}">
                             ${translate(setting.label)} 
                         </label>
-                        <div class="col-sm-6 checkbox">
-                            <input type="checkbox" 
-                                   name="${setting.name}" 
-                                   value="1" 
-                                   ${getSettingValue(setting) ? "checked" : ""}>
+                        <div class="col-sm-6">
+                            ${controlHtml}
                         </div>
                     </div>
                 </div>`;
@@ -1291,15 +1538,40 @@
 
             // 使用事件委托绑定
             $(document).off('click', '#save-settings').on('click', '#save-settings', () => {
-                const checkboxDict = {};
+                const nextSettings = GM_getValue(config_key, {});
+                let settingsValid = true;
 
                 settingsConfig.forEach(setting => {
+                    if (!settingsValid) {
+                        return;
+                    }
                     const key = setting.name;
                     const element = $(`.modal-body #formSetting input[name='${setting.name}']`);
-                    checkboxDict[key] = element.is(':checked');
+                    if ((setting.type || "checkbox") === "text") {
+                        const value = element.val().trim();
+                        if (key === cdn_download_hostname_key) {
+                            const normalizedValue = normalizeCdnDownloadHostname(value);
+                            if (value && !normalizedValue) {
+                                console.warn(cdnDownloadRedirectLogPrefix, "reject invalid CDN hostname setting", {
+                                    pinnedHost: value
+                                })
+                                send_error_msg("cdn_download_redirect_invalid_host");
+                                settingsValid = false;
+                                return;
+                            }
+                            nextSettings[key] = normalizedValue;
+                            return;
+                        }
+                        nextSettings[key] = value;
+                    } else {
+                        nextSettings[key] = element.is(':checked');
+                    }
                 });
 
-                GM_setValue(config_key, checkboxDict);
+                if (!settingsValid) {
+                    return;
+                }
+                GM_setValue(config_key, nextSettings);
                 merchantModal.hide();
                 $("#ZUE-settings-modal").remove();
             });
@@ -1319,6 +1591,7 @@
         GM_registerMenuCommand(translation.settingsPage, settingsPage);
     }
     RegisterMenuCommand();
+    registerCdnDownloadRedirect();
 
     if (testUrl.pathname === "/") {
         indexPageExec();
