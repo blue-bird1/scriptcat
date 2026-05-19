@@ -4,6 +4,7 @@
   "type": "module",
   "scripts": {
     "build": "node scripts/build-userscripts.mjs",
+    "install:scriptcat": "node scripts/userscripts/install-to-scriptcat.mjs",
     "lint:userscripts": "node scripts/userscripts/lint.cjs"
   },
   "devDependencies": {

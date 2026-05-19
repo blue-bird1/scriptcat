@@ -3,6 +3,7 @@
 
 # Repository control files.
 !.gitignore
+!AGENTS.md
 
 # Userscripts.
 !*.user.js
@@ -31,6 +32,7 @@
 !scripts/build-userscripts.mjs
 !scripts/page-agent-userscript-entry.ts
 !scripts/userscripts/
+!scripts/userscripts/install-to-scriptcat.mjs
 !scripts/userscripts/lint.cjs
 !scripts/userscripts/scriptcat-eslint/
 !scripts/userscripts/scriptcat-eslint/*.cjs
