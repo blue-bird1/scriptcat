@@ -22,7 +22,7 @@
     return cookieValue || "";
   }
 
-  // src/userscripts/douban.user.js
+  // src/lib/douban/series.js
   function ignoreUiException() {
     return false;
   }
@@ -83,11 +83,6 @@
         cartActions.appendChild(btn);
       }
     });
-  }
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", injectDoulistButtonOnSeries);
-  } else {
-    injectDoulistButtonOnSeries();
   }
   function updateBookStatus(subjectId, status) {
     return new Promise((resolve) => {
@@ -673,16 +668,6 @@
       console.error("资源加载失败", e);
     }
   }
-  try {
-    createZlibCheckButton();
-    createBulkReadAllPagesButton();
-    createBulkReadButton();
-    preloadDialogResources().then(() => startDoulistDialog()).catch((e) => {
-      console.error("预加载对话框资源出错", e);
-    });
-  } catch (e) {
-    console.error("初始化按钮失败", e);
-  }
   async function confirmDialog(content = "确定要继续吗？", title = "确认") {
     return new Promise((resolve) => {
       try {
@@ -733,4 +718,24 @@
       }
     });
   }
+  function startDoubanSeriesEnhancement() {
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", injectDoulistButtonOnSeries);
+    } else {
+      injectDoulistButtonOnSeries();
+    }
+    try {
+      createZlibCheckButton();
+      createBulkReadAllPagesButton();
+      createBulkReadButton();
+      preloadDialogResources().then(() => startDoulistDialog()).catch((e) => {
+        console.error("预加载对话框资源出错", e);
+      });
+    } catch (e) {
+      console.error("初始化按钮失败", e);
+    }
+  }
+
+  // src/userscripts/douban.user.js
+  startDoubanSeriesEnhancement();
 })();

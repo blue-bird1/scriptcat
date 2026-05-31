@@ -29,23 +29,26 @@
 
 - **脚本清单**：见下表。改脚本前查阅脚本头；新增或删除脚本时同步更新。
 - **源码与产物**：带 build 的脚本，**只改 `src/userscripts/` 与 `src/lib/`，再 `pnpm build` 生成根目录 `*.user.js`**；不要直接改根目录产物（会被 build 覆盖）。
+- **协作方式**：在 `main` 上直接开发，不走 PR；每完成可验收单元后 commit（含 `src/` 与 build 产物）。
 
-| 脚本文件 | 源码 | 目标站点 | 主要功能 |
-|----------|------|----------|----------|
-| douban.user.js | `src/userscripts/douban.user.js` | book.douban.com/series/* | 豆瓣丛书批量操作、豆列、书单 |
-| douban-tag.user.js | — | book.douban.com/subject/* | 豆瓣图书自动推荐标签 |
-| douban_earliest_publication.user.js | — | book.douban.com/subject/* | 豆瓣图书最早出版时间标注 |
-| zlib.user.js | — | Z-Library 多域名 | UI 增强 |
-| zlib.isbn_highlight.user.js | — | Z-Library 多域名 | 高亮缺失 ISBN 的书籍卡片 |
-| bilibili.user.js | — | bilibili.com 番剧 | BGM 评分显示 |
-| keylolsign.user.js | — | keylol.com | 每日签到 |
-| keylol_to_steampy_price.user.js | — | keylol.com, steampy.com | Steam 价格及总价显示 |
-| steampy.user.js | — | steampy.com | SteamPy 价格对比增强 |
-| steampy-token-sync.user.js | `src/userscripts/steampy-token-sync.user.js` | steampy.com | SteamPy accessToken + Cookies 云端同步 |
-| snokwo.user.js | — | sonkwo.hk, steampy.com | Steam AppID 提取 |
-| page-agent.user.js | — | 通用 (*://*/*) | 自然语言操作网页（基于 alibaba/page-agent） |
-| vue.user.js | — | 通用 (*://*/*) | scriptcat dev 调试 |
-| greenmangaming-bundle-claim.user.js | — | greenmangamingbundles.com order-claim | GMG 捆绑包 Steam key 复制与自动激活 |
+**Build 分级**：已接入 = 已在 `src/userscripts/`；A/B = 计划迁入 build；C = 仅抽 lib；D = 维持根目录单文件。
+
+| 脚本文件 | Build | 源码 | 目标站点 | 主要功能 |
+|----------|-------|------|----------|----------|
+| douban.user.js | 已接入 | `src/userscripts/douban.user.js` | book.douban.com/series/* | 豆瓣丛书批量操作、豆列、书单 |
+| steampy-token-sync.user.js | 已接入 | `src/userscripts/steampy-token-sync.user.js` | steampy.com | SteamPy accessToken + Cookies 云端同步 |
+| douban-tag.user.js | 已接入 | `src/userscripts/douban-tag.user.js` | book.douban.com/subject/* | 豆瓣图书自动推荐标签 |
+| douban_earliest_publication.user.js | 已接入 | `src/userscripts/douban_earliest_publication.user.js` | book.douban.com/subject/* | 豆瓣图书最早出版时间标注 |
+| greenmangaming-bundle-claim.user.js | 已接入 | `src/userscripts/greenmangaming-bundle-claim.user.js` | greenmangamingbundles.com order-claim | GMG 捆绑包 Steam key 复制与自动激活 |
+| keylol_to_steampy_price.user.js | 已接入 | `src/userscripts/keylol_to_steampy_price.user.js` | keylol.com, steampy.com | Steam 价格及总价显示 |
+| snokwo.user.js | 已接入 | `src/userscripts/snokwo.user.js` | sonkwo.hk, steampy.com | Steam AppID 提取 |
+| zlib.isbn_highlight.user.js | 已接入 | `src/userscripts/zlib.isbn_highlight.user.js` | Z-Library 多域名 | 高亮缺失 ISBN 的书籍卡片 |
+| steampy.user.js | C（lib 已抽） | — | steampy.com | SteamPy 价格对比增强；`src/lib/steampy/game-manager.js` |
+| bilibili.user.js | C（lib 已抽） | — | bilibili.com 番剧 | BGM 评分显示；`src/lib/bilibili/bgm-rating.js` |
+| page-agent.user.js | C（lib 已抽） | — | 通用 (*://*/*) | 自然语言操作网页；`src/lib/page-agent/gm-fetch.js` |
+| zlib.user.js | D | — | Z-Library 多域名 | UI 增强 |
+| keylolsign.user.js | D | — | keylol.com | 每日签到 |
+| vue.user.js | D | — | 通用 (*://*/*) | scriptcat dev 调试 |
 
 ## 项目结构
 
@@ -63,36 +66,47 @@
 | `scripts/mcp/scriptcat-vscode-sync-server.mjs` | ScriptCat VSCode sync 协议推送 helper |
 | `scripts/userscripts/install-to-scriptcat.mjs` | 推送本地 userscript 到用户正常浏览器 ScriptCat |
 | `scripts/userscripts/lint.cjs` | 对根目录 `*.user.js` 跑 eslint-plugin-userscripts |
+| `scripts/userscripts/lint-built.cjs` | 仅 lint build 产物（`src/userscripts` 对应根目录文件） |
 | `docs/site-notes.md` | 站点逆向笔记（接口、选择器、鉴权方式） |
 | `docs/troubleshooting.md` | 常见问题排查 |
 | `docs/scriptcat-require.md` | Scriptcat @require、@connect、库格式 |
-| `.agents/skills/tampermonkey/` | Tampermonkey 技能与 references |
-| `.cursor/rules/scriptcat-context.mdc` | 固定上下文（环境/账号/脚本URL/API） |
-| `.cursor/rules/scriptcat-workflow.mdc` | 执行方法（怎么做/用什么工具/如何验证） |
-| `.cursor/rules/scriptcat-require.mdc` | Scriptcat @require 规则 |
-| `.cursor/rules/scriptcat-userscript-quality.mdc` | 脚本质量（面向普通用户、配置 UX） |
 
 ## Build 层（`src/` + esbuild）
 
-适用于逻辑较多、需要复用 `src/lib/` 的脚本。当前已接入：
+适用于逻辑较多、需要复用 `src/lib/` 的脚本。共享代码通过 build **内联**到各脚本，脚本间无运行时 `@require` 依赖。
 
 | 源码入口 | 主要 lib 依赖 |
 |----------|----------------|
-| `src/userscripts/douban.user.js` | `src/lib/douban/auth.js` |
-| `src/userscripts/steampy-token-sync.user.js` | `src/lib/steampy/token-sync.js`，及 `src/lib/userscript/{error,preview,notify,gm-value-json,gm-cookie,cat-file-storage}.js` |
+| `src/userscripts/douban.user.js` | `src/lib/douban/{auth,series}.js` |
+| `src/userscripts/steampy-token-sync.user.js` | `src/lib/steampy/token-sync.js`，及 `src/lib/userscript/*` |
+| `src/userscripts/douban-tag.user.js` | `src/lib/douban/tag-recommend.js` |
+| `src/userscripts/douban_earliest_publication.user.js` | `src/lib/douban/earliest-publication.js` |
+| `src/userscripts/greenmangaming-bundle-claim.user.js` | `src/lib/gmg/*`，`src/lib/userscript/gm-xhr.js` |
+| `src/userscripts/keylol_to_steampy_price.user.js` | `src/lib/keylol/steampy-price.js`，`src/lib/steampy/{access-token,xboot-client}.js` |
+| `src/userscripts/snokwo.user.js` | `src/lib/sonkwo/search-price.js`，`src/lib/steampy/{access-token,xboot-client}.js` |
+| `src/userscripts/zlib.isbn_highlight.user.js` | `src/lib/zlib/bookcard-isbn.js` |
+
+**C 级已抽 lib（入口仍为根目录单文件，待后续迁入 build）**
+
+| 根目录脚本 | 已抽 lib |
+|------------|----------|
+| `steampy.user.js` | `src/lib/steampy/game-manager.js` |
+| `bilibili.user.js` | `src/lib/bilibili/bgm-rating.js` |
+| `page-agent.user.js` | `src/lib/page-agent/gm-fetch.js`（可复用 `src/lib/userscript/gm-xhr.js`） |
 
 **约定**
 
 - metadata（`// ==UserScript==` …）写在 `src/userscripts/<name>.user.js` 顶部；build 后原样保留在产物文件开头。
 - 源码 body 使用 ES module `import`；esbuild 以 **IIFE、不 minify、无 sourcemap** 打包到根目录，保持可读。
 - 通用能力放 `src/lib/userscript/`；站点业务放 `src/lib/<site>/`；入口文件尽量薄（metadata + `import` + 启动调用）。
-- 新增 build 脚本：在 `src/userscripts/` 添加入口 → 按需加 lib → 更新 `.gitignore` 白名单 → 更新本表 → `pnpm build`。
+- 新增 build 脚本：在 `src/userscripts/` 添加入口 → 按需加 lib → 更新 `.gitignore` 白名单 → 更新本表 → `pnpm build:check`。
 
 **常用命令**
 
 ```bash
-pnpm build                              # 构建全部 src/userscripts 入口
-pnpm run lint:userscripts -- douban.user.js steampy-token-sync.user.js
+pnpm build:check                         # build 全部入口 + lint 产物
+pnpm build                               # 仅 build
+pnpm run lint:userscripts -- foo.user.js
 pnpm install:scriptcat -- steampy-token-sync.user.js
 ```
 

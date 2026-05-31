@@ -42,6 +42,8 @@
 // @updateURL          https://update.greasyfork.org/scripts/497146/Z-Library%20ui%20enhance.meta.js
 // ==/UserScript==
 
+// ISBN 缺失高亮见 zlib.isbn_highlight.user.js（与 src/lib/zlib/bookcard-isbn.js 共享实现）
+
 /* global $,ZLibraryNotify, i18next, ZLibraryResponse,CurrentBook,CurrentUser,ZLibrarySpinner, ZLibrary, ZLibraryContextMenu, isValidInputString, UserBookmarks, ZLibraryMultiselect*/
 
 (function () {
