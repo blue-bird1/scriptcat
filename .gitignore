@@ -22,6 +22,8 @@
 !src/lib/
 !src/lib/douban/
 !src/lib/douban/*.js
+!src/lib/steampy/
+!src/lib/steampy/*.js
 !src/lib/userscript/
 !src/lib/userscript/*.js
 !src/userscripts/
