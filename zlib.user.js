@@ -3,7 +3,7 @@
 // @name:zh-CN         Z-Library 增强脚本
 // @name:en            Z-Library UI Enhance
 // @namespace          out
-// @version            2026.5.17
+// @version            2026.6.7
 // @description        改善 Zlibray 页面功能的油猴脚本
 // @description:zh-CN  给 Z-Library 一个更友好的使用体验
 // @description:en     give Z-Library  a more user friendly experience
@@ -44,7 +44,7 @@
 
 // ISBN 缺失高亮见 zlib.isbn_highlight.user.js（与 src/lib/zlib/bookcard-isbn.js 共享实现）
 
-/* global $,ZLibraryNotify, i18next, ZLibraryResponse,CurrentBook,CurrentUser,ZLibrarySpinner, ZLibrary, ZLibraryContextMenu, isValidInputString, UserBookmarks, ZLibraryMultiselect*/
+/* global $,ZLibraryNotify, i18next, ZLibraryResponse,CurrentBook,CurrentUser,ZLibrarySpinner, ZLibrary, ZLibraryContextMenu, UserBookmarks, ZLibraryMultiselect, ZLibraryModal, dispatchCustomEvent*/
 
 (function () {
     'use strict';
@@ -566,6 +566,9 @@
         let stateNode = grandparentFiber.memoizedState;
 
         let booklist = stateNode.memoizedState;
+        const filteredBookList = booklist.filter(function (book) {
+            return !ZLibrary.checkIsDownloaded(book.id, book.isbn);
+        });
 
         // hook dispatch
         const originalDispatch = stateNode.queue.dispatch
@@ -979,12 +982,34 @@
 
         function collapser() {
             const isbnMap = new Map();
+            const processedFlag = 'zue-isbn-collapsed';
 
-            // 查找所有带有isbn属性的z-bookcard元素
-            $('z-bookcard[isbn]').each(function () {
-                const $card = $(this);
+            function isOffscreenPlaceholder($parent) {
+                const parent = $parent[0];
+                const style = window.getComputedStyle(parent);
+                const right = parseFloat(style.right);
+                const counter = $parent.children('.counter').first().text().trim();
+
+                if (counter === '0' || style.display === 'none') {
+                    return true;
+                }
+
+                if (style.position === 'absolute' && Number.isFinite(right) && right !== 0) {
+                    return true;
+                }
+
+                const rect = parent.getBoundingClientRect();
+                return rect.width > 0 && (rect.right <= 0 || rect.left >= window.innerWidth);
+            }
+
+            $('#searchResultBox > .book-item.resItemBoxBooks').each(function () {
+                const $parent = $(this);
+                if ($parent.attr(`data-${processedFlag}`) || isOffscreenPlaceholder($parent)) {
+                    return;
+                }
+
+                const $card = $parent.children('z-bookcard[isbn]').first();
                 const isbn = $card.attr('isbn');
-                const $parent = $card.closest('.book-item.resItemBoxBooks');
 
                 if (isbn && $parent.length) {
                     if (!isbnMap.has(isbn)) {
@@ -1004,6 +1029,11 @@
 
                 // 如果只有一个元素，则不需要折叠
                 if (otherParents.length === 0) return;
+
+                firstParent.attr(`data-${processedFlag}`, '1');
+                $(otherParents).each(function () {
+                    $(this).attr(`data-${processedFlag}`, '1');
+                });
 
                 // 创建一个容器用于放置所有相同ISBN的书籍
                 const $container = $('<div>')
