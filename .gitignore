@@ -9,7 +9,8 @@
 !*.user.js
 
 # Project documentation that is already part of the repository.
-# !docs/
+!docs/
+!docs/site-notes.md
 # !docs/troubleshooting.md
 # !docs/steampy-pro-cdkey-investigation.md
 # !docs/plans/

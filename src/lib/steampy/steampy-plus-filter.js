@@ -24,7 +24,9 @@ export function createSteamPyPriceFilter({ libraryManager, onApply }) {
   function shouldShow(game) {
     const price = Number(game?.keyPrice);
     const matchesPrice = !state.isActive || (price >= state.minPrice && price <= state.maxPrice);
-    return matchesPrice && !libraryManager.isGameOwned(game?.appId);
+    return matchesPrice
+      && !libraryManager.isGameOwned(game?.appId)
+      && !libraryManager.isGameIgnored(game?.appId);
   }
 
   function apply() {

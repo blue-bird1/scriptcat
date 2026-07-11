@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.8.1
+// @version         5.9.0
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -261,7 +261,7 @@
     function shouldShow(game) {
       const price = Number(game?.keyPrice);
       const matchesPrice = !state.isActive || price >= state.minPrice && price <= state.maxPrice;
-      return matchesPrice && !libraryManager.isGameOwned(game?.appId);
+      return matchesPrice && !libraryManager.isGameOwned(game?.appId) && !libraryManager.isGameIgnored(game?.appId);
     }
     function apply() {
       onApply();
@@ -614,11 +614,13 @@
   // src/lib/steampy/steam-library.js
   var STEAM_GAME_LIST_KEY = "steamGameList";
   var FAMILY_LIBRARY_ENABLED_KEY = "steampyFamilyLibraryEnabled";
+  var IGNORED_GAMES_ENABLED_KEY = "steampyIgnoredGamesEnabled";
   var STEAM_DYNAMIC_STORE_URL = "https://store.steampowered.com/dynamicstore/userdata/";
   var STEAM_POINTS_CONFIG_URL = "https://store.steampowered.com/pointssummary/ajaxgetasyncconfig";
   var STEAM_SHARED_LIBRARY_URL = "https://api.steampowered.com/IFamilyGroupsService/GetSharedLibraryApps/v1/";
   var NOTIFICATION_TITLE = "SteamPy Plus";
   var FAMILY_LIBRARY_MENU_ID = "steam-py-plus-family-library";
+  var IGNORED_GAMES_MENU_ID = "steam-py-plus-ignored-games";
   function isRecord(value) {
     return value !== null && typeof value === "object" && !Array.isArray(value);
   }
@@ -640,6 +642,26 @@
     }
     return [...new Set(value.filter((appId) => Number.isSafeInteger(appId) && appId > 0))];
   }
+  function normalizeDynamicStoreAppId(value, label) {
+    if (typeof value === "number") {
+      return normalizeAppId2(value, label);
+    }
+    if (typeof value === "string" && /^\d+$/.test(value)) {
+      return normalizeAppId2(Number(value), label);
+    }
+    throw new Error(`${label} 包含无效 AppID`);
+  }
+  function normalizeIgnoredAppIds(value) {
+    let appIds;
+    if (Array.isArray(value)) {
+      appIds = value;
+    } else if (isRecord(value)) {
+      appIds = Object.keys(value);
+    } else {
+      throw new Error("Steam 已忽略游戏格式不正确");
+    }
+    return [...new Set(appIds.map((appId) => normalizeDynamicStoreAppId(appId, "Steam 已忽略游戏")))];
+  }
   function normalizeOpaqueList(value) {
     return Array.isArray(value) ? value.slice() : [];
   }
@@ -651,25 +673,26 @@
   }
   function normalizeCachedState(value) {
     if (!isRecord(value)) {
-      return { own: [], wish: [], sub: [], family: [] };
+      return { own: [], wish: [], sub: [], family: [], ignored: [] };
     }
     return {
       own: normalizeCachedAppIds(value.own),
       wish: normalizeCachedAppIds(value.wish),
       sub: normalizeOpaqueList(value.sub),
-      family: normalizeCachedAppIds(value.family)
+      family: normalizeCachedAppIds(value.family),
+      ignored: normalizeCachedAppIds(value.ignored)
     };
   }
   function loadState() {
     const raw = GM_getValue(STEAM_GAME_LIST_KEY, "");
     if (!raw) {
-      return { own: [], wish: [], sub: [], family: [] };
+      return { own: [], wish: [], sub: [], family: [], ignored: [] };
     }
     try {
       return normalizeCachedState(JSON.parse(raw));
     } catch (error) {
       console.warn("[SteamPy Plus] Steam 数据缓存格式不正确，已忽略", error);
-      return { own: [], wish: [], sub: [], family: [] };
+      return { own: [], wish: [], sub: [], family: [], ignored: [] };
     }
   }
   function saveState(state) {
@@ -677,6 +700,9 @@
   }
   function readFamilyEnabled() {
     return GM_getValue(FAMILY_LIBRARY_ENABLED_KEY, false) === true;
+  }
+  function readIgnoredGamesEnabled() {
+    return GM_getValue(IGNORED_GAMES_ENABLED_KEY, false) === true;
   }
   function notify(text) {
     try {
@@ -699,7 +725,8 @@
     return {
       own: normalizeAppIds(data.rgOwnedApps, "Steam 自有库"),
       wish: normalizeAppIds(data.rgWishlist, "Steam 愿望单"),
-      sub: normalizePackageIds(data.rgOwnedPackages)
+      sub: normalizePackageIds(data.rgOwnedPackages),
+      ignored: normalizeIgnoredAppIds(data.rgIgnoredApps)
     };
   }
   function normalizeSteamId(value, label) {
@@ -772,6 +799,9 @@
     function isFamilyEnabled() {
       return readFamilyEnabled();
     }
+    function isIgnoredGamesEnabled() {
+      return readIgnoredGamesEnabled();
+    }
     function emitChange() {
       if (typeof onChange === "function") {
         onChange();
@@ -785,11 +815,12 @@
           const familyData = await requestFamilyLibraryData();
           family = familyData;
         }
-        state = {
+        const nextState = {
           ...dynamicStoreData,
           family
         };
-        saveState(state);
+        saveState(nextState);
+        state = nextState;
         notify("同步Steam数据成功");
         emitChange();
         return state;
@@ -808,10 +839,27 @@
         const syncedState = await sync();
         if (!syncedState) {
           notify("家庭库功能仍已开启；同步失败，已保留旧数据");
+          emitChange();
         }
         return;
       }
       notify("已关闭：将家庭库游戏视为已拥有");
+      emitChange();
+    }
+    async function toggleIgnoredGames() {
+      const enabled = !isIgnoredGamesEnabled();
+      GM_setValue(IGNORED_GAMES_ENABLED_KEY, enabled);
+      registerIgnoredGamesMenu();
+      if (enabled) {
+        notify("已开启：隐藏 Steam 已忽略游戏，正在同步Steam数据");
+        const syncedState = await sync();
+        if (!syncedState) {
+          notify("已忽略游戏隐藏功能仍已开启；同步失败，已保留旧数据");
+          emitChange();
+        }
+        return;
+      }
+      notify("已关闭：隐藏 Steam 已忽略游戏");
       emitChange();
     }
     function registerFamilyMenu() {
@@ -821,6 +869,13 @@
         { id: FAMILY_LIBRARY_MENU_ID }
       );
     }
+    function registerIgnoredGamesMenu() {
+      GM_registerMenuCommand(
+        `${isIgnoredGamesEnabled() ? "关闭" : "开启"}：隐藏 Steam 已忽略游戏`,
+        toggleIgnoredGames,
+        { id: IGNORED_GAMES_MENU_ID }
+      );
+    }
     function registerMenus() {
       if (menusRegistered) {
         return;
@@ -828,6 +883,7 @@
       menusRegistered = true;
       GM_registerMenuCommand("同步Steam数据", sync);
       registerFamilyMenu();
+      registerIgnoredGamesMenu();
     }
     function isGameOwned(appId) {
       const parsedAppId = Number(appId);
@@ -836,10 +892,22 @@
       }
       return state.own.includes(parsedAppId) || isFamilyEnabled() && state.family.includes(parsedAppId);
     }
+    function isGameIgnored(appId) {
+      const parsedAppId = Number(appId);
+      return isIgnoredGamesEnabled() && Number.isSafeInteger(parsedAppId) && parsedAppId > 0 && state.ignored.includes(parsedAppId);
+    }
     function getState() {
       return state;
     }
-    return { registerMenus, sync, isGameOwned, isFamilyEnabled, getState };
+    return {
+      registerMenus,
+      sync,
+      isGameOwned,
+      isGameIgnored,
+      isFamilyEnabled,
+      isIgnoredGamesEnabled,
+      getState
+    };
   }
 
   // src/lib/steampy/steampy-plus.js
