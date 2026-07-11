@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.8
+// @version         5.8.1
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -640,6 +640,15 @@
     }
     return [...new Set(value.filter((appId) => Number.isSafeInteger(appId) && appId > 0))];
   }
+  function normalizeOpaqueList(value) {
+    return Array.isArray(value) ? value.slice() : [];
+  }
+  function normalizePackageIds(value) {
+    if (!Array.isArray(value)) {
+      throw new Error("Steam 已拥有礼包格式不正确");
+    }
+    return value.slice();
+  }
   function normalizeCachedState(value) {
     if (!isRecord(value)) {
       return { own: [], wish: [], sub: [], family: [] };
@@ -647,7 +656,7 @@
     return {
       own: normalizeCachedAppIds(value.own),
       wish: normalizeCachedAppIds(value.wish),
-      sub: normalizeCachedAppIds(value.sub),
+      sub: normalizeOpaqueList(value.sub),
       family: normalizeCachedAppIds(value.family)
     };
   }
@@ -690,7 +699,7 @@
     return {
       own: normalizeAppIds(data.rgOwnedApps, "Steam 自有库"),
       wish: normalizeAppIds(data.rgWishlist, "Steam 愿望单"),
-      sub: normalizeAppIds(data.rgOwnedPackages, "Steam 已拥有礼包")
+      sub: normalizePackageIds(data.rgOwnedPackages)
     };
   }
   function normalizeSteamId(value, label) {

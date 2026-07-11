@@ -33,6 +33,17 @@ function normalizeCachedAppIds(value) {
   return [...new Set(value.filter((appId) => Number.isSafeInteger(appId) && appId > 0))];
 }
 
+function normalizeOpaqueList(value) {
+  return Array.isArray(value) ? value.slice() : [];
+}
+
+function normalizePackageIds(value) {
+  if (!Array.isArray(value)) {
+    throw new Error("Steam 已拥有礼包格式不正确");
+  }
+  return value.slice();
+}
+
 function normalizeCachedState(value) {
   if (!isRecord(value)) {
     return { own: [], wish: [], sub: [], family: [] };
@@ -40,7 +51,7 @@ function normalizeCachedState(value) {
   return {
     own: normalizeCachedAppIds(value.own),
     wish: normalizeCachedAppIds(value.wish),
-    sub: normalizeCachedAppIds(value.sub),
+    sub: normalizeOpaqueList(value.sub),
     family: normalizeCachedAppIds(value.family),
   };
 }
@@ -90,7 +101,7 @@ function parseDynamicStoreData(data) {
   return {
     own: normalizeAppIds(data.rgOwnedApps, "Steam 自有库"),
     wish: normalizeAppIds(data.rgWishlist, "Steam 愿望单"),
-    sub: normalizeAppIds(data.rgOwnedPackages, "Steam 已拥有礼包"),
+    sub: normalizePackageIds(data.rgOwnedPackages),
   };
 }
 
