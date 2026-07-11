@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.9.0
+// @version         5.9.1
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -863,15 +863,17 @@
       emitChange();
     }
     function registerFamilyMenu() {
+      const stateLabel = isFamilyEnabled() ? "已开启（点击关闭）" : "已关闭（点击开启）";
       GM_registerMenuCommand(
-        `${isFamilyEnabled() ? "关闭" : "开启"}：将家庭库游戏视为已拥有`,
+        `家庭库游戏视为已拥有：${stateLabel}`,
         toggleFamilyLibrary,
         { id: FAMILY_LIBRARY_MENU_ID }
       );
     }
     function registerIgnoredGamesMenu() {
+      const stateLabel = isIgnoredGamesEnabled() ? "已开启（点击关闭）" : "已关闭（点击开启）";
       GM_registerMenuCommand(
-        `${isIgnoredGamesEnabled() ? "关闭" : "开启"}：隐藏 Steam 已忽略游戏`,
+        `隐藏 Steam 已忽略游戏：${stateLabel}`,
         toggleIgnoredGames,
         { id: IGNORED_GAMES_MENU_ID }
       );

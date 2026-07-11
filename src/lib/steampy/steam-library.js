@@ -298,16 +298,18 @@ export function createSteamLibraryManager({ onChange } = {}) {
   }
 
   function registerFamilyMenu() {
+    const stateLabel = isFamilyEnabled() ? "已开启（点击关闭）" : "已关闭（点击开启）";
     GM_registerMenuCommand(
-      `${isFamilyEnabled() ? "关闭" : "开启"}：将家庭库游戏视为已拥有`,
+      `家庭库游戏视为已拥有：${stateLabel}`,
       toggleFamilyLibrary,
       { id: FAMILY_LIBRARY_MENU_ID }
     );
   }
 
   function registerIgnoredGamesMenu() {
+    const stateLabel = isIgnoredGamesEnabled() ? "已开启（点击关闭）" : "已关闭（点击开启）";
     GM_registerMenuCommand(
-      `${isIgnoredGamesEnabled() ? "关闭" : "开启"}：隐藏 Steam 已忽略游戏`,
+      `隐藏 Steam 已忽略游戏：${stateLabel}`,
       toggleIgnoredGames,
       { id: IGNORED_GAMES_MENU_ID }
     );
