@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.9.2
+// @version         5.9.3
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -403,6 +403,7 @@
   }
   function createSteamPyRatingEnhancer({ libraryManager }) {
     let hotGameData = { result: { content: [] } };
+    const cardAppIds = /* @__PURE__ */ new WeakMap();
     function setHotGameData(data) {
       hotGameData = data || { result: { content: [] } };
     }
@@ -441,14 +442,20 @@
       gameHead.appendChild(newRatingElement);
     }
     function processOpen(gameBlock, gameSource) {
+      const appId = getSteamAppId(gameBlock, gameSource);
+      if (appId) {
+        cardAppIds.set(gameBlock, appId);
+      } else {
+        cardAppIds.delete(gameBlock);
+      }
       if (gameBlock.dataset.steamPyPlusOpenBound) return;
       gameBlock.dataset.steamPyPlusOpenBound = "true";
       gameBlock.addEventListener("mousedown", (event) => {
         if (event.button !== 1 || event.ctrlKey || event.shiftKey) return;
-        const appId = getSteamAppId(gameBlock, gameSource);
-        if (!appId) return;
+        const currentAppId = cardAppIds.get(gameBlock);
+        if (!currentAppId) return;
         event.preventDefault();
-        window.open(`https://store.steampowered.com/app/${appId}/`, "_blank");
+        window.open(`https://store.steampowered.com/app/${currentAppId}/`, "_blank");
       });
     }
     function processCards(gameBlocks, games, extraGames) {

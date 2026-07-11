@@ -38,6 +38,7 @@ function getRatingStyle(rating) {
 
 export function createSteamPyRatingEnhancer({ libraryManager }) {
   let hotGameData = { result: { content: [] } };
+  const cardAppIds = new WeakMap();
 
   function setHotGameData(data) {
     hotGameData = data || { result: { content: [] } };
@@ -85,14 +86,21 @@ export function createSteamPyRatingEnhancer({ libraryManager }) {
   }
 
   function processOpen(gameBlock, gameSource) {
+    const appId = getSteamAppId(gameBlock, gameSource);
+    if (appId) {
+      cardAppIds.set(gameBlock, appId);
+    } else {
+      cardAppIds.delete(gameBlock);
+    }
+
     if (gameBlock.dataset.steamPyPlusOpenBound) return;
     gameBlock.dataset.steamPyPlusOpenBound = "true";
     gameBlock.addEventListener("mousedown", (event) => {
       if (event.button !== 1 || event.ctrlKey || event.shiftKey) return;
-      const appId = getSteamAppId(gameBlock, gameSource);
-      if (!appId) return;
+      const currentAppId = cardAppIds.get(gameBlock);
+      if (!currentAppId) return;
       event.preventDefault();
-      window.open(`https://store.steampowered.com/app/${appId}/`, "_blank");
+      window.open(`https://store.steampowered.com/app/${currentAppId}/`, "_blank");
     });
   }
 
