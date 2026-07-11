@@ -48,6 +48,8 @@
 - **Steam 库同步（SteamPy Plus）**
   - 登录态下先请求 `GET https://store.steampowered.com/dynamicstore/userdata/`，再解析响应中的 `rgOwnedApps`、`rgWishlist`、`rgOwnedPackages` 和 `rgIgnoredApps`。现代登录响应的 `rgIgnoredApps` 是以 AppID 字符串为键、状态值为值的对象；匿名或旧响应可能返回空数组。SteamPy Plus 将该对象的键转换为 ignored AppID 集合。
   - `rgOwnedPackages` 是不透明的 PackageID 列表，按原值保存；它不遵循 AppID 的正整数校验规则。
+- **商品数据契约（SteamPy Plus）**
+  - 真实商品数据确认，商品记录嵌套 `steamApp`；`steamApp.type` 精确为小写 `dlc` 时表示 DLC。SteamPy Plus 的隐藏 DLC 筛选直接读取该字段，在现有商品列表上完成，不通过商品名称或父 App 推断，也不增加请求。
 - **接口**
   - `GET https://steampy.com/xboot/steamGame/saleKeyByUrl`：按 Steam 商店链接查 Key 价格。参数：`pageNumber`、`pageSize`、`sort`、`order`、`gameUrl`、`gameName`。keylol_to_steampy_price.user.js。
   - `GET https://steampy.com/xboot/steamGame/saleKeyByName`：按游戏名查。参数同上，`gameUrl` 空、`gameName` 为中文/英文名。snokwo.user.js。
