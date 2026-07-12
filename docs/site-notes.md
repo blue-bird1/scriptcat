@@ -51,9 +51,13 @@
 - **商品数据契约（SteamPy Plus）**
   - 真实商品数据确认，商品记录嵌套 `steamApp`；`steamApp.type` 精确为小写 `dlc` 时表示 DLC。SteamPy Plus 的隐藏 DLC 筛选直接读取该字段，在现有商品列表上完成，不通过商品名称或父 App 推断，也不增加请求。
 - **接口**
+  - `GET https://steampy.com/xboot/steamGame/keyHot`：主游戏列表接口。主列表 `pageSize` 默认值为 30；响应使用 Spring 分页字段 `content`、`totalPages`、`totalElements`、`size`、`number`、`numberOfElements`、`first`、`last`、`empty`。服务端实际接受 `pageSize=100` 并返回 100 条，这是已验证值，不代表最大上限。
   - `GET https://steampy.com/xboot/steamGame/saleKeyByUrl`：按 Steam 商店链接查 Key 价格。参数：`pageNumber`、`pageSize`、`sort`、`order`、`gameUrl`、`gameName`。keylol_to_steampy_price.user.js。
   - `GET https://steampy.com/xboot/steamGame/saleKeyByName`：按游戏名查。参数同上，`gameUrl` 空、`gameName` 为中文/英文名。snokwo.user.js。
   - `GET https://steampy.com/xboot/common/plugIn/getGame?subId=...&appId=...&type=...`：getGame 价格/插件信息。keylol_to_steampy 中 getCdkDetailUrl：`steampy.com/cdkDetail?name=cn&gameId={gameId}`（仅作链接，不请求）。
+- **主列表分页（Vue 3）**
+  - 主 Vue 3 实例的 `searchForm.pageSize` 初始为 30，并通过 `changePageSize`、`changePage`、`getGameList` 处理分页请求与列表刷新。
+  - 主分页器不提供 page-size 选择器；其他列表的独立 page-size 选项属于各自列表配置。
 - **选择器（steampy.user.js）**
   - 标签页内容：`div.ivu-tabs-content div.flex-row.jc-space-flex-start.flex-wrap.w-auto`；游戏块：`.gameblock`；`.ivu-tabs-tabpane`。
   - 出售列表：`#main > div.main > div.single-page-con > div.single-page > div:has(.cdkTrade-layout)`；订单：`.orderOne.bg-white .list-item`；列表项价格：`div:nth-child(7)`。
