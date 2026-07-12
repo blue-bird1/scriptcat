@@ -2,6 +2,26 @@ function sameList(first, second) {
   return first.length === second.length && first.every((item, index) => item === second[index]);
 }
 
+const PRO_BUYER_PAGE_SIZE_STORAGE_KEY = "steamPyPlusProBuyerPageSize";
+const PRO_BUYER_PAGE_SIZE_CONTROL_ID = "steamPyPlusProBuyerPageSize";
+const DEFAULT_PRO_BUYER_PAGE_SIZE = 30;
+
+export const PRO_BUYER_PAGE_SIZE_OPTIONS = Object.freeze([30, 50, 100]);
+
+export function parseProBuyerPageSize(value) {
+  const pageSize = Number(value);
+  return Number.isInteger(pageSize) && PRO_BUYER_PAGE_SIZE_OPTIONS.includes(pageSize) ? pageSize : null;
+}
+
+function loadProBuyerPageSize(getValue) {
+  return parseProBuyerPageSize(getValue(PRO_BUYER_PAGE_SIZE_STORAGE_KEY, DEFAULT_PRO_BUYER_PAGE_SIZE))
+    ?? DEFAULT_PRO_BUYER_PAGE_SIZE;
+}
+
+function removeProBuyerPageSizeControl() {
+  document.querySelectorAll("[data-steam-py-plus-pro-page-size-control]").forEach((element) => element.remove());
+}
+
 function listSignature(list, vm) {
   const form = vm.searchForm || {};
   const formPart = [
@@ -105,11 +125,20 @@ function findVue3BuyerVm({ silent = false } = {}) {
   return match;
 }
 
-export function createSteamPyBuyerController({ elmGetter, jQuery, filter, rating }) {
+export function createSteamPyBuyerController({
+  elmGetter,
+  jQuery,
+  filter,
+  rating,
+  getValue = GM_getValue,
+  setValue = GM_setValue,
+}) {
   let legacyVm = null;
   let proVm = null;
   let legacyStarted = false;
   let proStarted = false;
+  let proStartGeneration = 0;
+  let proPageSize = DEFAULT_PRO_BUYER_PAGE_SIZE;
 
   function processCards(vm) {
     rating.processCards(document.querySelectorAll(".gameblock"), vm?.gameList, vm?.__steamPyPlusOriginalGameList);
@@ -122,10 +151,76 @@ export function createSteamPyBuyerController({ elmGetter, jQuery, filter, rating
     legacyVm.$nextTick?.(() => processCards(legacyVm));
   }
 
+  function mountProPageSizeControl(vm) {
+    const pagination = document.querySelector(".page.mt-50-rem > .ivu-page");
+    if (!pagination) return;
+
+    const existing = document.getElementById(PRO_BUYER_PAGE_SIZE_CONTROL_ID);
+    if (existing && pagination.contains(existing)) {
+      existing.value = String(proPageSize);
+      return;
+    }
+    removeProBuyerPageSizeControl();
+
+    const container = document.createElement("label");
+    container.className = "ivu-page-total";
+    container.dataset.steamPyPlusProPageSizeControl = "true";
+    container.htmlFor = PRO_BUYER_PAGE_SIZE_CONTROL_ID;
+    container.style.cssText = "display:inline-flex;align-items:center;gap:.06rem;margin-left:.12rem;font-size:.13rem;";
+    container.append(document.createTextNode("每页"));
+
+    const select = document.createElement("select");
+    select.id = PRO_BUYER_PAGE_SIZE_CONTROL_ID;
+    select.className = "ivu-select-selection";
+    select.style.cssText = "height:.28rem;min-width:.62rem;padding:0 .08rem;border:1px solid #dcdee2;border-radius:.04rem;background:#fff;color:#515a6e;font-size:.13rem;cursor:pointer;";
+    PRO_BUYER_PAGE_SIZE_OPTIONS.forEach((pageSize) => {
+      const option = document.createElement("option");
+      option.value = String(pageSize);
+      option.textContent = String(pageSize);
+      select.append(option);
+    });
+    select.value = String(proPageSize);
+    select.addEventListener("change", (event) => {
+      const pageSize = parseProBuyerPageSize(event.target.value);
+      if (!pageSize) {
+        event.target.value = String(proPageSize);
+        return;
+      }
+      proPageSize = pageSize;
+      setValue(PRO_BUYER_PAGE_SIZE_STORAGE_KEY, pageSize);
+      if (!vm?.searchForm) return;
+      vm.searchForm.pageSize = pageSize;
+      vm.searchForm.pageNumber = 1;
+      if (typeof vm.changePage === "function") vm.changePage(1);
+      else vm.getGameList?.();
+      scheduleProPageSizeMount(vm);
+    });
+    container.append(select);
+    pagination.append(container);
+  }
+
+  function scheduleProPageSizeMount(vm) {
+    vm.$nextTick?.(() => {
+      if (proVm === vm) mountProPageSizeControl(vm);
+    });
+  }
+
+  function initializeProPageSize(vm) {
+    proPageSize = loadProBuyerPageSize(getValue);
+    scheduleProPageSizeMount(vm);
+    const currentPageSize = parseProBuyerPageSize(vm?.searchForm?.pageSize);
+    if (proPageSize === DEFAULT_PRO_BUYER_PAGE_SIZE || currentPageSize === proPageSize || !vm?.searchForm) return;
+    vm.searchForm.pageSize = proPageSize;
+    vm.searchForm.pageNumber = 1;
+    if (typeof vm.changePage === "function") vm.changePage(1);
+    else vm.getGameList?.();
+  }
+
   function applyPro() {
     if (!proVm) proVm = findVue3BuyerVm({ silent: true });
     if (!proVm) return;
     applySavedFilter(proVm, filter.shouldShow);
+    scheduleProPageSizeMount(proVm);
     proVm.$nextTick?.(() => processCards(proVm));
   }
 
@@ -139,8 +234,9 @@ export function createSteamPyBuyerController({ elmGetter, jQuery, filter, rating
     legacyStarted = true;
   }
 
-  async function waitForProVm() {
+  async function waitForProVm(isCurrent) {
     for (let attempt = 0; attempt < 60; attempt += 1) {
+      if (!isCurrent()) return null;
       const vm = findVue3BuyerVm({ silent: true });
       if (vm) return vm;
       await new Promise((resolve) => setTimeout(resolve, 250));
@@ -160,15 +256,22 @@ export function createSteamPyBuyerController({ elmGetter, jQuery, filter, rating
 
   async function startPro() {
     if (proStarted) return;
+    const startGeneration = ++proStartGeneration;
+    const isCurrent = () => startGeneration === proStartGeneration;
     await elmGetter.get(".tag.flex-row.align-items-center");
+    if (!isCurrent()) return;
     await elmGetter.get(".gameblock");
-    proVm = await waitForProVm();
-    if (!proVm) {
+    if (!isCurrent()) return;
+    const nextProVm = await waitForProVm(isCurrent);
+    if (!isCurrent()) return;
+    if (!nextProVm) {
       console.warn("[SteamPy Plus] 新版 CDKey 买家页初始化失败：未找到 Vue3 买家实例");
       return;
     }
+    proVm = nextProVm;
     captureSourceList(proVm);
     installProWatcher(proVm);
+    initializeProPageSize(proVm);
     applyPro();
     proStarted = true;
   }
@@ -184,8 +287,10 @@ export function createSteamPyBuyerController({ elmGetter, jQuery, filter, rating
   }
 
   function cleanupPro() {
+    proStartGeneration += 1;
     if (proVm?.__steamPyPlusUnwatch) proVm.__steamPyPlusUnwatch();
     if (proVm) proVm.__steamPyPlusWatcherInstalled = false;
+    removeProBuyerPageSizeControl();
     proVm = null;
     proStarted = false;
   }
