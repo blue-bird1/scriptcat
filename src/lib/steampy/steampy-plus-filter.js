@@ -27,7 +27,7 @@ export function createSteamPyPriceFilter({ libraryManager, onApply }) {
   }
 
   function shouldShow(game) {
-    const price = Number(game?.keyPrice);
+    const price = Number(game?.keyTxAmt ?? game?.keyPrice);
     const matchesPrice = !state.isActive || (price >= state.minPrice && price <= state.maxPrice);
     return matchesPrice
       && (!state.hideDlc || game?.steamApp?.type !== "dlc")
