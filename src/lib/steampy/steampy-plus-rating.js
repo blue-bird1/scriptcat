@@ -55,12 +55,14 @@ export function createSteamPyRatingEnhancer({ libraryManager }) {
 
   function updateCard(gameBlock, gameSource, extraGames) {
     if (!gameBlock) return;
+    const gameName = gameBlock.querySelector(".gameName");
     const appId = getSteamAppId(gameBlock, gameSource);
-    if (!appId) return;
-
-    if (libraryManager.getState().wish.includes(appId)) {
-      gameBlock.querySelector(".gameName")?.classList.add("bg-blue");
+    if (!appId) {
+      gameName?.classList.remove("bg-blue");
+      return;
     }
+
+    gameName?.classList.toggle("bg-blue", libraryManager.getState().wish.includes(appId));
 
     const gameHead = gameBlock.querySelector(".gameHead");
     if (!gameHead) return;

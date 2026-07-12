@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.9.3
+// @version         5.9.4
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -416,11 +416,13 @@
     }
     function updateCard(gameBlock, gameSource, extraGames) {
       if (!gameBlock) return;
+      const gameName = gameBlock.querySelector(".gameName");
       const appId = getSteamAppId(gameBlock, gameSource);
-      if (!appId) return;
-      if (libraryManager.getState().wish.includes(appId)) {
-        gameBlock.querySelector(".gameName")?.classList.add("bg-blue");
+      if (!appId) {
+        gameName?.classList.remove("bg-blue");
+        return;
       }
+      gameName?.classList.toggle("bg-blue", libraryManager.getState().wish.includes(appId));
       const gameHead = gameBlock.querySelector(".gameHead");
       if (!gameHead) return;
       const ratingElement = gameHead.querySelector(".gameRating");
