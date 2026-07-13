@@ -1,0 +1,291 @@
+#!/usr/bin/env -S uv run python
+# ruff: noqa: E501
+from __future__ import annotations
+
+import argparse
+import hashlib
+import sys
+from collections.abc import Sequence
+from pathlib import Path
+
+if __package__ in (None, ""):
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from remote._activation import activate_archive
+    from remote._common import (
+        REMOTE_BUILD_ROOT,
+        RemoteConfig,
+        WorkflowError,
+        assert_local_head,
+        cli_main,
+        local_data_root,
+        push_main,
+        repository_root,
+        require_clean_main,
+        require_commands,
+        require_wg0,
+        run_checked,
+        run_remote_script,
+        shell_quote,
+        sync_remote_checkout,
+    )
+    from remote._lock import PatchStack, UpstreamLock, load_lock
+else:
+    from ._activation import activate_archive
+    from ._common import (
+        REMOTE_BUILD_ROOT,
+        RemoteConfig,
+        WorkflowError,
+        assert_local_head,
+        cli_main,
+        local_data_root,
+        push_main,
+        repository_root,
+        require_clean_main,
+        require_commands,
+        require_wg0,
+        run_checked,
+        run_remote_script,
+        shell_quote,
+        sync_remote_checkout,
+    )
+    from ._lock import PatchStack, UpstreamLock, load_lock
+
+
+LOCK_PATH = Path("browser/upstreams.lock.json")
+ARCHIVE_NAME = "scriptcat-mcp-portable.tar.zst"
+EXTENSION_ROOT = Path.home() / ".codex" / "chrome-extensions" / "scriptcat" / "v1.3.2"
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(
+        description=(
+            "Build ScriptCat MCP remotely and atomically activate its portable runtime."
+        ),
+        epilog=(
+            "Requires a clean local main branch and pushes origin/main before remote "
+            "work. The fixed remote host uses its own network proxy; no local proxy "
+            "is forwarded."
+        ),
+    )
+    result.add_argument(
+        "--lock",
+        type=Path,
+        default=LOCK_PATH,
+        help="upstream lock relative to repository root (default: %(default)s)",
+    )
+    result.add_argument(
+        "--archive-only",
+        action="store_true",
+        help="build and download to /tmp without activating the release",
+    )
+    return result
+
+
+def run(argv: Sequence[str]) -> int:
+    arguments = parser().parse_args(argv)
+    require_commands("git", "ip", "ssh", "rsync", "tar", "zstd")
+    require_wg0()
+    root = repository_root()
+    commit = require_clean_main(root)
+    origin = run_checked(
+        ("git", "remote", "get-url", "origin"), cwd=root, capture=True
+    ).stdout.strip()
+    lock = load_lock(root / arguments.lock)
+    push_main(root)
+    config = RemoteConfig()
+    sync_remote_checkout(config, origin, commit)
+    run_remote_script(config, remote_build_script(config, lock, commit))
+    assert_local_head(root, commit)
+    archive = download_archive(config, lock)
+    if arguments.archive_only:
+        print(archive)
+        return 0
+    expected_build_id = hashlib.sha256(f"{lock.digest}{commit}".encode()).hexdigest()[
+        :24
+    ]
+    build_id = activate_archive(
+        archive,
+        local_data_root(),
+        EXTENSION_ROOT,
+        expected_build_id,
+        lock.chromium.version,
+    )
+    print(f"activated ScriptCat MCP portable release {build_id}")
+    return 0
+
+
+def download_archive(config: RemoteConfig, lock: UpstreamLock) -> Path:
+    local = Path("/tmp") / f"scriptcat-mcp-{lock.digest[:16]}.tar.zst"
+    remote = f"{config.build_root}/out/{ARCHIVE_NAME}"
+    local.unlink(missing_ok=True)
+    try:
+        run_checked(
+            ("rsync", "--archive", "--partial", f"{config.host}:{remote}", str(local))
+        )
+    except WorkflowError:
+        local.unlink(missing_ok=True)
+        raise
+    return local
+
+
+def remote_build_script(
+    config: RemoteConfig, lock: UpstreamLock, project_commit: str
+) -> str:
+    patch_lines = "\n".join(patch_stack_command(stack) for stack in lock.patch_stacks)
+    return f"""#!/usr/bin/env bash
+set -euo pipefail
+umask 022
+build_root={shell_quote(config.build_root)}
+checkout={shell_quote(config.checkout)}
+test "$build_root" = {shell_quote(REMOTE_BUILD_ROOT)}
+mkdir -p "$build_root/src" "$build_root/out"
+project_commit={shell_quote(project_commit)}
+prepare_source() {{
+  local name="$1" source="$2" commit="$3"
+  local destination="$build_root/src/$name"
+  if [ ! -d "$destination/.git" ]; then
+    git clone --filter=blob:none "$source" "$destination"
+  fi
+  if [ -d "$destination/.git/rebase-apply" ]; then
+    git -C "$destination" am --abort
+  fi
+  git -C "$destination" fetch --depth=1 origin "$commit"
+  git -C "$destination" checkout --detach "$commit"
+  git -C "$destination" reset --hard "$commit"
+  git -C "$destination" clean -ffd
+}}
+prepare_depot_tools() {{
+  local destination="$build_root/depot_tools" source="$1" commit="$2"
+  if [ ! -d "$destination/.git" ]; then
+    git clone --filter=blob:none "$source" "$destination"
+  fi
+  git -C "$destination" fetch --depth=1 origin "$commit"
+  git -C "$destination" checkout --detach "$commit"
+  git -C "$destination" reset --hard "$commit"
+  git -C "$destination" clean -ffd
+}}
+prepare_depot_tools {shell_quote(lock.depot_tools.source)} {shell_quote(lock.depot_tools.commit)}
+export PATH="$build_root/depot_tools:$PATH"
+command -v gclient >/dev/null
+command -v gn >/dev/null
+command -v autoninja >/dev/null
+prepare_source chromium {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
+prepare_source chrome-devtools-mcp {shell_quote(lock.mcp.source)} {shell_quote(lock.mcp.commit)}
+prepare_source scriptcat {shell_quote(lock.scriptcat.source)} {shell_quote(lock.scriptcat.commit)}
+chromium="$build_root/src/chromium"
+mcp="$build_root/src/chrome-devtools-mcp"
+scriptcat="$build_root/src/scriptcat"
+runtime="$build_root/out/runtime"
+rm -rf "$runtime"
+mkdir -p "$runtime/chromium" "$runtime/mcp" "$runtime/scriptcat"
+cd "$chromium"
+cd "$build_root/src"
+gclient config --unmanaged --name chromium {shell_quote(lock.chromium.source)}
+cd "$chromium"
+gclient sync -D --nohooks
+gclient runhooks
+{patch_lines}
+gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
+autoninja -C out/Release chrome browser_tests
+python3 testing/xvfb.py out/Release/browser_tests \
+  --gtest_filter='DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch' \
+  --test-launcher-bot-mode
+python3 - infra/archive_config/linux-archive-rel.json out/Release "$runtime/chromium" <<'PY'
+import json
+import pathlib
+import shutil
+import sys
+
+config_path, build_path, destination_path = map(pathlib.Path, sys.argv[1:])
+archive = json.loads(config_path.read_text(encoding='utf-8'))['archive_datas'][0]
+source = build_path.resolve()
+destination = destination_path.resolve()
+for relative in archive['files']:
+    source_file = source / relative
+    if not source_file.is_file():
+        raise SystemExit(f'archive config file is missing: {{source_file}}')
+    target_file = destination / 'chrome-linux' / relative
+    target_file.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source_file, target_file, follow_symlinks=False)
+for relative in archive['dirs']:
+    source_dir = source / relative
+    if not source_dir.is_dir():
+        raise SystemExit(f'archive config directory is missing: {{source_dir}}')
+    target_dir = destination / 'chrome-linux' / relative
+    shutil.copytree(source_dir, target_dir, symlinks=True, dirs_exist_ok=True)
+PY
+test -x "$runtime/chromium/chrome-linux/chrome"
+cd "$mcp"
+pnpm install --frozen-lockfile
+pnpm build
+pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts
+pnpm bundle
+rsync -a --delete build/src/ "$runtime/mcp/"
+cp package.json LICENSE "$runtime/mcp/"
+test -f "$runtime/mcp/bin/chrome-devtools-mcp.js"
+node "$runtime/mcp/bin/chrome-devtools-mcp.js" --help >/dev/null
+cd "$scriptcat"
+pnpm install --frozen-lockfile
+pnpm build:managed-mcp
+test -f dist/ext/manifest.json
+rsync -a --delete --exclude .git dist/ext/ "$runtime/scriptcat/"
+test -f "$runtime/scriptcat/manifest.json"
+build_id=$(printf '%s' {shell_quote(lock.digest + project_commit)} | sha256sum | cut -c1-24)
+python3 - "$runtime" "$build_id" {shell_quote(lock.chromium.version)} <<'PY'
+import hashlib
+import json
+import pathlib
+import sys
+
+root = pathlib.Path(sys.argv[1])
+files = {{}}
+for path in sorted(item for item in root.rglob('*') if item.is_file()):
+    relative = path.relative_to(root).as_posix()
+    digest = hashlib.sha256()
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
+            digest.update(chunk)
+    files[relative] = digest.hexdigest()
+(root / 'manifest.json').write_text(
+    json.dumps({{'build_id': sys.argv[2], 'chromium_version': sys.argv[3], 'files': files}}, indent=2)
+    + '\\n',
+    encoding='utf-8',
+)
+PY
+(cd "$runtime" && find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | \
+  xargs -0 sha256sum --zero > SHA256SUMS)
+archive_root="$build_root/out/release-$build_id"
+rm -rf "$archive_root"
+mv "$runtime" "$archive_root"
+tar --zstd -C "$build_root/out" -cf "$build_root/out/{ARCHIVE_NAME}" "$(basename "$archive_root")"
+printf 'remote build completed: %s\\n' "$build_id"
+"""
+
+
+def patch_stack_command(stack: PatchStack) -> str:
+    target = shell_quote(stack.target)
+    patch_path = shell_quote(stack.path.as_posix())
+    expected = shell_quote(stack.sha256)
+    return f'''patches="$checkout"/{patch_path}
+test -d "$patches"
+test -f "$patches/series"
+mapfile -t patch_names < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$patches/series")
+test "${{#patch_names[@]}}" -gt 0
+patch_files=()
+for patch_name in "${{patch_names[@]}}"; do
+  case "$patch_name" in
+    *.patch) ;;
+    *) printf 'invalid patch series entry: %s\\n' "$patch_name" >&2; exit 1 ;;
+  esac
+  test "$patch_name" = "${{patch_name##*/}}"
+  test -f "$patches/$patch_name"
+  patch_files+=("$patches/$patch_name")
+done
+test "$(find "$patches" -maxdepth 1 -type f -name '*.patch' | wc -l)" -eq "${{#patch_files[@]}}"
+actual_patch_sha=$(cat "${{patch_files[@]}}" | sha256sum | awk '{{print $1}}')
+test "$actual_patch_sha" = {expected}
+git -C "$build_root/src"/{target} am --3way "${{patch_files[@]}}"'''
+
+
+if __name__ == "__main__":
+    raise SystemExit(cli_main(run))

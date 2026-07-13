@@ -18,12 +18,21 @@
 ## ScriptCat 浏览器验证与安装
 
 - **上游源码位置**：ScriptCat 扩展源码已在 `.upstream/scriptcat`，VSCode 插件源码已在 `.upstream/scriptcat-vscode`。调查 ScriptCat 安装、同步、权限、注入、service worker 或 VSCode sync 行为时，先读这两个本地 checkout，不要先外部搜索或猜测实现。`.upstream` 被仓库 ignore 规则隐藏，搜索时使用 `rg -u`。
-- **专用 MCP**：调试或验收本仓库 `*.user.js` 的页面运行效果时，默认使用 `chrome-devtools-scriptcat` 专用 MCP（工具命名空间通常为 `mcp__chrome_devtools_scriptcat__`）。普通 `chrome-devtools` MCP 不带本仓库约定的 ScriptCat 扩展与独立 profile，不能作为 userscript 注入验证的默认浏览器。
-- **专用浏览器入口**：`scripts/mcp/chrome-devtools-scriptcat-mcp` 启动带 ScriptCat 扩展的 Chromium，默认 DevTools 端口 `19229`，profile 为 `/home/bluebird/.codex/chrome-devtools-scriptcat-chromium-profile`。该入口由项目 `.codex/config.toml` 的 `mcp_servers.chrome-devtools-scriptcat` 管理。
-- **MCP 验收边界**：浏览器验证必须先确认 ScriptCat 扩展已加载，再把目标 `*.user.js` 安装或更新到该 ScriptCat profile，然后打开真实 `@match` 页面验证注入、UI、控制台、网络请求和核心交互。只用普通浏览器打开目标站点、只看静态 DOM、或只跑 lint/build，不构成页面运行验收。
-- **MCP 脚本安装**：给专用 MCP 浏览器安装本地脚本时，优先使用 ScriptCat 自身接口或 VSCode sync 协议。VSCode sync 的 MCP 专用端口为 `18642`，底层 helper 为 `scripts/mcp/scriptcat-vscode-sync-server.mjs`。
+- **专用 MCP**：调试或验收本仓库 `*.user.js` 时，默认使用 `chrome-devtools-scriptcat`（工具命名空间通常为 `mcp__chrome_devtools_scriptcat__`）。它运行 `~/.local/share/scriptcat-mcp/current/` 中的便携定制 Chromium 和完整派生 MCP，固定使用 `~/.codex/chrome-devtools-scriptcat-chromium-profile`。Chromium 通过 CDP pipe 以 headless 模式运行，页面流量使用本机 `http://127.0.0.1:7891` 代理；普通 `chrome-devtools` MCP 不用于 userscript 注入验收。
+- **扩展状态与授权**：MCP 启动时加载固定的 managed ScriptCat 扩展、授予 `userScripts` 权限并等待其 service worker 就绪。使用 `scriptcat_status` 检查扩展 ID、版本、授权和 worker 状态；仅在需要改变授权时使用 `set_extension_user_scripts_access`。扩展目录、profile 和权限状态由 MCP 与便携制品管理，不通过 `install_extension`、`reload_extension`、浏览器 UI、`chrome://extensions/`、X11、`--load-extension`、`developerPrivate` 或 Preferences 文件管理。
+- **Profile 独占**：MCP 为固定 profile 持有锁。同一时间只允许一个 owner；第二个 owner 返回 `PROFILE_BUSY`。涉及脚本写入或页面验收的任务必须等待前一个 owner 结束。
+- **MCP 脚本管理与验收**：先运行 `scriptcat_status`，再以 `scriptcat_upsert_script` 写入仓库内规范化的目标 `*.user.js` 路径；按需使用 `scriptcat_list_scripts`、`scriptcat_get_script`、`scriptcat_set_enabled` 和 `scriptcat_delete_script`。随后打开真实 `@match` 页面，确认注入、UI、控制台、网络请求和核心交互。静态 DOM、普通浏览器打开页面或仅执行 lint/build 不构成运行验收。
 - **用户正常浏览器安装**：用户日常浏览器使用 ScriptCat 的默认 VSCode sync 端口 `8642`。需要把当前仓库脚本推送到用户正常浏览器时，使用 `pnpm install:scriptcat -- <script.user.js>`；不传脚本时默认安装 `greenmangaming-bundle-claim.user.js`。该安装路径用于用户浏览器，不替代专用 MCP 的可复现调试验收。
-- **故障处理**：若专用 MCP 未显示 ScriptCat、端口被非 ScriptCat 浏览器占用、或脚本未注入页面，应先修复 `chrome-devtools-scriptcat` 环境或重新安装目标脚本，再继续页面调试；不得退回普通 `chrome-devtools` MCP 后声称已完成 ScriptCat 验证。
+- **故障处理**：`PROFILE_BUSY`、`BROWSER_UNSUPPORTED`、`EXTENSION_NOT_READY`、`INVALID_USERSCRIPT`、`SCRIPT_NOT_FOUND` 与 `TIMEOUT` 是 MCP 的可处理状态。先按错误修复专用 MCP 或目标脚本，再继续验证；不得改用普通 `chrome-devtools` MCP 作为 ScriptCat 验收替代。
+
+## Chromium 远程构建与便携安装
+
+- **执行主机**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，便携制品由 remote wrapper 拉回本机激活。该主机经本地 WireGuard 连接 `wg0` 访问；连接失败时先检查并恢复 `wg0`，再执行项目 remote wrapper。
+- **唯一入口**：本机源码是唯一真源。远程流程前必须确保本地 `main` 干净，提交本次变更并推送 `origin/main`；所有远程 doctor、构建、测试、制品传输和本机激活必须经 `scripts/remote/` wrapper。不得手写 SSH、SCP、rsync、远端 checkout/reset 或构建命令绕过 wrapper。
+- **远端布局**：wrapper 同步 `/root/scriptcat`，并独占使用 `/root/scriptcat-mcp-build` 作为 Chromium 与制品构建根。现有 `/root/chromium` 为非受管旧 checkout，任何流程不得读取、修改或清理它。远端直接使用自身透明代理和网络出口，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
+- **本地构建门禁**：`gclient`、`gn`、`autoninja`、`ninja` 与 Chromium 相关构建命令不得在本机或裸 SSH 中执行；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
+- **制品切换**：wrapper 在远端生成带 manifest 和 `SHA256SUMS` 的完整便携制品；本机在 staging 校验哈希、版本和入口后，原子激活到 `~/.local/share/scriptcat-mcp/releases/<buildId>`，维护 `current` 与 `previous`。managed ScriptCat 同样原子部署到 `~/.codex/chrome-extensions/scriptcat/v1.3.2`，从而保持扩展 ID 和现有 profile 数据。
+- **验证范围**：远端执行补丁应用、Chromium protocol tests、三方构建与便携打包；本机激活后通过完整 MCP 执行 ScriptCat CRUD、真实注入、并发锁与进程清理验收。仅在共享改动或明确要求时扩大测试范围，不得以无关全量 Chromium suite 代替聚焦验证。
 
 ## 项目
 
@@ -62,8 +71,7 @@
 | `.upstream/scriptcat` | ScriptCat 扩展上游源码，用于核对安装、注入、service worker 与运行时行为 |
 | `.upstream/scriptcat-vscode` | ScriptCat VSCode 插件上游源码，用于核对 VSCode sync 协议 |
 | `scripts/build-userscripts.mjs` | 将 `src/userscripts/*.user.js` bundle 到仓库根同名文件 |
-| `scripts/mcp/chrome-devtools-scriptcat-mcp` | 带 ScriptCat 扩展的专用 Chrome DevTools MCP 启动入口 |
-| `scripts/mcp/scriptcat-vscode-sync-server.mjs` | ScriptCat VSCode sync 协议推送 helper |
+| `.codex/config.toml` | 配置便携 Chromium 与派生 `chrome-devtools-scriptcat` MCP，并启用本地 Chromium 构建门禁 |
 | `scripts/userscripts/install-to-scriptcat.mjs` | 推送本地 userscript 到用户正常浏览器 ScriptCat |
 | `scripts/userscripts/lint.cjs` | 对根目录 `*.user.js` 跑 eslint-plugin-userscripts |
 | `scripts/userscripts/lint-built.cjs` | 仅 lint build 产物（`src/userscripts` 对应根目录文件） |

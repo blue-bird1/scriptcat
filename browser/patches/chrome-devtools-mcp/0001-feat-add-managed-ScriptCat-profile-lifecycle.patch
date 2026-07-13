@@ -1,0 +1,351 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bluebird <linlanxi7552659@gmail.com>
+Date: Tue, 14 Jul 2026 04:30:39 +0800
+Subject: [PATCH 1/3] feat: add managed ScriptCat profile lifecycle
+
+---
+ src/ManagedMcpError.ts                     |  30 +++++
+ src/ProfileLock.ts                         | 138 +++++++++++++++++++++
+ src/bin/chrome-devtools-mcp-cli-options.ts |  63 ++++++++++
+ src/browser.ts                             |  35 ++++--
+ 4 files changed, 259 insertions(+), 7 deletions(-)
+ create mode 100644 src/ManagedMcpError.ts
+ create mode 100644 src/ProfileLock.ts
+
+diff --git a/src/ManagedMcpError.ts b/src/ManagedMcpError.ts
+new file mode 100644
+index 0000000..6e9ad55
+--- /dev/null
++++ b/src/ManagedMcpError.ts
+@@ -0,0 +1,30 @@
++/**
++ * @license
++ * Copyright 2026 Google LLC
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++export type ManagedMcpErrorCode =
++  | 'PROFILE_BUSY'
++  | 'BROWSER_UNSUPPORTED'
++  | 'EXTENSION_NOT_READY'
++  | 'INVALID_USERSCRIPT'
++  | 'SCRIPT_NOT_FOUND'
++  | 'TIMEOUT';
++
++export class ManagedMcpError extends Error {
++  readonly code: ManagedMcpErrorCode;
++  readonly details: Record<string, unknown>;
++
++  constructor(
++    code: ManagedMcpErrorCode,
++    message: string,
++    details: Record<string, unknown> = {},
++    options?: ErrorOptions,
++  ) {
++    super(JSON.stringify({code, message, ...details}), options);
++    this.name = 'ManagedMcpError';
++    this.code = code;
++    this.details = details;
++  }
++}
+diff --git a/src/ProfileLock.ts b/src/ProfileLock.ts
+new file mode 100644
+index 0000000..41cfa08
+--- /dev/null
++++ b/src/ProfileLock.ts
+@@ -0,0 +1,138 @@
++/**
++ * @license
++ * Copyright 2026 Google LLC
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
++import fs from 'node:fs/promises';
++import path from 'node:path';
++
++import {ManagedMcpError} from './ManagedMcpError.js';
++
++export const PROFILE_LOCK_FILENAME = '.scriptcat-mcp.lock';
++const LOCK_READY = 'LOCKED\n';
++const LOCK_TIMEOUT_MS = 5_000;
++
++let lockProcess: ChildProcessWithoutNullStreams | undefined;
++
++export async function acquireProfileLock(userDataDir: string): Promise<void> {
++  if (lockProcess && lockProcess.exitCode === null) {
++    return;
++  }
++
++  await fs.mkdir(userDataDir, {recursive: true});
++  const lockPath = path.join(userDataDir, PROFILE_LOCK_FILENAME);
++  const child = spawn(
++    'flock',
++    [
++      '--exclusive',
++      '--nonblock',
++      lockPath,
++      'sh',
++      '-c',
++      `printf '${LOCK_READY}'; cat >/dev/null`,
++    ],
++    {stdio: ['pipe', 'pipe', 'pipe']},
++  );
++
++  try {
++    await waitForLock(child, userDataDir);
++    lockProcess = child;
++  } catch (error) {
++    child.stdin.destroy();
++    child.kill('SIGTERM');
++    throw error;
++  }
++}
++
++async function waitForLock(
++  child: ChildProcessWithoutNullStreams,
++  userDataDir: string,
++): Promise<void> {
++  await new Promise<void>((resolve, reject) => {
++    let stdout = '';
++    let stderr = '';
++    let settled = false;
++
++    const finish = (error?: Error) => {
++      if (settled) {
++        return;
++      }
++      settled = true;
++      clearTimeout(timeout);
++      child.stdout.off('data', onStdout);
++      child.stderr.off('data', onStderr);
++      child.off('error', onError);
++      child.off('exit', onExit);
++      if (error) {
++        reject(error);
++      } else {
++        resolve();
++      }
++    };
++
++    const onStdout = (chunk: Buffer) => {
++      stdout += chunk.toString('utf8');
++      if (stdout.includes(LOCK_READY)) {
++        finish();
++      }
++    };
++    const onStderr = (chunk: Buffer) => {
++      stderr += chunk.toString('utf8');
++    };
++    const onError = (error: Error) => {
++      finish(
++        new ManagedMcpError(
++          'BROWSER_UNSUPPORTED',
++          'The system flock utility is required for the managed profile.',
++          {userDataDir},
++          {cause: error},
++        ),
++      );
++    };
++    const onExit = (code: number | null) => {
++      finish(
++        new ManagedMcpError(
++          'PROFILE_BUSY',
++          'The managed ScriptCat profile is already owned by another process.',
++          {userDataDir, lockExitCode: code, stderr: stderr.trim() || undefined},
++        ),
++      );
++    };
++    const timeout = setTimeout(() => {
++      finish(
++        new ManagedMcpError(
++          'TIMEOUT',
++          'Timed out while acquiring the managed ScriptCat profile lock.',
++          {userDataDir},
++        ),
++      );
++    }, LOCK_TIMEOUT_MS);
++
++    child.stdout.on('data', onStdout);
++    child.stderr.on('data', onStderr);
++    child.on('error', onError);
++    child.on('exit', onExit);
++  });
++}
++
++export async function releaseProfileLock(): Promise<void> {
++  const child = lockProcess;
++  lockProcess = undefined;
++  if (!child || child.exitCode !== null) {
++    return;
++  }
++
++  child.stdin.end();
++  await new Promise<void>(resolve => {
++    const timeout = setTimeout(() => {
++      child.kill('SIGTERM');
++      resolve();
++    }, 2_000);
++    child.once('exit', () => {
++      clearTimeout(timeout);
++      resolve();
++    });
++  });
++}
+diff --git a/src/bin/chrome-devtools-mcp-cli-options.ts b/src/bin/chrome-devtools-mcp-cli-options.ts
+index 33a10ea..28db4d6 100644
+--- a/src/bin/chrome-devtools-mcp-cli-options.ts
++++ b/src/bin/chrome-devtools-mcp-cli-options.ts
+@@ -109,6 +109,38 @@ export const cliOptions = {
+       'Path to the user data directory for Chrome. Default is $HOME/.cache/chrome-devtools-mcp/chrome-profile$CHANNEL_SUFFIX_IF_NON_STABLE',
+     conflicts: ['browserUrl', 'wsEndpoint', 'isolated'],
+   },
++  browserTransport: {
++    type: 'string',
++    choices: ['pipe'] as const,
++    default: 'pipe' as const,
++    description:
++      'Browser transport. The managed ScriptCat browser requires the pipe transport.',
++  },
++  managedScriptcatPath: {
++    type: 'string',
++    description:
++      'Absolute path to the managed unpacked ScriptCat extension. Enables managed ScriptCat tools.',
++  },
++  scriptcatRepositoryRoot: {
++    type: 'string',
++    description:
++      'Absolute repository root containing userscripts accepted by scriptcat_upsert_script.',
++  },
++  scriptcatExtensionId: {
++    type: 'string',
++    description: 'Expected ID of the managed ScriptCat extension.',
++  },
++  scriptcatTimeout: {
++    type: 'number',
++    default: 15_000,
++    hidden: true,
++    coerce: (value: number) => {
++      if (!Number.isInteger(value) || value <= 0) {
++        throw new Error('scriptcatTimeout must be a positive integer.');
++      }
++      return value;
++    },
++  },
+   channel: {
+     type: 'string',
+     description:
+@@ -383,6 +415,37 @@ export function parseArguments(
+         );
+         args.usageStatistics = false;
+       }
++      if (args.managedScriptcatPath) {
++        args.categoryExtensions = true;
++      }
++    })
++    .check(args => {
++      const managedValues = [
++        args.managedScriptcatPath,
++        args.scriptcatRepositoryRoot,
++        args.scriptcatExtensionId,
++      ];
++      const managedCount = managedValues.filter(Boolean).length;
++      if (managedCount !== 0 && managedCount !== managedValues.length) {
++        throw new Error(
++          '--managed-scriptcat-path, --scriptcat-repository-root, and --scriptcat-extension-id must be provided together.',
++        );
++      }
++      if (
++        args.managedScriptcatPath &&
++        (args.browserUrl ||
++          args.wsEndpoint ||
++          args.autoConnect ||
++          args.isolated)
++      ) {
++        throw new Error(
++          'Managed ScriptCat requires an MCP-launched persistent pipe browser.',
++        );
++      }
++      if (args.managedScriptcatPath && !args.userDataDir) {
++        throw new Error('Managed ScriptCat requires --user-data-dir.');
++      }
++      return true;
+     })
+     .example([
+       [
+diff --git a/src/browser.ts b/src/browser.ts
+index 6b077ad..4c7318a 100644
+--- a/src/browser.ts
++++ b/src/browser.ts
+@@ -10,6 +10,7 @@ import os from 'node:os';
+ import path from 'node:path';
+ 
+ import {logger} from './logger.js';
++import {acquireProfileLock, releaseProfileLock} from './ProfileLock.js';
+ import type {
+   Browser,
+   ChromeReleaseChannel,
+@@ -162,6 +163,7 @@ interface McpLaunchOptions {
+   viaCli?: boolean;
+   blocklist?: string[];
+   allowlist?: string[];
++  profileLock?: boolean;
+ }
+ 
+ export function detectDisplay(): void {
+@@ -280,11 +282,24 @@ export async function ensureBrowserLaunched(
+   if (browser?.connected) {
+     return browser;
+   }
++  if (options.profileLock) {
++    if (!options.userDataDir) {
++      throw new Error('A user data directory is required for profile locking.');
++    }
++    await acquireProfileLock(options.userDataDir);
++  }
+   // Assign mode before browser; see the connect path above for rationale.
+-  const launched = await launch(options);
+-  browserMode = 'launched';
+-  browser = launched;
+-  return browser;
++  try {
++    const launched = await launch(options);
++    browserMode = 'launched';
++    browser = launched;
++    return browser;
++  } catch (error) {
++    if (options.profileLock) {
++      await releaseProfileLock();
++    }
++    throw error;
++  }
+ }
+ 
+ /**
+@@ -300,17 +315,23 @@ export async function closeBrowser(): Promise<void> {
+   browser = undefined;
+   browserMode = undefined;
+   if (!b || !b.connected) {
++    await releaseProfileLock();
+     return;
+   }
+   if (mode === 'launched') {
+-    await b.close().catch(err => {
+-      logger?.('Failed to close browser', err);
+-    });
++    try {
++      await b.close().catch(err => {
++        logger?.('Failed to close browser', err);
++      });
++    } finally {
++      await releaseProfileLock();
++    }
+     return;
+   }
+   await b.disconnect().catch(err => {
+     logger?.('Failed to disconnect from browser', err);
+   });
++  await releaseProfileLock();
+ }
+ 
+ export type Channel = 'stable' | 'canary' | 'beta' | 'dev';

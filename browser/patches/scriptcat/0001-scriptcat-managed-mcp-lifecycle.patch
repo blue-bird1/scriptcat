@@ -1,0 +1,198 @@
+From 26bc2a0a694a65cffd5d4ffccdd14177ed6a027a Mon Sep 17 00:00:00 2001
+From: Codex <codex@local.invalid>
+Date: Tue, 14 Jul 2026 04:22:30 +0800
+Subject: [PATCH] feat: add managed MCP build mode
+
+---
+ package.json                                |  1 +
+ rspack.config.ts                            |  2 ++
+ src/app/managed_mcp.ts                      |  1 +
+ src/app/migrate.ts                          |  9 ++++++---
+ src/app/service/service_worker/index.ts     |  4 +++-
+ src/app/service/service_worker/runtime.ts   |  3 ++-
+ src/app/service/service_worker/script.ts    | 10 ++++++++++
+ src/app/service/service_worker/subscribe.ts |  3 ++-
+ 8 files changed, 27 insertions(+), 6 deletions(-)
+ create mode 100644 src/app/managed_mcp.ts
+
+diff --git a/package.json b/package.json
+index 23c6dbd986be10aefbd9d10f253b5facebd7bfde..c74534eb4790940aa3446a209bb68884da625b48 100644
+--- a/package.json
++++ b/package.json
+@@ -14,6 +14,7 @@
+     "coverage:ci": "vitest run --coverage --silent --reporter=default --reporter.default.summary=false",
+     "typecheck": "tsc --noEmit",
+     "build": "cross-env NODE_ENV=production rspack build",
++    "build:managed-mcp": "cross-env NODE_ENV=production SC_MANAGED_MCP=true rspack build",
+     "dev": "cross-env NODE_ENV=development rspack",
+     "dev:react-devtools": "cross-env NODE_ENV=development REACT_DEVTOOLS=true rspack",
+     "dev:noMap": "cross-env NODE_ENV=development NO_MAP=true rspack",
+diff --git a/rspack.config.ts b/rspack.config.ts
+index fff70db2a59cc61c04a6ccc9379e85cd7383fad9..80572a4eec8d046823077526945d6d80dbcb66bb 100644
+--- a/rspack.config.ts
++++ b/rspack.config.ts
+@@ -10,6 +10,7 @@ const dirname = path.resolve();
+ const isDev = process.env.NODE_ENV === "development";
+ const isBeta = version.includes("-");
+ const isReactTools = process.env.REACT_DEVTOOLS === "true";
++const isManagedMcp = process.env.SC_MANAGED_MCP === "true";
+ 
+ // Target browsers, see: https://github.com/browserslist/browserslist
+ // 依照 https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/userScripts#browser_compatibility
+@@ -128,6 +129,7 @@ export default {
+     new rspack.DefinePlugin({
+       "process.env.VI_TESTING": "'false'",
+       "process.env.SC_RANDOM_KEY": `'${uuidv4()}'`,
++      "process.env.SC_MANAGED_MCP": JSON.stringify(isManagedMcp),
+     }),
+     new rspack.CopyRspackPlugin({
+       patterns: [
+diff --git a/src/app/managed_mcp.ts b/src/app/managed_mcp.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..33fc5669748fe874d99062efd091e109b5e00c3d
+--- /dev/null
++++ b/src/app/managed_mcp.ts
+@@ -0,0 +1 @@
++export const isManagedMcp = process.env.SC_MANAGED_MCP === "true";
+diff --git a/src/app/migrate.ts b/src/app/migrate.ts
+index 63244e79eb8ee542b1a2a5fe467acc51a75ca101..aa83f499f27ee544a2af27aa4e8357d1c00d59f6 100644
+--- a/src/app/migrate.ts
++++ b/src/app/migrate.ts
+@@ -10,6 +10,7 @@ import type { Permission } from "./repo/permission";
+ import { PermissionDAO } from "./repo/permission";
+ import { DocumentationSite } from "./const";
+ import { LocalStorageDAO } from "./repo/localStorage";
++import { isManagedMcp } from "./managed_mcp";
+ 
+ // 迁移数据到chrome.storage
+ export function migrateToChromeStorage() {
+@@ -189,9 +190,11 @@ export function migrateToChromeStorage() {
+         const scripts = await scriptDAO.all();
+         console.log("脚本数据迁移完成", scripts.length);
+         if (scripts.length > 0) {
+-          chrome.tabs.create({
+-            url: `${DocumentationSite}/docs/change/v0.17/`,
+-          });
++          if (!isManagedMcp) {
++            chrome.tabs.create({
++              url: `${DocumentationSite}/docs/change/v0.17/`,
++            });
++          }
+           setTimeout(() => {
+             chrome.runtime.reload();
+           }, 1000);
+diff --git a/src/app/service/service_worker/index.ts b/src/app/service/service_worker/index.ts
+index 51f3812830918ac86eba189cef7a22041b5ebf76..b238925e4879f6482056cee034b18134a9479ad9 100644
+--- a/src/app/service/service_worker/index.ts
++++ b/src/app/service/service_worker/index.ts
+@@ -21,6 +21,7 @@ import { FaviconDAO } from "@App/app/repo/favicon";
+ import { onRegularUpdateCheckAlarm } from "./regular_updatecheck";
+ import { cacheInstance } from "@App/app/cache";
+ import { InfoNotification } from "./utils";
++import { isManagedMcp } from "@App/app/managed_mcp";
+ 
+ // service worker的管理器
+ export default class ServiceWorkerManager {
+@@ -194,7 +195,7 @@ export default class ServiceWorkerManager {
+       return true;
+     });
+ 
+-    if (process.env.NODE_ENV === "production") {
++    if (process.env.NODE_ENV === "production" && !isManagedMcp) {
+       chrome.runtime.onInstalled.addListener((details) => {
+         const lastError = chrome.runtime.lastError;
+         if (lastError) {
+@@ -251,6 +252,7 @@ export default class ServiceWorkerManager {
+         _navUrl: string,
+         _tab: chrome.tabs.Tab
+       ) => {
++        if (isManagedMcp) return;
+         // 已忽略后台换页
+         // 在非私隐模式，正常Tab的操作下，用户的打开新Tab，或在当时Tab转至新网域时，会触发此function
+         // 同一网域，SPA换页等不触发
+diff --git a/src/app/service/service_worker/runtime.ts b/src/app/service/service_worker/runtime.ts
+index 83fc7e4d14946f72c1f19dc3b4274f725c2b66e5..21e1629921330979420d35237326b12762b82fcc 100644
+--- a/src/app/service/service_worker/runtime.ts
++++ b/src/app/service/service_worker/runtime.ts
+@@ -51,6 +51,7 @@ import type { CompiledResource, ResourceType } from "@App/app/repo/resource";
+ import { CompiledResourceDAO } from "@App/app/repo/resource";
+ import { setOnTabURLChanged } from "./url_monitor";
+ import { scriptToMenu, type TPopupPageLoadInfo } from "./popup_scriptmenu";
++import { isManagedMcp } from "@App/app/managed_mcp";
+ 
+ const ORIGINAL_URLMATCH_SUFFIX = "{ORIGINAL}"; // 用于标记原始URLPatterns的后缀
+ 
+@@ -620,7 +621,7 @@ export class RuntimeService {
+       this.updateIcon();
+ 
+       // 检查是否开启了开发者模式
+-      if (!this.isUserScriptsAvailable) {
++      if (!this.isUserScriptsAvailable && !isManagedMcp) {
+         // 未开启加上警告引导
+         this.showNoDeveloperModeWarning();
+         let cid: ReturnType<typeof setInterval> | number;
+diff --git a/src/app/service/service_worker/script.ts b/src/app/service/service_worker/script.ts
+index 6ce3f964a47682ef120a74bd7677fbd0cb964211..f01104b661a7318959fb10a2e222c2b5a88d8fc5 100644
+--- a/src/app/service/service_worker/script.ts
++++ b/src/app/service/service_worker/script.ts
+@@ -47,6 +47,7 @@ import { getSimilarityScore, ScriptUpdateCheck } from "./script_update_check";
+ import { LocalStorageDAO } from "@App/app/repo/localStorage";
+ import { CompiledResourceDAO } from "@App/app/repo/resource";
+ import { initRegularUpdateCheck } from "./regular_updatecheck";
++import { isManagedMcp } from "@App/app/managed_mcp";
+ 
+ export type TCheckScriptUpdateOption = Partial<
+   { checkType: "user"; noUpdateCheck?: number } | ({ checkType: "system" } & Record<string, any>)
+@@ -581,6 +582,11 @@ export class ScriptService {
+     return script;
+   }
+ 
++  async getSource(uuid: string): Promise<string | null> {
++    const scriptCode = await this.scriptCodeDAO.get(uuid);
++    return scriptCode?.code ?? null;
++  }
++
+   async updateRunStatus(params: { uuid: string; runStatus: SCRIPT_RUN_STATUS; error?: string; nextruntime?: number }) {
+     // 如果脚本删除了就不再更新状态
+     const script = await this.scriptDAO.get(params.uuid);
+@@ -891,6 +897,7 @@ export class ScriptService {
+ 
+   // 打开更新窗口
+   public async openUpdatePage(script: Script, source: "user" | "system") {
++    if (isManagedMcp && source === "system") return;
+     const { uuid, name, downloadUrl, checkUpdateUrl } = script;
+     const logger = this.logger.with({
+       uuid,
+@@ -1406,6 +1413,9 @@ export class ScriptService {
+     this.group.on("enable", this.enableScript.bind(this));
+     this.group.on("enables", this.enableScripts.bind(this));
+     this.group.on("fetchInfo", this.fetchInfo.bind(this));
++    if (isManagedMcp) {
++      this.group.on("getSource", this.getSource.bind(this));
++    }
+     this.group.on("updateRunStatus", this.updateRunStatus.bind(this));
+     this.group.on("getFilterResult", this.getFilterResult.bind(this));
+     this.group.on("getScriptRunResourceByUUID", this.getScriptRunResourceByUUID.bind(this));
+diff --git a/src/app/service/service_worker/subscribe.ts b/src/app/service/service_worker/subscribe.ts
+index 5ec19875a6dc3cb4dbc80c328b4584f99d6104ce..7c5160e5f1f5f9ca1eea5937b21cd8479e580c15 100644
+--- a/src/app/service/service_worker/subscribe.ts
++++ b/src/app/service/service_worker/subscribe.ts
+@@ -17,6 +17,7 @@ import { uuidv4 } from "@App/pkg/utils/uuid";
+ import { CACHE_KEY_SCRIPT_INFO } from "@App/app/cache_key";
+ import i18n, { i18nName } from "@App/locales/locales";
+ import { InfoNotification } from "./utils";
++import { isManagedMcp } from "@App/app/managed_mcp";
+ 
+ export class SubscribeService {
+   logger: Logger;
+@@ -224,7 +225,7 @@ export class SubscribeService {
+         // 进行更新
+         if (true === (await this.trySilenceUpdate(code, url))) {
+           // slience update
+-        } else {
++        } else if (!isManagedMcp || source === "user") {
+           const si = [false, createScriptInfo(uuid, code, url, source, metadata), {}];
+           await cacheInstance.set(`${CACHE_KEY_SCRIPT_INFO}${uuid}`, si);
+           chrome.tabs.create({
+-- 
+2.43.0

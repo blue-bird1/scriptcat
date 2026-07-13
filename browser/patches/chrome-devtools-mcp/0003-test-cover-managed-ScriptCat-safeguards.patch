@@ -1,0 +1,190 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bluebird <linlanxi7552659@gmail.com>
+Date: Tue, 14 Jul 2026 04:38:39 +0800
+Subject: [PATCH 3/3] test: cover managed ScriptCat safeguards
+
+---
+ tests/ProfileLock.test.ts      | 58 ++++++++++++++++++++++++++++++++++
+ tests/ScriptCatManager.test.ts | 55 ++++++++++++++++++++++++++++++++
+ tests/cli.test.ts              | 34 ++++++++++++++++++++
+ 3 files changed, 147 insertions(+)
+ create mode 100644 tests/ProfileLock.test.ts
+ create mode 100644 tests/ScriptCatManager.test.ts
+
+diff --git a/tests/ProfileLock.test.ts b/tests/ProfileLock.test.ts
+new file mode 100644
+index 0000000..68ac1d1
+--- /dev/null
++++ b/tests/ProfileLock.test.ts
+@@ -0,0 +1,58 @@
++/**
++ * @license
++ * Copyright 2026 Google LLC
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import assert from 'node:assert';
++import {spawn} from 'node:child_process';
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++import {afterEach, describe, it} from 'node:test';
++
++import {ManagedMcpError} from '../src/ManagedMcpError.js';
++import {
++  acquireProfileLock,
++  PROFILE_LOCK_FILENAME,
++  releaseProfileLock,
++} from '../src/ProfileLock.js';
++
++describe('managed profile lock', () => {
++  afterEach(async () => {
++    await releaseProfileLock();
++  });
++
++  it('reports PROFILE_BUSY while another process owns the profile', async () => {
++    const profile = await fs.mkdtemp(
++      path.join(os.tmpdir(), 'scriptcat-profile-lock-'),
++    );
++    const lockPath = path.join(profile, PROFILE_LOCK_FILENAME);
++    const holder = spawn(
++      'flock',
++      [
++        '--exclusive',
++        lockPath,
++        'sh',
++        '-c',
++        "printf 'LOCKED\\n'; cat >/dev/null",
++      ],
++      {stdio: ['pipe', 'pipe', 'pipe']},
++    );
++    try {
++      await new Promise<void>((resolve, reject) => {
++        holder.once('error', reject);
++        holder.stdout.once('data', () => resolve());
++      });
++      await assert.rejects(acquireProfileLock(profile), error => {
++        assert.ok(error instanceof ManagedMcpError);
++        assert.strictEqual(error.code, 'PROFILE_BUSY');
++        return true;
++      });
++    } finally {
++      holder.stdin.end();
++      holder.kill('SIGTERM');
++      await fs.rm(profile, {recursive: true, force: true});
++    }
++  });
++});
+diff --git a/tests/ScriptCatManager.test.ts b/tests/ScriptCatManager.test.ts
+new file mode 100644
+index 0000000..c72de9f
+--- /dev/null
++++ b/tests/ScriptCatManager.test.ts
+@@ -0,0 +1,55 @@
++/**
++ * @license
++ * Copyright 2026 Google LLC
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import assert from 'node:assert';
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++import {describe, it} from 'node:test';
++
++import {ManagedMcpError} from '../src/ManagedMcpError.js';
++import {ScriptCatManager} from '../src/ScriptCatManager.js';
++import type {Browser} from '../src/third_party/index.js';
++
++describe('ScriptCatManager', () => {
++  it('rejects a symlink that escapes the configured repository', async () => {
++    const tempRoot = await fs.mkdtemp(
++      path.join(os.tmpdir(), 'scriptcat-manager-'),
++    );
++    const extensionPath = path.join(tempRoot, 'extension');
++    const repositoryRoot = path.join(tempRoot, 'repository');
++    const outsidePath = path.join(tempRoot, 'outside.user.js');
++    const escapedPath = path.join(repositoryRoot, 'escaped.user.js');
++    await Promise.all([
++      fs.mkdir(extensionPath),
++      fs.mkdir(repositoryRoot),
++      fs.writeFile(
++        outsidePath,
++        '// ==UserScript==\n// @name Outside\n// ==/UserScript==\n',
++      ),
++    ]);
++    await fs.symlink(outsidePath, escapedPath);
++
++    try {
++      const manager = await ScriptCatManager.create({} as Browser, {
++        extensionPath,
++        extensionId: 'ckchkcgpbkhleahkgkbiiikpcjdbopje',
++        repositoryRoot,
++        timeout: 1_000,
++      });
++      await assert.rejects(
++        manager.upsertScript({filePath: escapedPath}),
++        error => {
++          assert.ok(error instanceof ManagedMcpError);
++          assert.strictEqual(error.code, 'INVALID_USERSCRIPT');
++          return true;
++        },
++      );
++    } finally {
++      await fs.rm(tempRoot, {recursive: true, force: true});
++    }
++  });
++});
+diff --git a/tests/cli.test.ts b/tests/cli.test.ts
+index 25f07d1..3180992 100644
+--- a/tests/cli.test.ts
++++ b/tests/cli.test.ts
+@@ -29,6 +29,10 @@ describe('cli args parsing', () => {
+     usageStatistics: true,
+     'redact-network-headers': false,
+     redactNetworkHeaders: false,
++    'browser-transport': 'pipe',
++    browserTransport: 'pipe',
++    'scriptcat-timeout': 15000,
++    scriptcatTimeout: 15000,
+   };
+ 
+   it('parses with default args', async () => {
+@@ -76,6 +80,36 @@ describe('cli args parsing', () => {
+     });
+   });
+ 
++  it('enables managed ScriptCat with a complete configuration', () => {
++    const args = parseArguments(
++      '1.0.0',
++      [
++        'node',
++        'main.js',
++        '--executable-path=/opt/chrome/chrome',
++        '--user-data-dir=/tmp/scriptcat-profile',
++        '--managed-scriptcat-path=/opt/scriptcat',
++        '--scriptcat-repository-root=/work/scriptcat',
++        '--scriptcat-extension-id=ckchkcgpbkhleahkgkbiiikpcjdbopje',
++      ],
++      {},
++    );
++    assert.strictEqual(args.categoryExtensions, true);
++    assert.strictEqual(args.browserTransport, 'pipe');
++    assert.strictEqual(args.managedScriptcatPath, '/opt/scriptcat');
++    assert.strictEqual(args.scriptcatRepositoryRoot, '/work/scriptcat');
++  });
++
++  it('rejects an incomplete managed ScriptCat configuration', () => {
++    assert.throws(() => {
++      parseArguments(
++        '1.0.0',
++        ['node', 'main.js', '--managed-scriptcat-path=/opt/scriptcat'],
++        {},
++      );
++    });
++  });
++
+   it('parses an empty browser url', async () => {
+     const args = parseArguments(
+       '1.0.0',

@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "chromium": {
+    "version": "148.0.7778.215",
+    "commit": "7c855c70efe3f6ade6663c1520913fa7f63a0b2b",
+    "source": "https://chromium.googlesource.com/chromium/src.git"
+  },
+  "chrome_devtools_mcp": {
+    "version": "1.5.0",
+    "commit": "913308263bdc8042af74924b68dc39a374ad071d",
+    "source": "https://github.com/ChromeDevTools/chrome-devtools-mcp.git"
+  },
+  "depot_tools": {
+    "version": "chromium-148-deps",
+    "commit": "41c40cfaec7ee3bf0423c59925d8b23982a601f1",
+    "source": "https://chromium.googlesource.com/chromium/tools/depot_tools.git"
+  },
+  "scriptcat": {
+    "version": "1.3.2",
+    "commit": "faad224359bae7cc0bb7cff9d28e845928bdb9b1",
+    "source": "https://github.com/scriptscat/scriptcat.git"
+  },
+  "patch_stacks": [
+    {
+      "target": "chromium",
+      "path": "browser/patches/chromium",
+      "sha256": "3e2465d9f489c8fb519e41030f697496de19c134a9d91e46bfd2056df50908e9"
+    },
+    {
+      "target": "chrome-devtools-mcp",
+      "path": "browser/patches/chrome-devtools-mcp",
+      "sha256": "233fe800d74ba3a3398cdba76ec171f2bff4a149eca420507191c7ef7e741ba3"
+    },
+    {
+      "target": "scriptcat",
+      "path": "browser/patches/scriptcat",
+      "sha256": "44a56b85dce1cbb49d78e63ab64dc0a2fdb74becc1f07687b693dd50e1505248"
+    }
+  ]
+}

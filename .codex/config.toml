@@ -1,0 +1,28 @@
+[features]
+hooks = true
+
+[mcp_servers.chrome-devtools-scriptcat]
+command = "node"
+args = [
+  "/home/bluebird/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js",
+  "--executable-path=/home/bluebird/.local/share/scriptcat-mcp/current/chromium/chrome-linux/chrome",
+  "--user-data-dir=/home/bluebird/.codex/chrome-devtools-scriptcat-chromium-profile",
+  "--proxy-server=http://127.0.0.1:7891",
+  "--managed-scriptcat-path=/home/bluebird/.codex/chrome-extensions/scriptcat/v1.3.2",
+  "--scriptcat-repository-root=/home/bluebird/git/scriptcat",
+  "--scriptcat-extension-id=ckchkcgpbkhleahkgkbiiikpcjdbopje",
+  "--headless",
+  "--browser-transport=pipe",
+  "--no-usage-statistics",
+  "--chrome-arg=--enable-unsafe-extension-debugging",
+  "--chrome-arg=--disable-setuid-sandbox",
+  "--chrome-arg=--no-first-run",
+]
+
+[[hooks.PreToolUse]]
+
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "uv run --project scripts --python 3.12 python scripts/hooks/block-local-chromium-build-commands.py"
+timeout = 10
+statusMessage = "Guarding Chromium remote-build policy"

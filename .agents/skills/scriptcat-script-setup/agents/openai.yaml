@@ -1,0 +1,7 @@
+interface:
+  display_name: "ScriptCat Script Setup"
+  short_description: "Prepare ScriptCat with portable Chromium MCP"
+  default_prompt: "Use $scriptcat-script-setup to check managed ScriptCat with scriptcat_status, update the target repository userscript with scriptcat_upsert_script, then verify it on a real matching page through the portable Chromium MCP."
+
+policy:
+  allow_implicit_invocation: true

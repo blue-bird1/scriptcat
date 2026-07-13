@@ -55,9 +55,25 @@
 !vendor/
 !vendor/page-agent.js
 
+# ScriptCat MCP source pins, patch stacks, and remote build tooling.
+!browser/
+!browser/upstreams.lock.json
+!browser/patches/
+!browser/patches/**
+!scripts/pyproject.toml
+!scripts/remote/
+!scripts/remote/**
+scripts/remote/__pycache__/
+scripts/remote/**/*.pyc
+!scripts/hooks/
+!scripts/hooks/block-local-chromium-build-commands.py
+
 # Project-scoped Codex MCP setup for ScriptCat debugging.
-# !.codex/
-# !.codex/config.toml
-#!scripts/mcp/
-#!scripts/mcp/chrome-devtools-scriptcat-mcp
-#!scripts/mcp/scriptcat-vscode-sync-server.mjs
+!.codex/
+!.codex/config.toml
+
+# Project-local skill used by ScriptCat MCP setup.
+!.agents/
+!.agents/skills/
+!.agents/skills/scriptcat-script-setup/
+!.agents/skills/scriptcat-script-setup/**
