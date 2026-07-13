@@ -10,6 +10,7 @@ import type { Permission } from "./repo/permission";
 import { PermissionDAO } from "./repo/permission";
 import { DocumentationSite } from "./const";
 import { LocalStorageDAO } from "./repo/localStorage";
+import { isManagedMcp } from "./managed_mcp";
 
 // 迁移数据到chrome.storage
 export function migrateToChromeStorage() {
@@ -189,9 +190,11 @@ export function migrateToChromeStorage() {
         const scripts = await scriptDAO.all();
         console.log("脚本数据迁移完成", scripts.length);
         if (scripts.length > 0) {
-          chrome.tabs.create({
-            url: `${DocumentationSite}/docs/change/v0.17/`,
-          });
+          if (!isManagedMcp()) {
+            chrome.tabs.create({
+              url: `${DocumentationSite}/docs/change/v0.17/`,
+            });
+          }
           setTimeout(() => {
             chrome.runtime.reload();
           }, 1000);

@@ -17,6 +17,7 @@ import { uuidv4 } from "@App/pkg/utils/uuid";
 import { CACHE_KEY_SCRIPT_INFO } from "@App/app/cache_key";
 import i18n, { i18nName } from "@App/locales/locales";
 import { InfoNotification } from "./utils";
+import { isManagedMcp } from "@App/app/managed_mcp";
 
 export class SubscribeService {
   logger: Logger;
@@ -206,6 +207,7 @@ export class SubscribeService {
 
   // 检查更新
   async checkUpdate(url: string, source: InstallSource) {
+    if (isManagedMcp() && source === "system") return false;
     const subscribe = await this.subscribeDAO.get(url);
     if (!subscribe) {
       return false;
@@ -224,7 +226,7 @@ export class SubscribeService {
         // 进行更新
         if (true === (await this.trySilenceUpdate(code, url))) {
           // slience update
-        } else {
+        } else if (!isManagedMcp() || source === "user") {
           const si = [false, createScriptInfo(uuid, code, url, source, metadata), {}];
           await cacheInstance.set(`${CACHE_KEY_SCRIPT_INFO}${uuid}`, si);
           chrome.tabs.create({

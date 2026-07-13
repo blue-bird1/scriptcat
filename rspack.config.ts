@@ -10,6 +10,14 @@ const dirname = path.resolve();
 const isDev = process.env.NODE_ENV === "development";
 const isBeta = version.includes("-");
 const isReactTools = process.env.REACT_DEVTOOLS === "true";
+const isManagedMcp = process.env.SC_MANAGED_MCP === "true";
+const managedMcpRandomKey = isManagedMcp ? process.env.SC_MANAGED_MCP_RANDOM_KEY : undefined;
+
+if (isManagedMcp && !managedMcpRandomKey?.trim()) {
+  throw new Error("SC_MANAGED_MCP_RANDOM_KEY is required for managed MCP builds");
+}
+
+const randomKey = managedMcpRandomKey ?? uuidv4();
 
 // Target browsers, see: https://github.com/browserslist/browserslist
 // 依照 https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/userScripts#browser_compatibility
@@ -127,7 +135,8 @@ export default {
   plugins: [
     new rspack.DefinePlugin({
       "process.env.VI_TESTING": "'false'",
-      "process.env.SC_RANDOM_KEY": `'${uuidv4()}'`,
+      "process.env.SC_RANDOM_KEY": JSON.stringify(randomKey),
+      "process.env.SC_MANAGED_MCP": JSON.stringify(isManagedMcp ? "true" : "false"),
     }),
     new rspack.CopyRspackPlugin({
       patterns: [

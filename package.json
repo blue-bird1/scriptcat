@@ -14,6 +14,7 @@
     "coverage:ci": "vitest run --coverage --silent --reporter=default --reporter.default.summary=false",
     "typecheck": "tsc --noEmit",
     "build": "cross-env NODE_ENV=production rspack build",
+    "build:managed-mcp": "cross-env NODE_ENV=production SC_MANAGED_MCP=true rspack build",
     "dev": "cross-env NODE_ENV=development rspack",
     "dev:react-devtools": "cross-env NODE_ENV=development REACT_DEVTOOLS=true rspack",
     "dev:noMap": "cross-env NODE_ENV=development NO_MAP=true rspack",

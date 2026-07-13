@@ -47,6 +47,7 @@ import { getSimilarityScore, ScriptUpdateCheck } from "./script_update_check";
 import { LocalStorageDAO } from "@App/app/repo/localStorage";
 import { CompiledResourceDAO } from "@App/app/repo/resource";
 import { initRegularUpdateCheck } from "./regular_updatecheck";
+import { isManagedMcp } from "@App/app/managed_mcp";
 
 export type TCheckScriptUpdateOption = Partial<
   { checkType: "user"; noUpdateCheck?: number } | ({ checkType: "system" } & Record<string, any>)
@@ -581,6 +582,11 @@ export class ScriptService {
     return script;
   }
 
+  async getSource(uuid: string): Promise<string | null> {
+    const scriptCode = await this.scriptCodeDAO.get(uuid);
+    return scriptCode?.code ?? null;
+  }
+
   async updateRunStatus(params: { uuid: string; runStatus: SCRIPT_RUN_STATUS; error?: string; nextruntime?: number }) {
     // 如果脚本删除了就不再更新状态
     const script = await this.scriptDAO.get(params.uuid);
@@ -891,6 +897,7 @@ export class ScriptService {
 
   // 打开更新窗口
   public async openUpdatePage(script: Script, source: "user" | "system") {
+    if (isManagedMcp() && source === "system") return;
     const { uuid, name, downloadUrl, checkUpdateUrl } = script;
     const logger = this.logger.with({
       uuid,
@@ -939,6 +946,12 @@ export class ScriptService {
         err?: string | Error;
       }
   > {
+    if (isManagedMcp() && opts.checkType === "system") {
+      return {
+        ok: false,
+        err: "Managed MCP does not run system update checks.",
+      };
+    }
     // const executeSlienceUpdate = opts.checkType === "system";
     const executeSlienceUpdate = opts.checkType === "system" && (await this.systemConfig.getSilenceUpdateScript());
     // const executeSlienceUpdate = true;
@@ -1406,6 +1419,9 @@ export class ScriptService {
     this.group.on("enable", this.enableScript.bind(this));
     this.group.on("enables", this.enableScripts.bind(this));
     this.group.on("fetchInfo", this.fetchInfo.bind(this));
+    if (isManagedMcp()) {
+      this.group.on("getSource", this.getSource.bind(this));
+    }
     this.group.on("updateRunStatus", this.updateRunStatus.bind(this));
     this.group.on("getFilterResult", this.getFilterResult.bind(this));
     this.group.on("getScriptRunResourceByUUID", this.getScriptRunResourceByUUID.bind(this));

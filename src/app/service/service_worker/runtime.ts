@@ -51,6 +51,7 @@ import type { CompiledResource, ResourceType } from "@App/app/repo/resource";
 import { CompiledResourceDAO } from "@App/app/repo/resource";
 import { setOnTabURLChanged } from "./url_monitor";
 import { scriptToMenu, type TPopupPageLoadInfo } from "./popup_scriptmenu";
+import { isManagedMcp } from "@App/app/managed_mcp";
 
 const ORIGINAL_URLMATCH_SUFFIX = "{ORIGINAL}"; // 用于标记原始URLPatterns的后缀
 
@@ -620,7 +621,7 @@ export class RuntimeService {
       this.updateIcon();
 
       // 检查是否开启了开发者模式
-      if (!this.isUserScriptsAvailable) {
+      if (!this.isUserScriptsAvailable && !isManagedMcp()) {
         // 未开启加上警告引导
         this.showNoDeveloperModeWarning();
         let cid: ReturnType<typeof setInterval> | number;

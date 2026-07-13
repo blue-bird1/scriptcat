@@ -21,6 +21,12 @@ import { FaviconDAO } from "@App/app/repo/favicon";
 import { onRegularUpdateCheckAlarm } from "./regular_updatecheck";
 import { cacheInstance } from "@App/app/cache";
 import { InfoNotification } from "./utils";
+import {
+  isManagedMcp,
+  registerManagedMcpRoutes,
+  REGULAR_EXTENSION_UPDATE_ALARM,
+  REGULAR_SCRIPT_UPDATE_ALARM,
+} from "@App/app/managed_mcp";
 
 // service worker的管理器
 export default class ServiceWorkerManager {
@@ -37,6 +43,7 @@ export default class ServiceWorkerManager {
   }
 
   initManager() {
+    registerManagedMcpRoutes(this.api);
     this.api.on("logger", this.logger.bind(this));
     this.api.on("preparationOffscreen", async () => {
       // 准备好环境
@@ -137,8 +144,8 @@ export default class ServiceWorkerManager {
         // 非预期的异常API错误，停止处理
       }
       switch (alarm.name) {
-        case "checkScriptUpdate":
-          regularScriptUpdateCheck();
+        case REGULAR_SCRIPT_UPDATE_ALARM:
+          if (!isManagedMcp()) regularScriptUpdateCheck();
           break;
         case "cloudSync":
           // 进行一次云同步
@@ -148,37 +155,42 @@ export default class ServiceWorkerManager {
             });
           });
           break;
-        case "checkUpdate":
+        case REGULAR_EXTENSION_UPDATE_ALARM:
           // 检查扩展更新
-          regularExtensionUpdateCheck();
+          if (!isManagedMcp()) regularExtensionUpdateCheck();
           break;
       }
     });
-    // 12小时检查一次扩展更新
-    chrome.alarms.get("checkUpdate", (alarm) => {
-      const lastError = chrome.runtime.lastError;
-      if (lastError) {
-        console.error("chrome.runtime.lastError in chrome.alarms.get:", lastError);
-        // 非预期的异常API错误，停止处理
-      }
-      if (!alarm) {
-        chrome.alarms.create(
-          "checkUpdate",
-          {
-            delayInMinutes: 0,
-            periodInMinutes: 12 * 60,
-          },
-          () => {
-            const lastError = chrome.runtime.lastError;
-            if (lastError) {
-              console.error("chrome.runtime.lastError in chrome.alarms.create:", lastError);
-              // Starting in Chrome 117, the number of active alarms is limited to 500. Once this limit is reached, chrome.alarms.create() will fail.
-              console.error("Chrome alarm is unable to create. Please check whether limit is reached.");
+    if (isManagedMcp()) {
+      chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM);
+      chrome.alarms.clear(REGULAR_EXTENSION_UPDATE_ALARM);
+    } else {
+      // 12小时检查一次扩展更新
+      chrome.alarms.get(REGULAR_EXTENSION_UPDATE_ALARM, (alarm) => {
+        const lastError = chrome.runtime.lastError;
+        if (lastError) {
+          console.error("chrome.runtime.lastError in chrome.alarms.get:", lastError);
+          // 非预期的异常API错误，停止处理
+        }
+        if (!alarm) {
+          chrome.alarms.create(
+            REGULAR_EXTENSION_UPDATE_ALARM,
+            {
+              delayInMinutes: 0,
+              periodInMinutes: 12 * 60,
+            },
+            () => {
+              const lastError = chrome.runtime.lastError;
+              if (lastError) {
+                console.error("chrome.runtime.lastError in chrome.alarms.create:", lastError);
+                // Starting in Chrome 117, the number of active alarms is limited to 500. Once this limit is reached, chrome.alarms.create() will fail.
+                console.error("Chrome alarm is unable to create. Please check whether limit is reached.");
+              }
             }
-          }
-        );
-      }
-    });
+          );
+        }
+      });
+    }
 
     // 云同步
     systemConfig.watch("cloud_sync", (value) => {
@@ -194,7 +206,7 @@ export default class ServiceWorkerManager {
       return true;
     });
 
-    if (process.env.NODE_ENV === "production") {
+    if (process.env.NODE_ENV === "production" && !isManagedMcp()) {
       chrome.runtime.onInstalled.addListener((details) => {
         const lastError = chrome.runtime.lastError;
         if (lastError) {
@@ -251,6 +263,7 @@ export default class ServiceWorkerManager {
         _navUrl: string,
         _tab: chrome.tabs.Tab
       ) => {
+        if (isManagedMcp()) return;
         // 已忽略后台换页
         // 在非私隐模式，正常Tab的操作下，用户的打开新Tab，或在当时Tab转至新网域时，会触发此function
         // 同一网域，SPA换页等不触发

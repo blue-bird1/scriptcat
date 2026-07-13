@@ -1,4 +1,5 @@
 import { type SystemConfig } from "@App/pkg/config/config";
+import { isManagedMcp, REGULAR_SCRIPT_UPDATE_ALARM } from "@App/app/managed_mcp";
 import { type ScriptService } from "./script";
 import { type SubscribeService } from "./subscribe";
 
@@ -14,6 +15,10 @@ const ALLOW_CHECK_DELAY_MS = 3000;
 export let allowRegularUpdateCheck = 0; // 避免SW启动时alarm触发
 
 export const initRegularUpdateCheck = async (systemConfig: SystemConfig) => {
+  if (isManagedMcp()) {
+    chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM);
+    return;
+  }
   // regularScriptUpdateCheck
   const [result, updateCycleSecond] = await Promise.all([
     chrome.storage.local.get(["checkupdate_script_lasttime"]),
@@ -24,7 +29,7 @@ export const initRegularUpdateCheck = async (systemConfig: SystemConfig) => {
     // SW启动时，即使停用了更新功能也要设置一下变数值
     allowRegularUpdateCheck = now + ALLOW_CHECK_DELAY_MS; // 可以触发alarm的更新程序了
     // 设定更改的话，现时的Alarm需要清除。不判断是否SW启动了，总之就清除一下
-    chrome.alarms.clear("checkScriptUpdate"); // 如没有可以清除的Alarm，Promise会返回false
+    chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM); // 如没有可以清除的Alarm，Promise会返回false
     // 不需要检查更新。退出操作
     return;
   }
@@ -43,7 +48,7 @@ export const initRegularUpdateCheck = async (systemConfig: SystemConfig) => {
   targetPeriodInMinutes = Math.ceil(targetPeriodInMinutes / 5) * 5; // 5的倍数
   if (targetPeriodInMinutes < 15) targetPeriodInMinutes = 15; // 至少15分钟
   chrome.alarms.create(
-    "checkScriptUpdate",
+    REGULAR_SCRIPT_UPDATE_ALARM,
     {
       when,
       periodInMinutes: targetPeriodInMinutes,
@@ -75,6 +80,7 @@ export const onRegularUpdateCheckAlarm = async (
   script: ScriptService,
   subscribe?: SubscribeService
 ) => {
+  if (isManagedMcp()) return null;
   const now = Date.now();
   if (!allowRegularUpdateCheck || now < allowRegularUpdateCheck) return null; // 避免SW启动时alarm触发
   const [result, updateCycleSecond] = await Promise.all([
@@ -84,7 +90,7 @@ export const onRegularUpdateCheckAlarm = async (
   if (updateCycleSecond === 0) {
     // 按道理，不会跑到这个条件
     // Alarm应没有触发才对。无论为何，还是清一下alarm吧
-    chrome.alarms.clear("checkScriptUpdate");
+    chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM);
     // 不需要检查更新。退出操作
     return null;
   }
