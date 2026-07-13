@@ -1,0 +1,130 @@
+From c8e91b34741294fde59ae6ca20ccde4eb6422553 Mon Sep 17 00:00:00 2001
+From: bluebird <linlanxi7552659@gmail.com>
+Date: Tue, 14 Jul 2026 04:30:49 +0800
+Subject: [PATCH 1/2] DevTools: add Extensions.setUserScriptsAccess
+
+Add a browser-target-only CDP command for changing the current profile's per-extension userScripts access preference. Reuse the existing unsafe extension operation gate, which requires the pipe client capability and --enable-unsafe-extension-debugging, then restrict the extension to enabled unpacked installations that declare userScripts.
+
+Base-Revision: 7c855c70efe3f6ade6663c1520913fa7f63a0b2b
+---
+ .../devtools/protocol/extensions_handler.cc   | 50 +++++++++++++++++++
+ .../devtools/protocol/extensions_handler.h    |  5 +-
+ .../devtools_protocol/domains/Extensions.pdl  | 12 +++++
+ 3 files changed, 66 insertions(+), 1 deletion(-)
+
+diff --git a/chrome/browser/devtools/protocol/extensions_handler.cc b/chrome/browser/devtools/protocol/extensions_handler.cc
+index 3769f79..73d2734 100644
+--- a/chrome/browser/devtools/protocol/extensions_handler.cc
++++ b/chrome/browser/devtools/protocol/extensions_handler.cc
+@@ -23,8 +23,11 @@
+ #include "content/public/browser/web_contents.h"
+ #include "extensions/browser/api/storage/storage_area_namespace.h"
+ #include "extensions/browser/api/storage/storage_utils.h"
++#include "extensions/browser/extension_registry.h"
+ #include "extensions/browser/extension_registrar.h"
++#include "extensions/browser/extension_system.h"
+ #include "extensions/browser/unpacked_installer.h"
++#include "extensions/browser/user_script_manager.h"
+ #include "extensions/common/manifest.h"
+ 
+ namespace {
+@@ -291,6 +294,53 @@ protocol::Response ExtensionsHandler::GetExtensions(
+   return protocol::Response::Success();
+ }
+ 
++protocol::DispatchResponse ExtensionsHandler::SetUserScriptsAccess(
++    const protocol::String& id,
++    bool enabled) {
++  if (!allow_loading_extensions_) {
++    return protocol::Response::ServerError("Method not available.");
++  }
++
++  auto host = content::DevToolsAgentHost::GetForId(target_id_);
++  if (!host ||
++      host->GetType() != content::DevToolsAgentHost::kTypeBrowser) {
++    return protocol::Response::ServerError(
++        "Method is only available on the browser target.");
++  }
++
++  content::BrowserContext* context =
++      DevToolsBrowserContextManager::GetInstance().GetDefaultBrowserContext();
++  if (!context) {
++    return protocol::Response::ServerError(
++        "Could not find the current browser context.");
++  }
++
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(context);
++  const extensions::Extension* extension =
++      registry ? registry->enabled_extensions().GetByID(id) : nullptr;
++  if (!extension) {
++    return protocol::Response::InvalidRequest(
++        "Extension is not installed and enabled in the current profile.");
++  }
++
++  if (!extensions::Manifest::IsUnpackedLocation(extension->location())) {
++    return protocol::Response::InvalidRequest(
++        "Extension is not an unpacked extension.");
++  }
++
++  if (!extensions::UserScriptManager::IsUserScriptsAPIPermissionAvailable(
++          *extension)) {
++    return protocol::Response::InvalidRequest(
++        "Extension does not declare the userScripts permission.");
++  }
++
++  extensions::ExtensionSystem::Get(context)
++      ->user_script_manager()
++      ->SetUserScriptPrefEnabled(id, enabled);
++  return protocol::DispatchResponse::Success();
++}
++
+ void ExtensionsHandler::Uninstall(const protocol::String& id,
+                                   std::unique_ptr<UninstallCallback> callback) {
+   if (!allow_loading_extensions_) {
+diff --git a/chrome/browser/devtools/protocol/extensions_handler.h b/chrome/browser/devtools/protocol/extensions_handler.h
+index e9bf529..364ca23 100644
+--- a/chrome/browser/devtools/protocol/extensions_handler.h
++++ b/chrome/browser/devtools/protocol/extensions_handler.h
+@@ -37,6 +37,9 @@ class ExtensionsHandler : public protocol::Extensions::Backend {
+   protocol::Response GetExtensions(
+       std::unique_ptr<protocol::Array<protocol::Extensions::ExtensionInfo>>*
+           out_result) override;
++  protocol::DispatchResponse SetUserScriptsAccess(
++      const protocol::String& id,
++      bool enabled) override;
+   void Uninstall(const protocol::String& id,
+                  std::unique_ptr<UninstallCallback> callback) override;
+   void OnUninstalled(std::unique_ptr<UninstallCallback> callback);
+@@ -75,7 +78,7 @@ class ExtensionsHandler : public protocol::Extensions::Backend {
+   const std::string target_id_;
+ 
+   // This flag enables an extra security layer for `loadUnpacked`,
+-  // `uninstall`, and `triggerAction`.
++  // `uninstall`, `triggerAction`, and `setUserScriptsAccess`.
+   // This security is vital because these functions perform high-risk
+   // operations:
+   // -   `loadUnpacked` and `uninstall` interact with extensions
+diff --git a/third_party/blink/public/devtools_protocol/domains/Extensions.pdl b/third_party/blink/public/devtools_protocol/domains/Extensions.pdl
+index 8b3da10..5aadbff 100644
+--- a/third_party/blink/public/devtools_protocol/domains/Extensions.pdl
++++ b/third_party/blink/public/devtools_protocol/domains/Extensions.pdl
+@@ -60,6 +60,18 @@ experimental domain Extensions
+     returns
+       array of ExtensionInfo extensions
+ 
++  # Sets whether an unpacked extension in the current profile may use the
++  # userScripts API. The extension must be enabled and declare the userScripts
++  # permission. Available if the client is connected using the
++  # --remote-debugging-pipe flag and the --enable-unsafe-extension-debugging
++  # flag is set.
++  command setUserScriptsAccess
++    parameters
++      # Extension id.
++      string id
++      # Whether the extension may use the userScripts API.
++      boolean enabled
++
+   # Uninstalls an unpacked extension (others not supported) from the profile.
+   # Available if the client is connected using the --remote-debugging-pipe flag
+   # and the --enable-unsafe-extension-debugging.

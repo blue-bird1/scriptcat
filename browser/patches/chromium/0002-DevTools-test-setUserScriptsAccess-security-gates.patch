@@ -1,0 +1,179 @@
+From eb511b3de97c4201cd61ddfab7fa4b55623a631a Mon Sep 17 00:00:00 2001
+From: bluebird <linlanxi7552659@gmail.com>
+Date: Tue, 14 Jul 2026 04:30:49 +0800
+Subject: [PATCH 2/2] DevTools: test setUserScriptsAccess security gates
+
+Exercise the public CDP command for both preference transitions and each security boundary: pipe capability, unsafe switch, browser target, current profile, enabled state, unpacked location, and userScripts manifest permission.
+
+Base-Revision: 7c855c70efe3f6ade6663c1520913fa7f63a0b2b
+---
+ .../devtools_extensions_browsertest.cc        | 139 ++++++++++++++++++
+ 1 file changed, 139 insertions(+)
+
+diff --git a/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc b/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc
+index 49ea58e..e144417 100644
+--- a/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc
++++ b/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc
+@@ -28,9 +28,11 @@
+ #include "content/public/browser/browser_context.h"
+ #include "content/public/browser/devtools_agent_host.h"
+ #include "content/public/test/browser_test.h"
++#include "extensions/browser/disable_reason.h"
+ #include "extensions/browser/extension_registrar.h"
+ #include "extensions/browser/extension_registry.h"
+ #include "extensions/browser/extension_system.h"
++#include "extensions/browser/user_script_manager.h"
+ #include "extensions/browser/extension_util.h"
+ #include "extensions/common/extension.h"
+ #include "extensions/common/extension_builder.h"
+@@ -71,6 +73,37 @@ class DevToolsExtensionsProtocolTest : public DevToolsProtocolTestBase {
+     return SendCommandSync("Extensions.loadUnpacked", std::move(params));
+   }
+ 
++  extensions::UserScriptManager* GetUserScriptManager() {
++    return extensions::ExtensionSystem::Get(browser()->profile())
++        ->user_script_manager();
++  }
++
++  const base::DictValue* SendSetUserScriptsAccessCommand(
++      const std::string& id,
++      bool enabled) {
++    base::DictValue params;
++    params.Set("id", id);
++    params.Set("enabled", enabled);
++    return SendCommandSync("Extensions.setUserScriptsAccess",
++                           std::move(params));
++  }
++
++  scoped_refptr<const extensions::Extension> InstallTestExtension(
++      const std::string& name,
++      extensions::mojom::ManifestLocation location,
++      bool declares_user_scripts) {
++    extensions::ExtensionBuilder builder(name);
++    builder.SetManifestVersion(3).SetLocation(location);
++    if (declares_user_scripts) {
++      builder.AddAPIPermission("userScripts");
++    }
++
++    scoped_refptr<const extensions::Extension> extension = builder.Build();
++    extensions::ExtensionRegistrar::Get(browser()->profile())
++        ->AddExtension(extension.get());
++    return extension;
++  }
++
+   scoped_refptr<const extensions::Extension> InstallExtensionFromPath(
+       const std::string& path) {
+     extensions::ChromeTestExtensionLoader loader(browser()->profile());
+@@ -120,6 +153,112 @@ class DevToolsExtensionsProtocolWithUnsafeDebuggingTest
+   base::test::ScopedFeatureList scoped_feature_list_;
+ };
+ 
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       CanSetUserScriptsAccess) {
++  auto extension = InstallTestExtension(
++      "user scripts", extensions::mojom::ManifestLocation::kUnpacked,
++      /*declares_user_scripts=*/true);
++  extensions::UserScriptManager* manager = GetUserScriptManager();
++  ASSERT_FALSE(
++      manager->IsUserScriptPrefEnabledForTesting(extension->id()));
++
++  ASSERT_TRUE(SendSetUserScriptsAccessCommand(extension->id(), true));
++  EXPECT_TRUE(manager->IsUserScriptPrefEnabledForTesting(extension->id()));
++
++  ASSERT_TRUE(SendSetUserScriptsAccessCommand(extension->id(), false));
++  EXPECT_FALSE(manager->IsUserScriptPrefEnabledForTesting(extension->id()));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
++                       CannotSetUserScriptsAccessWithoutUnsafeSwitch) {
++  auto extension = InstallTestExtension(
++      "user scripts", extensions::mojom::ManifestLocation::kUnpacked,
++      /*declares_user_scripts=*/true);
++
++  ASSERT_FALSE(SendSetUserScriptsAccessCommand(extension->id(), true));
++  EXPECT_FALSE(GetUserScriptManager()->IsUserScriptPrefEnabledForTesting(
++      extension->id()));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       CannotSetUserScriptsAccessWithoutPipeCapability) {
++  auto extension = InstallTestExtension(
++      "user scripts", extensions::mojom::ManifestLocation::kUnpacked,
++      /*declares_user_scripts=*/true);
++  DetachProtocolClient();
++  SetAllowUnsafeOperations(false);
++  AttachToBrowserTarget();
++
++  ASSERT_FALSE(SendSetUserScriptsAccessCommand(extension->id(), true));
++  EXPECT_FALSE(GetUserScriptManager()->IsUserScriptPrefEnabledForTesting(
++      extension->id()));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       CannotSetUserScriptsAccessFromPageTarget) {
++  auto extension = InstallTestExtension(
++      "user scripts", extensions::mojom::ManifestLocation::kUnpacked,
++      /*declares_user_scripts=*/true);
++  DetachProtocolClient();
++  AttachToWebContents(web_contents());
++
++  ASSERT_FALSE(SendSetUserScriptsAccessCommand(extension->id(), true));
++  EXPECT_FALSE(GetUserScriptManager()->IsUserScriptPrefEnabledForTesting(
++      extension->id()));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       RejectsExtensionAbsentFromCurrentProfile) {
++  auto extension =
++      extensions::ExtensionBuilder("not installed in current profile")
++          .SetManifestVersion(3)
++          .SetLocation(extensions::mojom::ManifestLocation::kUnpacked)
++          .AddAPIPermission("userScripts")
++          .Build();
++
++  ASSERT_FALSE(SendSetUserScriptsAccessCommand(extension->id(), true));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       CannotSetUserScriptsAccessForDisabledExtension) {
++  auto extension = InstallTestExtension(
++      "disabled user scripts",
++      extensions::mojom::ManifestLocation::kUnpacked,
++      /*declares_user_scripts=*/true);
++  extensions::ExtensionRegistrar::Get(browser()->profile())
++      ->DisableExtension(
++          extension->id(),
++          {extensions::disable_reason::DISABLE_USER_ACTION});
++
++  ASSERT_FALSE(SendSetUserScriptsAccessCommand(extension->id(), true));
++  EXPECT_FALSE(GetUserScriptManager()->IsUserScriptPrefEnabledForTesting(
++      extension->id()));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       CannotSetUserScriptsAccessForComponentExtension) {
++  auto extension = InstallTestExtension(
++      "component user scripts",
++      extensions::mojom::ManifestLocation::kComponent,
++      /*declares_user_scripts=*/true);
++
++  ASSERT_FALSE(SendSetUserScriptsAccessCommand(extension->id(), true));
++  EXPECT_FALSE(GetUserScriptManager()->IsUserScriptPrefEnabledForTesting(
++      extension->id()));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       CannotSetUserScriptsAccessWithoutManifestPermission) {
++  auto extension = InstallTestExtension(
++      "no user scripts permission",
++      extensions::mojom::ManifestLocation::kUnpacked,
++      /*declares_user_scripts=*/false);
++
++  ASSERT_FALSE(SendSetUserScriptsAccessCommand(extension->id(), true));
++  EXPECT_FALSE(GetUserScriptManager()->IsUserScriptPrefEnabledForTesting(
++      extension->id()));
++}
++
+ IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest, CannotInstallExtension) {
+   ASSERT_FALSE(SendLoadUnpackedCommand("simple_background_page"));
+ }
