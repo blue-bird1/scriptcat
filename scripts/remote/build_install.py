@@ -130,7 +130,7 @@ def remote_build_script(
 ) -> str:
     patch_lines = "\n".join(patch_stack_command(stack) for stack in lock.patch_stacks)
     return f"""#!/usr/bin/env bash
-set -euo pipefail
+set -Eeuo pipefail
 umask 022
 build_root={shell_quote(config.build_root)}
 checkout={shell_quote(config.checkout)}
@@ -142,6 +142,7 @@ printf 'waiting for remote build lock: %s\n' "$build_root/.build.lock"
 flock -x 9
 printf 'acquired remote build lock: %s\n' "$build_root/.build.lock"
 exec > >(tee -a "$build_root/out/build.log") 2>&1
+trap 'status=$?; trap - ERR; printf "remote build command failed; build log tail follows\n" >&2; tail -n 200 "$build_root/out/build.log" >&2 || true; exit "$status"' ERR
 for process_dir in /proc/[0-9]*; do
   process_id="${{process_dir##*/}}"
   test "$process_id" = "$$" && continue
