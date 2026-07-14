@@ -379,6 +379,9 @@ for relative in excluded_files:
 PY
 test -x "$runtime/chromium/chrome-linux/chrome"
 cd "$mcp"
+test -f package-lock.json
+set_phase mcp-lock-import
+pnpm import
 set_phase mcp-install
 pnpm install --frozen-lockfile
 set_phase mcp-build
