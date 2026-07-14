@@ -27,7 +27,8 @@ if __package__ in (None, ""):
         run_remote_script,
         shell_quote,
     )
-    from remote._lock import PatchStack, UpstreamLock, load_lock
+    from remote._lock import UpstreamLock, load_lock
+    from remote._patching import patch_preparation_script
 else:
     from ._activation import activate_archive
     from ._common import (
@@ -46,7 +47,8 @@ else:
         run_remote_script,
         shell_quote,
     )
-    from ._lock import PatchStack, UpstreamLock, load_lock
+    from ._lock import UpstreamLock, load_lock
+    from ._patching import patch_preparation_script
 
 
 LOCK_PATH = Path("browser/upstreams.lock.json")
@@ -128,7 +130,7 @@ def download_archive(config: RemoteConfig, lock: UpstreamLock) -> Path:
 def remote_build_script(
     config: RemoteConfig, lock: UpstreamLock, project_commit: str, project_origin: str
 ) -> str:
-    patch_lines = "\n".join(patch_stack_command(stack) for stack in lock.patch_stacks)
+    patch_helpers, patch_commands = patch_preparation_script(lock)
     return f"""#!/usr/bin/env bash
 set -Eeuo pipefail
 umask 022
@@ -166,21 +168,8 @@ git -C "$checkout" checkout main
 git -C "$checkout" reset --hard origin/main
 git -C "$checkout" clean -ffd
 test "$(git -C "$checkout" rev-parse HEAD)" = "$project_commit"
-prepare_source() {{
-  local name="$1" source="$2" commit="$3"
-  local destination="$build_root/src/$name"
-  if [ ! -d "$destination/.git" ]; then
-    git clone --filter=blob:none "$source" "$destination"
-  fi
-  if [ -d "$destination/.git/rebase-apply" ]; then
-    git -C "$destination" am --abort
-  fi
-  git -C "$destination" fetch --depth=1 origin "$commit"
-  git -C "$destination" checkout --detach "$commit"
-  git -C "$destination" reset --hard "$commit"
-  git -C "$destination" clean -ffd -e out/
-}}
-prepare_chromium_source() {{
+{patch_helpers}
+ensure_chromium_source() {{
   local destination="$build_root/src/src"
   local legacy="$build_root/src/chromium"
   local source="$1" commit="$2"
@@ -199,14 +188,6 @@ prepare_chromium_source() {{
       git clone --filter=blob:none "$source" "$destination"
     fi
   fi
-  if [ -d "$destination/.git/rebase-apply" ]; then
-    git -C "$destination" am --abort
-  fi
-  git -C "$destination" remote set-url origin "$source"
-  git -C "$destination" fetch --depth=1 origin "$commit"
-  git -C "$destination" checkout --detach --force "$commit"
-  git -C "$destination" reset --hard "$commit"
-  git -C "$destination" clean -ffd
 }}
 prepare_depot_tools() {{
   local destination="$build_root/depot_tools" source="$1" commit="$2"
@@ -225,13 +206,14 @@ export DEPOT_TOOLS_UPDATE=0
 command -v gclient >/dev/null
 command -v gn >/dev/null
 command -v autoninja >/dev/null
-prepare_chromium_source {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
-prepare_source chrome-devtools-mcp {shell_quote(lock.mcp.source)} {shell_quote(lock.mcp.commit)}
-prepare_source scriptcat {shell_quote(lock.scriptcat.source)} {shell_quote(lock.scriptcat.commit)}
+ensure_chromium_source {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
+ensure_source_checkout "$build_root/src/chrome-devtools-mcp" {shell_quote(lock.mcp.source)}
+ensure_source_checkout "$build_root/src/scriptcat" {shell_quote(lock.scriptcat.source)}
 chromium="$build_root/src/src"
 mcp="$build_root/src/chrome-devtools-mcp"
 scriptcat="$build_root/src/scriptcat"
 runtime="$build_root/out/runtime"
+{patch_commands}
 if [ -d "$build_root/src/chromium" ]; then
   printf 'removing obsolete non-gclient Chromium checkout: %s\n' "$build_root/src/chromium"
   rm -rf "$build_root/src/chromium"
@@ -241,6 +223,8 @@ mkdir -p "$runtime/chromium" "$runtime/mcp" "$runtime/scriptcat"
 cd "$build_root/src"
 gclient config --unmanaged --name src {shell_quote(lock.chromium.source)}
 cd "$chromium"
+chromium_head_before_sync=$(git rev-parse HEAD)
+checkout_is_clean "$chromium"
 sync_chromium() {{
   local attempt=1 delay=120 sync_log="$build_root/out/gclient-sync.log"
   while true; do
@@ -263,8 +247,9 @@ sync_chromium() {{
   done
 }}
 sync_chromium
+test "$(git rev-parse HEAD)" = "$chromium_head_before_sync"
+checkout_is_clean "$chromium"
 gclient runhooks
-{patch_lines}
 gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
 autoninja -C out/Release chrome browser_tests
 python3 testing/xvfb.py out/Release/browser_tests \
@@ -340,32 +325,6 @@ mv "$runtime" "$archive_root"
 tar --zstd -C "$build_root/out" -cf "$build_root/out/{ARCHIVE_NAME}" "$(basename "$archive_root")"
 printf 'remote build completed: %s\\n' "$build_id"
 """
-
-
-def patch_stack_command(stack: PatchStack) -> str:
-    checkout_target = "src" if stack.target == "chromium" else stack.target
-    target = shell_quote(checkout_target)
-    patch_path = shell_quote(stack.path.as_posix())
-    expected = shell_quote(stack.sha256)
-    return f'''patches="$checkout"/{patch_path}
-test -d "$patches"
-test -f "$patches/series"
-mapfile -t patch_names < <(sed -e '/^[[:space:]]*#/d' -e '/^[[:space:]]*$/d' "$patches/series")
-test "${{#patch_names[@]}}" -gt 0
-patch_files=()
-for patch_name in "${{patch_names[@]}}"; do
-  case "$patch_name" in
-    *.patch) ;;
-    *) printf 'invalid patch series entry: %s\\n' "$patch_name" >&2; exit 1 ;;
-  esac
-  test "$patch_name" = "${{patch_name##*/}}"
-  test -f "$patches/$patch_name"
-  patch_files+=("$patches/$patch_name")
-done
-test "$(find "$patches" -maxdepth 1 -type f -name '*.patch' | wc -l)" -eq "${{#patch_files[@]}}"
-actual_patch_sha=$(cat "${{patch_files[@]}}" | sha256sum | awk '{{print $1}}')
-test "$actual_patch_sha" = {expected}
-git -C "$build_root/src"/{target} am --3way "${{patch_files[@]}}"'''
 
 
 if __name__ == "__main__":
