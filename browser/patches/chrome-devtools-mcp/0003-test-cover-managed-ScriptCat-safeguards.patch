@@ -6,8 +6,8 @@ Subject: [PATCH 3/3] test: cover managed ScriptCat safeguards
 ---
  tests/ProfileLock.test.ts      | 58 ++++++++++++++++++++++++++++++++++
  tests/ScriptCatManager.test.ts | 55 ++++++++++++++++++++++++++++++++
- tests/cli.test.ts              | 34 ++++++++++++++++++++
- 3 files changed, 147 insertions(+)
+ tests/cli.test.ts              | 41 ++++++++++++++++++++++++
+ 3 files changed, 154 insertions(+)
  create mode 100644 tests/ProfileLock.test.ts
  create mode 100644 tests/ScriptCatManager.test.ts
 
@@ -140,7 +140,11 @@ diff --git a/tests/cli.test.ts b/tests/cli.test.ts
 index 25f07d1..3180992 100644
 --- a/tests/cli.test.ts
 +++ b/tests/cli.test.ts
-@@ -29,6 +29,10 @@ describe('cli args parsing', () => {
+@@ -7,2 +7,3 @@
+ import assert from 'node:assert';
++import {spawnSync} from 'node:child_process';
+ import {describe, it} from 'node:test';
+@@ -29,6 +30,10 @@ describe('cli args parsing', () => {
      usageStatistics: true,
      'redact-network-headers': false,
      redactNetworkHeaders: false,
@@ -151,7 +155,7 @@ index 25f07d1..3180992 100644
    };
  
    it('parses with default args', async () => {
-@@ -76,6 +80,36 @@ describe('cli args parsing', () => {
+@@ -76,6 +81,42 @@ describe('cli args parsing', () => {
      });
    });
  
@@ -176,13 +180,19 @@ index 25f07d1..3180992 100644
 +  });
 +
 +  it('rejects an incomplete managed ScriptCat configuration', () => {
-+    assert.throws(() => {
-+      parseArguments(
-+        '1.0.0',
-+        ['node', 'main.js', '--managed-scriptcat-path=/opt/scriptcat'],
-+        {},
-+      );
-+    });
++    const result = spawnSync(
++      process.execPath,
++      [
++        'build/src/bin/chrome-devtools-mcp.js',
++        '--managed-scriptcat-path=/opt/scriptcat',
++      ],
++      {encoding: 'utf8'},
++    );
++    assert.strictEqual(result.status, 1);
++    assert.match(
++      result.stderr,
++      /managed-scriptcat-path.*must be provided together/,
++    );
 +  });
 +
    it('parses an empty browser url', async () => {
