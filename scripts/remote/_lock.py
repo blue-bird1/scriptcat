@@ -57,6 +57,54 @@ def load_lock(path: Path) -> UpstreamLock:
     return UpstreamLock(depot_tools, chromium, mcp, scriptcat, stacks, digest)
 
 
+def validate_patch_stacks(root: Path, lock: UpstreamLock) -> None:
+    for stack in lock.patch_stacks:
+        directory = root / stack.path
+        series = directory / "series"
+        try:
+            lines = series.read_text(encoding="utf-8").splitlines()
+        except FileNotFoundError as error:
+            raise WorkflowError(f"patch series is missing: {series}") from error
+        names = [
+            line for line in lines if line.strip() and not line.lstrip().startswith("#")
+        ]
+        if not names:
+            raise WorkflowError(f"patch series is empty: {series}")
+        if any(name != name.strip() for name in names):
+            raise WorkflowError(
+                f"patch series contains surrounding whitespace: {series}"
+            )
+        if len(names) != len(set(names)):
+            raise WorkflowError(f"patch series contains duplicate entries: {series}")
+        paths = [directory / name for name in names]
+        if any(
+            not name.endswith(".patch")
+            or PurePosixPath(name).name != name
+            or not path.is_file()
+            or path.is_symlink()
+            for name, path in zip(names, paths, strict=True)
+        ):
+            raise WorkflowError(f"patch series contains an unsafe entry: {series}")
+        discovered = {
+            path.name
+            for path in directory.glob("*.patch")
+            if path.is_file() and not path.is_symlink()
+        }
+        if discovered != set(names):
+            raise WorkflowError(
+                f"patch series does not cover exactly every patch: {series}"
+            )
+        digest = hashlib.sha256()
+        for path in paths:
+            digest.update(path.read_bytes())
+        actual = digest.hexdigest()
+        if actual != stack.sha256:
+            raise WorkflowError(
+                "patch stack checksum mismatch: "
+                f"target={stack.target} expected={stack.sha256} actual={actual}"
+            )
+
+
 def parse_upstream(payload: dict[str, Any], key: str) -> Upstream:
     value = payload.get(key)
     if not isinstance(value, dict):

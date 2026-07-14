@@ -34,7 +34,7 @@
     {
       "target": "scriptcat",
       "path": "browser/patches/scriptcat",
-      "sha256": "54461a7230d88555ec73616725040a08e8498fa27e24b32948383b05881d8b77"
+      "sha256": "3b62ff3523c70251c8046134abf6eef64a0f90b8d1e3816a4a53e472341c8d0c"
     }
   ]
 }

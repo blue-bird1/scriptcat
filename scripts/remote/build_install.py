@@ -27,7 +27,7 @@ if __package__ in (None, ""):
         run_remote_script,
         shell_quote,
     )
-    from remote._lock import UpstreamLock, load_lock
+    from remote._lock import UpstreamLock, load_lock, validate_patch_stacks
     from remote._patching import patch_preparation_script
     from remote._portable_package import portable_package_script
 else:
@@ -48,7 +48,7 @@ else:
         run_remote_script,
         shell_quote,
     )
-    from ._lock import UpstreamLock, load_lock
+    from ._lock import UpstreamLock, load_lock, validate_patch_stacks
     from ._patching import patch_preparation_script
     from ._portable_package import portable_package_script
 
@@ -93,6 +93,7 @@ def run(argv: Sequence[str]) -> int:
         ("git", "remote", "get-url", "origin"), cwd=root, capture=True
     ).stdout.strip()
     lock = load_lock(root / arguments.lock)
+    validate_patch_stacks(root, lock)
     push_main(root)
     config = RemoteConfig()
     run_remote_script(config, remote_build_script(config, lock, commit, origin))

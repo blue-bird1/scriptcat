@@ -1,5 +1,3 @@
-undefined
- ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command "prettier" not found
 From faad224359bae7cc0bb7cff9d28e845928bdb9b1 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local.invalid>
 Date: Tue, 14 Jul 2026 04:22:30 +0800

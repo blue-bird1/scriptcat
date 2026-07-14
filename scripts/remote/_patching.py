@@ -185,7 +185,11 @@ activate_patch_stack() {
   local desired_commit patch_ref current_head current_tree index_tree
   load_patch_series "$patches" patch_names patch_files
   actual_patch_sha=$(cat "${patch_files[@]}" | sha256sum | awk '{print $1}')
-  test "$actual_patch_sha" = "$expected_patch_sha"
+  if test "$actual_patch_sha" != "$expected_patch_sha"; then
+    printf 'patch stack checksum mismatch: target=%s expected=%s actual=%s\n' \
+      "$target" "$expected_patch_sha" "$actual_patch_sha" >&2
+    return 1
+  fi
   manifest_digest=$(patch_manifest_digest patch_names patch_files)
   patch_count="${#patch_files[@]}"
   signature=$(printf '%s\\0' "$patch_schema" "$target" "$source" "$base" \\
