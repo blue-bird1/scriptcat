@@ -113,25 +113,6 @@ def assert_local_head(root: Path, expected: str) -> None:
         )
 
 
-def sync_remote_checkout(config: RemoteConfig, origin: str, commit: str) -> None:
-    command = " ".join(
-        (
-            "set -euo pipefail;",
-            f"if [ ! -d {shell_quote(config.checkout)}/.git ]; then",
-            f"git clone {shell_quote(origin)} {shell_quote(config.checkout)};",
-            "fi;",
-            f"cd {shell_quote(config.checkout)};",
-            "git fetch --prune origin main;",
-            "git checkout main;",
-            "git reset --hard origin/main;",
-            "git clean -ffd;",
-            f'test "$(git rev-parse HEAD)" = {shell_quote(commit)};',
-        )
-    )
-    LOGGER.info("resetting remote checkout to %s", commit[:12])
-    remote_checked(config, command)
-
-
 def run_remote_script(config: RemoteConfig, script: str) -> None:
     """Run a remote shell program while emitting a local 60-second heartbeat."""
     process = subprocess.Popen(

@@ -41,7 +41,7 @@ test "$available_kib" -ge $((160 * 1024 * 1024))
 memory_kib=$(awk '/MemTotal:/ { print $2 }' /proc/meminfo)
 test "$memory_kib" -ge $((16 * 1024 * 1024))
 test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1
-for tool in git curl python3 node pnpm tar zstd rsync Xvfb; do
+for tool in git curl python3 node pnpm tar zstd rsync Xvfb flock; do
   command -v "$tool" >/dev/null
 done
 timeout 30 curl --fail --silent --show-error --head https://github.com >/dev/null

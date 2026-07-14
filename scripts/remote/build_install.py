@@ -26,7 +26,6 @@ if __package__ in (None, ""):
         run_checked,
         run_remote_script,
         shell_quote,
-        sync_remote_checkout,
     )
     from remote._lock import PatchStack, UpstreamLock, load_lock
 else:
@@ -46,7 +45,6 @@ else:
         run_checked,
         run_remote_script,
         shell_quote,
-        sync_remote_checkout,
     )
     from ._lock import PatchStack, UpstreamLock, load_lock
 
@@ -93,8 +91,7 @@ def run(argv: Sequence[str]) -> int:
     lock = load_lock(root / arguments.lock)
     push_main(root)
     config = RemoteConfig()
-    sync_remote_checkout(config, origin, commit)
-    run_remote_script(config, remote_build_script(config, lock, commit))
+    run_remote_script(config, remote_build_script(config, lock, commit, origin))
     assert_local_head(root, commit)
     archive = download_archive(config, lock)
     if arguments.archive_only:
@@ -129,7 +126,7 @@ def download_archive(config: RemoteConfig, lock: UpstreamLock) -> Path:
 
 
 def remote_build_script(
-    config: RemoteConfig, lock: UpstreamLock, project_commit: str
+    config: RemoteConfig, lock: UpstreamLock, project_commit: str, project_origin: str
 ) -> str:
     patch_lines = "\n".join(patch_stack_command(stack) for stack in lock.patch_stacks)
     return f"""#!/usr/bin/env bash
@@ -139,7 +136,35 @@ build_root={shell_quote(config.build_root)}
 checkout={shell_quote(config.checkout)}
 test "$build_root" = {shell_quote(REMOTE_BUILD_ROOT)}
 mkdir -p "$build_root/src" "$build_root/out"
+command -v flock >/dev/null
+exec 9>"$build_root/.build.lock"
+printf 'waiting for remote build lock: %s\n' "$build_root/.build.lock"
+flock -x 9
+printf 'acquired remote build lock: %s\n' "$build_root/.build.lock"
+exec > >(tee -a "$build_root/out/build.log") 2>&1
+for process_dir in /proc/[0-9]*; do
+  process_id="${{process_dir##*/}}"
+  test "$process_id" = "$$" && continue
+  process_cwd=$(readlink "$process_dir/cwd" 2>/dev/null || true)
+  process_command=$(tr '\\0' ' ' < "$process_dir/cmdline" 2>/dev/null || true)
+  case "$process_cwd:$process_command" in
+    "$build_root"/*:*gclient*|"$build_root"/*:*autoninja*|"$build_root"/*:*ninja*|"$build_root"/*:*browser_tests*)
+      printf 'legacy build process is still using %s: pid=%s command=%s\n' \
+        "$build_root" "$process_id" "$process_command" >&2
+      exit 75
+      ;;
+  esac
+done
 project_commit={shell_quote(project_commit)}
+project_origin={shell_quote(project_origin)}
+if [ ! -d "$checkout/.git" ]; then
+  git clone "$project_origin" "$checkout"
+fi
+git -C "$checkout" fetch --prune origin main
+git -C "$checkout" checkout main
+git -C "$checkout" reset --hard origin/main
+git -C "$checkout" clean -ffd
+test "$(git -C "$checkout" rev-parse HEAD)" = "$project_commit"
 prepare_source() {{
   local name="$1" source="$2" commit="$3"
   local destination="$build_root/src/$name"
@@ -169,20 +194,44 @@ export PATH="$build_root/depot_tools:$PATH"
 command -v gclient >/dev/null
 command -v gn >/dev/null
 command -v autoninja >/dev/null
-prepare_source chromium {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
+prepare_source src {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
 prepare_source chrome-devtools-mcp {shell_quote(lock.mcp.source)} {shell_quote(lock.mcp.commit)}
 prepare_source scriptcat {shell_quote(lock.scriptcat.source)} {shell_quote(lock.scriptcat.commit)}
-chromium="$build_root/src/chromium"
+chromium="$build_root/src/src"
 mcp="$build_root/src/chrome-devtools-mcp"
 scriptcat="$build_root/src/scriptcat"
 runtime="$build_root/out/runtime"
+if [ -d "$build_root/src/chromium" ]; then
+  printf 'removing obsolete non-gclient Chromium checkout: %s\n' "$build_root/src/chromium"
+  rm -rf "$build_root/src/chromium"
+fi
 rm -rf "$runtime"
 mkdir -p "$runtime/chromium" "$runtime/mcp" "$runtime/scriptcat"
-cd "$chromium"
 cd "$build_root/src"
-gclient config --unmanaged --name chromium {shell_quote(lock.chromium.source)}
+gclient config --unmanaged --name src {shell_quote(lock.chromium.source)}
 cd "$chromium"
-gclient sync -D --nohooks
+sync_chromium() {{
+  local attempt=1 delay=120 sync_log="$build_root/out/gclient-sync.log"
+  while true; do
+    printf 'gclient sync attempt %s/4 with one worker\n' "$attempt"
+    if gclient sync -D --nohooks -j 1 2>&1 | tee "$sync_log"; then
+      return 0
+    fi
+    if ! grep -Eqi 'RESOURCE_EXHAUSTED|HTTP[^[:digit:]]*429|error: 429|timed out|connection reset|temporary failure|HTTP[^[:digit:]]*5[0-9][0-9]' "$sync_log"; then
+      printf 'gclient sync failed with a non-transient error\n' >&2
+      return 1
+    fi
+    if [ "$attempt" -ge 4 ]; then
+      printf 'gclient sync exhausted transient-network retries\n' >&2
+      return 1
+    fi
+    printf 'gclient sync hit a transient remote limit; retrying in %ss\n' "$delay" >&2
+    sleep "$delay"
+    attempt=$((attempt + 1))
+    delay=$((delay * 2))
+  done
+}}
+sync_chromium
 gclient runhooks
 {patch_lines}
 gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
@@ -263,7 +312,8 @@ printf 'remote build completed: %s\\n' "$build_id"
 
 
 def patch_stack_command(stack: PatchStack) -> str:
-    target = shell_quote(stack.target)
+    checkout_target = "src" if stack.target == "chromium" else stack.target
+    target = shell_quote(checkout_target)
     patch_path = shell_quote(stack.path.as_posix())
     expected = shell_quote(stack.sha256)
     return f'''patches="$checkout"/{patch_path}
