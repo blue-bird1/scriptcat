@@ -279,8 +279,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = tuple(parse_payload(tuple(argv if argv is not None else sys.argv[1:])))
     if any(is_blocked(command) for command in commands):
         print(
-            "Blocked Chromium build command. Use scripts/remote/build_install.py; "
-            "local builds and bare-SSH builds are forbidden.",
+            "Blocked Chromium build command. Use scripts/remote/build.py; local "
+            "builds and bare-SSH builds are forbidden.",
             file=sys.stderr,
         )
         return 2

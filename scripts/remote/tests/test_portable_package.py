@@ -5,7 +5,7 @@ from pathlib import Path
 
 from scripts.remote._lock import load_lock
 from scripts.remote._portable_package import portable_package_script
-from scripts.remote.build_install import ARCHIVE_NAME
+from scripts.remote.package import ARCHIVE_PREFIX
 
 
 class PortablePackageScriptTest(unittest.TestCase):
@@ -13,7 +13,12 @@ class PortablePackageScriptTest(unittest.TestCase):
         root = Path(__file__).resolve().parents[3]
         lock = load_lock(root / "browser/upstreams.lock.json")
 
-        script = portable_package_script(ARCHIVE_NAME, lock)
+        script = portable_package_script(
+            f"{ARCHIVE_PREFIX}-{lock.digest[:24]}.tar.zst",
+            lock,
+            component_build_id=lock.digest[:24],
+            release_build_id=lock.digest[-24:],
+        )
 
         self.assertNotIn(chr(0), script)
 

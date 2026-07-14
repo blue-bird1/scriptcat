@@ -34,7 +34,7 @@ from ._archive import (
     unpack_archive,
     verify_manifest,
 )
-from ._common import WorkflowError
+from ._common import WorkflowError, validate_build_id
 
 PROFILE_LOCK_PATH = (
     Path.home()
@@ -55,6 +55,7 @@ def activate_archive(
     expected_depot_tools_version: str,
     expected_scriptcat_version: str,
 ) -> str:
+    validate_build_id(expected_build_id, "expected build_id")
     staging = Path("/tmp") / f"scriptcat-mcp-stage-{os.getpid()}"
     if staging.exists():
         raise WorkflowError(f"staging path already exists: {staging}")

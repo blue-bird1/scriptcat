@@ -10,13 +10,14 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 LOGGER = logging.getLogger("scriptcat.remote")
 REMOTE_HOST = "root@192.168.50.8"
 REMOTE_CHECKOUT = "/root/scriptcat"
 REMOTE_BUILD_ROOT = "/root/scriptcat-mcp-build"
 HEARTBEAT_SECONDS = 60.0
+EXTENSION_BASE = Path.home() / ".codex" / "chrome-extensions" / "scriptcat"
 
 
 @dataclass(frozen=True)
@@ -72,7 +73,9 @@ def require_clean_main(root: Path) -> str:
     if branch != "main":
         raise WorkflowError(f"current branch is {branch!r}; expected 'main'")
     if git_output(root, "status", "--porcelain"):
-        raise WorkflowError("local checkout is dirty; commit before a remote build")
+        raise WorkflowError(
+            "local checkout is dirty; commit before a remote release stage"
+        )
     return git_output(root, "rev-parse", "HEAD")
 
 
@@ -116,7 +119,11 @@ def assert_local_head(root: Path, expected: str) -> None:
 def run_remote_script(config: RemoteConfig, script: str) -> None:
     """Run a remote shell program while emitting a local 60-second heartbeat."""
     process = subprocess.Popen(
-        (*ssh_command(config, "bash -s"),), stdin=subprocess.PIPE, text=True
+        (*ssh_command(config, "bash -s"),),
+        stdin=subprocess.PIPE,
+        stdout=sys.stderr,
+        stderr=sys.stderr,
+        text=True,
     )
     assert process.stdin is not None
     process.stdin.write(script)
@@ -136,6 +143,26 @@ def run_remote_script(config: RemoteConfig, script: str) -> None:
 
 def local_data_root() -> Path:
     return Path.home() / ".local" / "share" / "scriptcat-mcp"
+
+
+def extension_root(scriptcat_version: str) -> Path:
+    version_path = PurePosixPath(scriptcat_version)
+    if (
+        version_path.is_absolute()
+        or len(version_path.parts) != 1
+        or version_path.name != scriptcat_version
+        or scriptcat_version in {".", ".."}
+    ):
+        raise WorkflowError("scriptcat.version is unsafe for an extension path")
+    return EXTENSION_BASE / scriptcat_version
+
+
+def validate_build_id(value: str, label: str) -> None:
+    is_lowercase_hex = all(character in "0123456789abcdef" for character in value)
+    if len(value) != 24 or not is_lowercase_hex:
+        raise WorkflowError(
+            f"{label} must be exactly 24 lowercase hexadecimal characters"
+        )
 
 
 def cli_main(

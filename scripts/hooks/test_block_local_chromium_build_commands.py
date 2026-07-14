@@ -11,9 +11,7 @@ if SPEC is None or SPEC.loader is None:
 BUILD_GUARD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD_GUARD)
 
-REMOTE_WRAPPER = (
-    "uv run --project scripts --python 3.12 python scripts/remote/build_install.py"
-)
+REMOTE_WRAPPER = "uv run --project scripts --python 3.12 python scripts/remote/build.py"
 READ_ONLY_COMMANDS = (
     "gclient revinfo",
     "gclient status",

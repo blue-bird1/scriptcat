@@ -36,6 +36,31 @@ CHILD_FAILURE_STATUS = 98
 
 
 class ActivationIntegrityTest(unittest.TestCase):
+    def test_activation_rejects_unexpected_build_id(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            source = create_release(root)
+            archive = create_archive(root, source)
+            data_root = root / "data"
+            extension_root = root / "extensions" / SCRIPTCAT_VERSION
+            lock_path = root / "profile.lock"
+            arguments = (
+                archive,
+                data_root,
+                extension_root,
+                f"f{BUILD_ID[1:]}",
+                CHROMIUM_VERSION,
+                MCP_VERSION,
+                DEPOT_TOOLS_VERSION,
+                SCRIPTCAT_VERSION,
+            )
+            with (
+                patch.object(_activation, "PROFILE_LOCK_PATH", lock_path),
+                self.assertRaises(_activation.WorkflowError),
+            ):
+                activate_archive(*arguments)
+            self.assertFalse(data_root.exists())
+
     def test_repeated_activation_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
             root = Path(temporary)
