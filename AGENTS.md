@@ -119,18 +119,18 @@
 
 **常用命令**
 
-```bash
+```fish
 pnpm build:check                         # build 全部入口 + lint 产物
 pnpm build                               # 仅 build
 pnpm run lint:userscripts -- foo.user.js
 pnpm install:scriptcat -- steampy-token-sync.user.js
 
 # Chromium 远程发布：fish 中显式按阶段执行
-uv run --project scripts python scripts/remote/doctor.py
-set component_build_id (uv run --project scripts python scripts/remote/build.py)
+uv run --project scripts --python 3.12 python scripts/remote/doctor.py
+set component_build_id (uv run --project scripts --python 3.12 python scripts/remote/build.py)
 set archive /tmp/scriptcat-mcp-portable.tar.zst
-set release_build_id (uv run --project scripts python scripts/remote/package.py --build-id $component_build_id --output $archive)
-uv run --project scripts python scripts/remote/install.py $archive --build-id $release_build_id
+set release_build_id (uv run --project scripts --python 3.12 python scripts/remote/package.py --build-id $component_build_id --output $archive)
+uv run --project scripts --python 3.12 python scripts/remote/install.py $archive --build-id $release_build_id
 ```
 
 ## 参考
