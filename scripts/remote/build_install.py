@@ -320,15 +320,14 @@ run_browser_protocol_tests() {{
       env -i \
         PATH=/usr/bin:/bin \
         LANG=en_US.UTF-8 \
-        CHROME_HEADLESS=1 \
         HOME="$test_root/home" \
         TMPDIR="$test_root/tmp" \
         XDG_CACHE_HOME="$test_root/home/.cache" \
         XDG_CONFIG_HOME="$test_root/home/.config" \
         XDG_RUNTIME_DIR="$test_root/runtime" \
-        python3 "$test_root/build/src/src/testing/xvfb.py" \
-          "$test_root/build/src/src/out/Release/browser_tests" \
+        "$test_root/build/src/src/out/Release/browser_tests" \
           --disable-setuid-sandbox \
+          --ozone-platform=headless \
           --gtest_filter="DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch" \
           --test-launcher-bot-mode
   ' scriptcat-browser-tests "$build_root" "$test_root" "$test_uid" "$test_gid" 9>&- &

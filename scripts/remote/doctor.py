@@ -69,7 +69,7 @@ for tool in \
   awk bash cat cp curl cut date df du env find flock getent git grep head id \
   install mkdir mktemp mount mv node pnpm python3 readlink rm rsync sed \
   setpriv setsid sha256sum sleep sort tail tar tee timeout tr unshare wc \
-  xargs Xvfb zstd; do
+  xargs zstd; do
   require_command "$tool"
 done
 
@@ -120,7 +120,7 @@ def parser() -> argparse.ArgumentParser:
         epilog=(
             "Uses root@192.168.50.8 directly; the remote host owns its proxy settings "
             "and no proxy tunnel is created. Checks Node.js >= 20.19.0, pnpm, tar "
-            "with zstd support, rsync, Xvfb, private mount namespaces, and an "
+            "with zstd support, rsync, private mount namespaces, and an "
             "unprivileged nobody test account. "
             "Requires at least 160 GiB across free space and the existing managed "
             "build cache, then creates /root/scriptcat-mcp-build if needed."
