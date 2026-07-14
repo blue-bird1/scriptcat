@@ -119,7 +119,7 @@ expected_patch_tree() {
   fi
   for patch_file in "$@"; do
     if ! GIT_INDEX_FILE="$temporary_index" \\
-      git -C "$destination" apply --cached --3way "$patch_file"; then
+      git -C "$destination" apply --cached "$patch_file"; then
       rm -f "$temporary_index"
       return 1
     fi
