@@ -355,7 +355,12 @@ config_path, build_path, destination_path = map(pathlib.Path, sys.argv[1:])
 archive = json.loads(config_path.read_text(encoding='utf-8'))['archive_datas'][0]
 source = build_path.resolve()
 destination = destination_path.resolve()
+excluded_files = {{'chrome_sandbox'}}
+if not excluded_files <= set(archive['files']):
+    raise SystemExit('archive config no longer contains the expected setuid sandbox')
 for relative in archive['files']:
+    if relative in excluded_files:
+        continue
     source_file = source / relative
     if not source_file.is_file():
         raise SystemExit(f'archive config file is missing: {{source_file}}')
@@ -368,6 +373,9 @@ for relative in archive['dirs']:
         raise SystemExit(f'archive config directory is missing: {{source_dir}}')
     target_dir = destination / 'chrome-linux' / relative
     shutil.copytree(source_dir, target_dir, symlinks=True, dirs_exist_ok=True)
+for relative in excluded_files:
+    if (destination / 'chrome-linux' / relative).exists():
+        raise SystemExit(f'setuid sandbox must not be packaged: {{relative}}')
 PY
 test -x "$runtime/chromium/chrome-linux/chrome"
 cd "$mcp"
