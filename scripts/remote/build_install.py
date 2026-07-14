@@ -219,6 +219,8 @@ prepare_depot_tools() {{
 }}
 prepare_depot_tools {shell_quote(lock.depot_tools.source)} {shell_quote(lock.depot_tools.commit)}
 export PATH="$build_root/depot_tools:$PATH"
+export DEPOT_TOOLS_UPDATE=0
+"$build_root/depot_tools/ensure_bootstrap"
 command -v gclient >/dev/null
 command -v gn >/dev/null
 command -v autoninja >/dev/null
