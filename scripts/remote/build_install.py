@@ -142,7 +142,7 @@ printf 'waiting for remote build lock: %s\n' "$build_root/.build.lock"
 flock -x 9
 printf 'acquired remote build lock: %s\n' "$build_root/.build.lock"
 exec > >(tee -a "$build_root/out/build.log") 2>&1
-trap 'status=$?; trap - ERR; printf "remote build command failed; build log tail follows\n" >&2; tail -n 200 "$build_root/out/build.log" >&2 || true; exit "$status"' ERR
+trap 'status=$?; trap - ERR; printf "remote build command failed; compiler diagnostics follow\n" >&2; grep -n -E "FAILED:|(^|[^[:alpha:]])(fatal )?error:|ninja: build stopped" "$build_root/out/build.log" | tail -n 80 >&2 || true; printf "remote build log tail follows\n" >&2; tail -n 500 "$build_root/out/build.log" >&2 || true; exit "$status"' ERR
 for process_dir in /proc/[0-9]*; do
   process_id="${{process_dir##*/}}"
   test "$process_id" = "$$" && continue
@@ -178,7 +178,7 @@ prepare_source() {{
   git -C "$destination" fetch --depth=1 origin "$commit"
   git -C "$destination" checkout --detach "$commit"
   git -C "$destination" reset --hard "$commit"
-  git -C "$destination" clean -ffd
+  git -C "$destination" clean -ffd -e out/
 }}
 prepare_chromium_source() {{
   local destination="$build_root/src/src"
