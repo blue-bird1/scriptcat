@@ -20,6 +20,7 @@ args = [
 ]
 
 [[hooks.PreToolUse]]
+matcher = "Bash"
 
 [[hooks.PreToolUse.hooks]]
 type = "command"

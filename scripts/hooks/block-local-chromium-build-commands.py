@@ -122,9 +122,16 @@ def parse_payload(argv: Sequence[str]) -> Iterable[str]:
     if not raw:
         return
     try:
-        yield from command_strings(json.loads(raw))
+        payload = json.loads(raw)
     except json.JSONDecodeError:
         yield raw
+        return
+    if not isinstance(payload, dict) or payload.get("tool_name") != "Bash":
+        return
+    tool_input = payload.get("tool_input")
+    if not isinstance(tool_input, dict):
+        return
+    yield from command_strings(tool_input.get("command"))
 
 
 def main(argv: Sequence[str] | None = None) -> int:
