@@ -66,11 +66,22 @@ test "$(sysctl -n kernel.unprivileged_userns_clone)" = 1 || \
   fail "kernel.unprivileged_userns_clone must be enabled for Chromium"
 
 for tool in \
-  awk bash cat cp curl cut df du find flock git grep head mkdir mv node pnpm \
-  python3 readlink rm rsync sed sha256sum sleep sort tail tar tee timeout tr \
-  wc xargs Xvfb zstd; do
+  awk bash cat cp curl cut date df du env find flock getent git grep head id \
+  install mkdir mktemp mount mv node pnpm python3 readlink rm rsync sed \
+  setpriv setsid sha256sum sleep sort tail tar tee timeout tr unshare wc \
+  xargs Xvfb zstd; do
   require_command "$tool"
 done
+
+test_uid=$(id -u nobody 2>/dev/null) || fail "remote nobody account is unavailable"
+test_gid=$(id -g nobody 2>/dev/null) || fail "remote nobody group is unavailable"
+test "$test_uid" -ne 0 || fail "remote nobody account must not use uid 0"
+test "$test_gid" -ne 0 || fail "remote nobody group must not use gid 0"
+unshare --mount --propagation private true >/dev/null 2>&1 || \
+  fail "remote root cannot create a private mount namespace"
+setpriv --reuid="$test_uid" --regid="$test_gid" --clear-groups \
+  --inh-caps=-all --ambient-caps=-all --bounding-set=-all true || \
+  fail "remote browser tests cannot drop privileges to nobody"
 
 node_version=$(node --version 2>/dev/null) || fail "Node.js version check failed"
 if [[ ! "$node_version" =~ ^v([0-9]+)\.([0-9]+)\.([0-9]+) ]]; then
@@ -109,7 +120,8 @@ def parser() -> argparse.ArgumentParser:
         epilog=(
             "Uses root@192.168.50.8 directly; the remote host owns its proxy settings "
             "and no proxy tunnel is created. Checks Node.js >= 20.19.0, pnpm, tar "
-            "with zstd support, rsync, Xvfb, and the other remote build commands. "
+            "with zstd support, rsync, Xvfb, private mount namespaces, and an "
+            "unprivileged nobody test account. "
             "Requires at least 160 GiB across free space and the existing managed "
             "build cache, then creates /root/scriptcat-mcp-build if needed."
         ),

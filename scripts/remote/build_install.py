@@ -143,8 +143,44 @@ exec 9>"$build_root/.build.lock"
 printf 'waiting for remote build lock: %s\n' "$build_root/.build.lock"
 flock -x 9
 printf 'acquired remote build lock: %s\n' "$build_root/.build.lock"
-exec > >(tee -a "$build_root/out/build.log") 2>&1
-trap 'status=$?; trap - ERR; printf "remote build command failed; compiler diagnostics follow\n" >&2; grep -n -E "FAILED:|(^|[^[:alpha:]])(fatal )?error:|ninja: build stopped" "$build_root/out/build.log" | tail -n 80 >&2 || true; printf "remote build log tail follows\n" >&2; tail -n 500 "$build_root/out/build.log" >&2 || true; exit "$status"' ERR
+run_id=$(date -u +%Y%m%dT%H%M%SZ)-$$
+run_log="$build_root/out/build-$run_id.log"
+phase=bootstrap
+test_root=
+test_session_pid=
+exec > >(tee "$run_log") 2>&1
+cleanup_remote_test() {{
+  if [[ "$test_session_pid" =~ ^[0-9]+$ ]] && kill -0 "$test_session_pid" 2>/dev/null; then
+    kill -TERM -- "-$test_session_pid" 2>/dev/null || true
+    for _ in {{1..30}}; do
+      kill -0 "$test_session_pid" 2>/dev/null || break
+      sleep 1
+    done
+    kill -KILL -- "-$test_session_pid" 2>/dev/null || true
+  fi
+  case "$test_root" in
+    /tmp/scriptcat-browser-tests.*) rm -rf -- "$test_root" ;;
+  esac
+}}
+report_remote_failure() {{
+  local status=$?
+  trap - ERR
+  printf 'remote build phase failed: %s\n' "$phase" >&2
+  printf 'current-run diagnostics follow: %s\n' "$run_log" >&2
+  grep -n -E 'FAILED:|(^|[^[:alpha:]])(fatal )?error:|ninja: build stopped|\\[  FAILED  \\]' "$run_log" | tail -n 80 >&2 || true
+  printf 'current-run log tail follows\n' >&2
+  tail -n 500 "$run_log" >&2 || true
+  exit "$status"
+}}
+set_phase() {{
+  phase="$1"
+  printf '== remote build phase: %s ==\n' "$phase"
+}}
+trap cleanup_remote_test EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap report_remote_failure ERR
 for process_dir in /proc/[0-9]*; do
   process_id="${{process_dir##*/}}"
   test "$process_id" = "$$" && continue
@@ -246,15 +282,70 @@ sync_chromium() {{
     delay=$((delay * 2))
   done
 }}
+set_phase gclient-sync
 sync_chromium
 test "$(git rev-parse HEAD)" = "$chromium_head_before_sync"
 checkout_is_clean "$chromium"
+set_phase gclient-runhooks
 gclient runhooks
+set_phase gn-generate
 gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
+set_phase chromium-build
 autoninja -C out/Release chrome browser_tests
-python3 testing/xvfb.py out/Release/browser_tests \
-  --gtest_filter='DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch' \
-  --test-launcher-bot-mode
+run_browser_protocol_tests() {{
+  local test_uid test_gid test_status
+  test_uid=$(id -u nobody)
+  test_gid=$(id -g nobody)
+  test "$test_uid" -ne 0
+  test "$test_gid" -ne 0
+  test_root=$(mktemp -d /tmp/scriptcat-browser-tests.XXXXXX)
+  chmod 0755 "$test_root"
+  install -d -m 0755 "$test_root/build"
+  install -d -m 0700 -o "$test_uid" -g "$test_gid" \
+    "$test_root/home" "$test_root/tmp" "$test_root/runtime"
+  setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
+    build_root=$1
+    test_root=$2
+    test_uid=$3
+    test_gid=$4
+    mount --bind "$build_root" "$test_root/build"
+    cd "$test_root/build/src/src"
+    exec setpriv \
+      --reuid="$test_uid" \
+      --regid="$test_gid" \
+      --clear-groups \
+      --inh-caps=-all \
+      --ambient-caps=-all \
+      --bounding-set=-all \
+      env -i \
+        PATH=/usr/bin:/bin \
+        LANG=en_US.UTF-8 \
+        CHROME_HEADLESS=1 \
+        HOME="$test_root/home" \
+        TMPDIR="$test_root/tmp" \
+        XDG_CACHE_HOME="$test_root/home/.cache" \
+        XDG_CONFIG_HOME="$test_root/home/.config" \
+        XDG_RUNTIME_DIR="$test_root/runtime" \
+        python3 "$test_root/build/src/src/testing/xvfb.py" \
+          "$test_root/build/src/src/out/Release/browser_tests" \
+          --disable-setuid-sandbox \
+          --gtest_filter="DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch" \
+          --test-launcher-bot-mode
+  ' scriptcat-browser-tests "$build_root" "$test_root" "$test_uid" "$test_gid" 9>&- &
+  test_session_pid=$!
+  if wait "$test_session_pid"; then
+    test_status=0
+  else
+    test_status=$?
+  fi
+  test_session_pid=
+  rm -rf -- "$test_root"
+  test_root=
+  return "$test_status"
+}}
+set_phase chromium-protocol-tests
+run_browser_protocol_tests
+set_phase chromium-archive
 python3 - infra/archive_config/linux-archive-rel.json out/Release "$runtime/chromium" <<'PY'
 import json
 import pathlib
@@ -281,20 +372,27 @@ for relative in archive['dirs']:
 PY
 test -x "$runtime/chromium/chrome-linux/chrome"
 cd "$mcp"
+set_phase mcp-install
 pnpm install --frozen-lockfile
+set_phase mcp-build
 pnpm build
+set_phase mcp-tests
 pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts
+set_phase mcp-bundle
 pnpm bundle
 rsync -a --delete build/src/ "$runtime/mcp/"
 cp package.json LICENSE "$runtime/mcp/"
 test -f "$runtime/mcp/bin/chrome-devtools-mcp.js"
 node "$runtime/mcp/bin/chrome-devtools-mcp.js" --help >/dev/null
 cd "$scriptcat"
+set_phase scriptcat-install
 pnpm install --frozen-lockfile
+set_phase scriptcat-build
 pnpm build:managed-mcp
 test -f dist/ext/manifest.json
 rsync -a --delete --exclude .git dist/ext/ "$runtime/scriptcat/"
 test -f "$runtime/scriptcat/manifest.json"
+set_phase portable-package
 build_id=$(printf '%s' {shell_quote(lock.digest + project_commit)} | sha256sum | cut -c1-24)
 python3 - "$runtime" "$build_id" {shell_quote(lock.chromium.version)} <<'PY'
 import hashlib
