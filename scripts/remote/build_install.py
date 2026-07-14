@@ -249,6 +249,8 @@ chromium="$build_root/src/src"
 mcp="$build_root/src/chrome-devtools-mcp"
 scriptcat="$build_root/src/scriptcat"
 runtime="$build_root/out/runtime"
+test -z "$(git -C "$mcp" ls-files -- pnpm-lock.yaml)"
+rm -f "$mcp/pnpm-lock.yaml"
 {patch_commands}
 if [ -d "$build_root/src/chromium" ]; then
   printf 'removing obsolete non-gclient Chromium checkout: %s\n' "$build_root/src/chromium"
