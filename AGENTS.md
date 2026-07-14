@@ -27,12 +27,15 @@
 
 ## Chromium 远程构建与便携安装
 
-- **执行主机**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，便携制品由 remote wrapper 拉回本机激活。该主机经本地 WireGuard 连接 `wg0` 访问；连接失败时先检查并恢复 `wg0`，再执行项目 remote wrapper。
-- **唯一入口**：本机源码是唯一真源。远程流程前必须确保本地 `main` 干净，提交本次变更并推送 `origin/main`；所有远程 doctor、构建、测试、制品传输和本机激活必须经 `scripts/remote/` wrapper。不得手写 SSH、SCP、rsync、远端 checkout/reset 或构建命令绕过 wrapper。
-- **远端布局**：wrapper 同步 `/root/scriptcat`，并独占使用 `/root/scriptcat-mcp-build` 作为 Chromium 与制品构建根。现有 `/root/chromium` 为非受管旧 checkout，任何流程不得读取、修改或清理它。远端直接使用自身透明代理和网络出口，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
-- **本地构建门禁**：`gclient`、`gn`、`autoninja`、`ninja` 与 Chromium 相关构建命令不得在本机或裸 SSH 中执行；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
-- **制品切换**：wrapper 在远端生成带 manifest 和 `SHA256SUMS` 的完整便携制品；本机在 staging 校验哈希、版本和入口后，原子激活到 `~/.local/share/scriptcat-mcp/releases/<buildId>`，维护 `current` 与 `previous`。managed ScriptCat 同样原子部署到 `~/.codex/chrome-extensions/scriptcat/v1.3.2`，从而保持扩展 ID 和现有 profile 数据。
-- **验证范围**：远端执行补丁应用、Chromium protocol tests、三方构建与便携打包；本机激活后通过完整 MCP 执行 ScriptCat CRUD、真实注入、并发锁与进程清理验收。仅在共享改动或明确要求时扩大测试范围，不得以无关全量 Chromium suite 代替聚焦验证。
+- **执行主机**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，便携制品由 remote wrapper 拉回本机激活。该主机经本地 WireGuard 连接 `wg0` 访问；连接失败时先检查并恢复 `wg0`，再执行 `scripts/remote/` wrapper。
+- **唯一入口与远端布局**：本机源码是唯一真源。所有 doctor、构建、制品传输和本机激活都经 `scripts/remote/` wrapper；不得手写 SSH、SCP、rsync、远端 checkout/reset 或 Chromium 构建命令绕过 wrapper。wrapper 使用受管的 `/root/scriptcat` checkout 和 `/root/scriptcat-mcp-build` 构建根；`/root/chromium` 是非受管旧 checkout，不得读取、修改或清理。远端使用自身透明代理，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
+- **本地门禁**：执行远程构建前，本地 `main` 必须干净；`build.py` 会提交后的 `HEAD` 推送到 `origin/main`，并在返回后确认本地 `HEAD` 未变化。`gclient`、`gn`、`autoninja`、`ninja` 与其他 Chromium 构建命令不得在本机或裸 SSH 中执行；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
+- **显式三阶段**：发布流程按 `build.py → package.py --build-id → install.py` 明确执行，每阶段只负责自己的副作用，不使用自动指纹缓存或隐式全流水线。
+  1. `build.py` 检查 `wg0`、干净的 `main` 和上游锁，推送 `origin/main`，在远端同步补丁、编译 Chromium/扩展、运行聚焦协议测试，并保留已验证的组件构建；成功时输出 24 字符 `component build ID`。它不下载便携归档，也不激活本机 release。
+  2. `package.py --build-id <component-build-id>` 只处理指定的已验证组件构建：远端核对 `build-manifest.json`、运行时文件和 `SHA256SUMS`，生成不可覆盖的便携归档，再通过 wrapper 下载到本机（默认 `/tmp`）。它不推送源码、不同步 checkout、不编译、不测试，也不激活。
+  3. `install.py <archive>` 只在本机校验归档、版本、入口和校验和，并原子激活到 `~/.local/share/scriptcat-mcp/releases/<buildId>`，维护 `current`/`previous`；managed ScriptCat 扩展同步原子部署到 `~/.codex/chrome-extensions/scriptcat/v1.3.2`，保持扩展 ID 和现有 profile 数据。它不访问 Git、远端主机或网络。
+- **组合入口**：`build_install.py` 是兼容性的组合命令；需要可审计的发布步骤时使用上述三个显式 wrapper，`package.py` 和 `install.py` 不会替你调用前置阶段。
+- **验收范围**：远端阶段完成补丁应用、Chromium protocol tests、三方构建和归档打包；本机激活后通过完整 MCP 验收 ScriptCat CRUD、真实注入、并发锁和进程清理。仅在共享改动或明确要求时扩大测试范围，不以无关的全量 Chromium suite 代替聚焦验证。
 
 ## 项目
 
@@ -71,6 +74,11 @@
 | `.upstream/scriptcat` | ScriptCat 扩展上游源码，用于核对安装、注入、service worker 与运行时行为 |
 | `.upstream/scriptcat-vscode` | ScriptCat VSCode 插件上游源码，用于核对 VSCode sync 协议 |
 | `scripts/build-userscripts.mjs` | 将 `src/userscripts/*.user.js` bundle 到仓库根同名文件 |
+| `scripts/remote/doctor.py` | 检查 `wg0`、远端主机和受管构建环境 |
+| `scripts/remote/build.py` | 显式构建并验证远端组件，输出 `component build ID` |
+| `scripts/remote/package.py` | 按 `component build ID` 生成并下载便携归档 |
+| `scripts/remote/install.py` | 在本机校验并原子激活便携归档 |
+| `scripts/remote/build_install.py` | 兼容性的构建、打包、下载和激活组合入口 |
 | `.codex/config.toml` | 配置便携 Chromium 与派生 `chrome-devtools-scriptcat` MCP，并启用本地 Chromium 构建门禁 |
 | `scripts/userscripts/install-to-scriptcat.mjs` | 推送本地 userscript 到用户正常浏览器 ScriptCat |
 | `scripts/userscripts/lint.cjs` | 对根目录 `*.user.js` 跑 eslint-plugin-userscripts |
@@ -116,6 +124,12 @@ pnpm build:check                         # build 全部入口 + lint 产物
 pnpm build                               # 仅 build
 pnpm run lint:userscripts -- foo.user.js
 pnpm install:scriptcat -- steampy-token-sync.user.js
+
+# Chromium 远程发布：显式按阶段执行
+uv run --project scripts python scripts/remote/doctor.py
+component_build_id=$(uv run --project scripts python scripts/remote/build.py)
+uv run --project scripts python scripts/remote/package.py --build-id "$component_build_id"
+uv run --project scripts python scripts/remote/install.py /tmp/scriptcat-mcp-<release-id>.tar.zst
 ```
 
 ## 参考
