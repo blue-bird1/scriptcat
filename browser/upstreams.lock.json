@@ -24,7 +24,7 @@
     {
       "target": "chromium",
       "path": "browser/patches/chromium",
-      "sha256": "3e2465d9f489c8fb519e41030f697496de19c134a9d91e46bfd2056df50908e9"
+      "sha256": "e8ae12e52de5b94a537e9eb7f72b8dc1b192f27ce19ab53e9f8fa8275f389f8e"
     },
     {
       "target": "chrome-devtools-mcp",

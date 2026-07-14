@@ -251,12 +251,6 @@ test "$(git rev-parse HEAD)" = "$chromium_head_before_sync"
 checkout_is_clean "$chromium"
 gclient runhooks
 gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
-generated_extensions_header='out/Release/gen/chrome/browser/devtools/protocol/extensions.h'
-blink_protocol_json='out/Release/gen/third_party/blink/public/devtools_protocol/protocol.json'
-if grep -q 'command setUserScriptsAccess' third_party/blink/public/devtools_protocol/domains/Extensions.pdl && [ -f "$generated_extensions_header" ] && ! grep -q 'SetUserScriptsAccess' "$generated_extensions_header"; then
-  printf '%s\\n' 'invalidating stale generated Extensions protocol'
-  rm -f "$blink_protocol_json"
-fi
 autoninja -C out/Release chrome browser_tests
 python3 testing/xvfb.py out/Release/browser_tests \
   --gtest_filter='DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch' \

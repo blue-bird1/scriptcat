@@ -7,11 +7,24 @@ Add a browser-target-only CDP command for changing the current profile's per-ext
 
 Base-Revision: 7c855c70efe3f6ade6663c1520913fa7f63a0b2b
 ---
- .../devtools/protocol/extensions_handler.cc   | 50 +++++++++++++++++++
- .../devtools/protocol/extensions_handler.h    |  5 +-
- .../devtools_protocol/domains/Extensions.pdl  | 12 +++++
- 3 files changed, 66 insertions(+), 1 deletion(-)
+ .../devtools/inspector_protocol_config.json    |  2 +-
+ .../devtools/protocol/extensions_handler.cc    | 50 +++++++++++++++++++
+ .../devtools/protocol/extensions_handler.h     |  5 +-
+ .../devtools_protocol/domains/Extensions.pdl   | 12 +++++
+ 4 files changed, 67 insertions(+), 2 deletions(-)
 
+diff --git a/chrome/browser/devtools/inspector_protocol_config.json b/chrome/browser/devtools/inspector_protocol_config.json
+--- a/chrome/browser/devtools/inspector_protocol_config.json
++++ b/chrome/browser/devtools/inspector_protocol_config.json
+@@ -35,7 +35,7 @@
+             },
+             {
+                 "domain": "Extensions",
+-                "include": [ "triggerAction", "loadUnpacked", "getStorageItems", "setStorageItems", "removeStorageItems", "clearStorageItems", "uninstall", "getExtensions" ],
++                "include": [ "triggerAction", "loadUnpacked", "getStorageItems", "setStorageItems", "removeStorageItems", "clearStorageItems", "uninstall", "getExtensions", "setUserScriptsAccess" ],
+                 "async": [ "loadUnpacked", "getStorageItems", "setStorageItems", "removeStorageItems", "clearStorageItems", "uninstall" ]
+             },
+             {
 diff --git a/chrome/browser/devtools/protocol/extensions_handler.cc b/chrome/browser/devtools/protocol/extensions_handler.cc
 index 3769f79..73d2734 100644
 --- a/chrome/browser/devtools/protocol/extensions_handler.cc
