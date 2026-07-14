@@ -179,6 +179,34 @@ prepare_source() {{
   git -C "$destination" reset --hard "$commit"
   git -C "$destination" clean -ffd
 }}
+prepare_chromium_source() {{
+  local destination="$build_root/src/src"
+  local legacy="$build_root/src/chromium"
+  local source="$1" commit="$2"
+  if [ ! -d "$destination/.git" ]; then
+    if [ -d "$legacy/.git" ] && [ -d "$destination/third_party" ] && [ -f "$build_root/src/.gclient" ]; then
+      printf 'adopting partial gclient dependency cache at %s\n' "$destination"
+      git -C "$destination" init
+      git -C "$destination" remote add bootstrap "$legacy"
+      git -C "$destination" fetch --depth=1 bootstrap "$commit"
+      git -C "$destination" remote remove bootstrap
+      git -C "$destination" remote add origin "$source"
+    elif [ -d "$destination" ] && [ -n "$(find "$destination" -mindepth 1 -maxdepth 1 -print -quit)" ]; then
+      printf 'refusing to replace unknown non-empty Chromium destination: %s\n' "$destination" >&2
+      exit 76
+    else
+      git clone --filter=blob:none "$source" "$destination"
+    fi
+  fi
+  if [ -d "$destination/.git/rebase-apply" ]; then
+    git -C "$destination" am --abort
+  fi
+  git -C "$destination" remote set-url origin "$source"
+  git -C "$destination" fetch --depth=1 origin "$commit"
+  git -C "$destination" checkout --detach --force "$commit"
+  git -C "$destination" reset --hard "$commit"
+  git -C "$destination" clean -ffd
+}}
 prepare_depot_tools() {{
   local destination="$build_root/depot_tools" source="$1" commit="$2"
   if [ ! -d "$destination/.git" ]; then
@@ -194,7 +222,7 @@ export PATH="$build_root/depot_tools:$PATH"
 command -v gclient >/dev/null
 command -v gn >/dev/null
 command -v autoninja >/dev/null
-prepare_source src {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
+prepare_chromium_source {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
 prepare_source chrome-devtools-mcp {shell_quote(lock.mcp.source)} {shell_quote(lock.mcp.commit)}
 prepare_source scriptcat {shell_quote(lock.scriptcat.source)} {shell_quote(lock.scriptcat.commit)}
 chromium="$build_root/src/src"
