@@ -43,7 +43,7 @@ index fff70db2a59cc61c04a6ccc9379e85cd7383fad9..80572a4eec8d046823077526945d6d80
      new rspack.DefinePlugin({
        "process.env.VI_TESTING": "'false'",
        "process.env.SC_RANDOM_KEY": `'${uuidv4()}'`,
-+      "process.env.SC_MANAGED_MCP": JSON.stringify(isManagedMcp),
++      "process.env.SC_MANAGED_MCP": JSON.stringify(isManagedMcp ? "true" : "false"),
      }),
      new rspack.CopyRspackPlugin({
        patterns: [

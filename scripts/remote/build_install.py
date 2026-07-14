@@ -108,6 +108,9 @@ def run(argv: Sequence[str]) -> int:
         EXTENSION_ROOT,
         expected_build_id,
         lock.chromium.version,
+        lock.mcp.version,
+        lock.depot_tools.version,
+        lock.scriptcat.version,
     )
     print(f"activated ScriptCat MCP portable release {build_id}")
     return 0
@@ -406,7 +409,13 @@ rsync -a --delete --exclude .git dist/ext/ "$runtime/scriptcat/"
 test -f "$runtime/scriptcat/manifest.json"
 set_phase portable-package
 build_id=$(printf '%s' {shell_quote(lock.digest + project_commit)} | sha256sum | cut -c1-24)
-python3 - "$runtime" "$build_id" {shell_quote(lock.chromium.version)} <<'PY'
+python3 - \
+  "$runtime" \
+  "$build_id" \
+  {shell_quote(lock.chromium.version)} \
+  {shell_quote(lock.mcp.version)} \
+  {shell_quote(lock.depot_tools.version)} \
+  {shell_quote(lock.scriptcat.version)} <<'PY'
 import hashlib
 import json
 import pathlib
@@ -422,7 +431,17 @@ for path in sorted(item for item in root.rglob('*') if item.is_file()):
             digest.update(chunk)
     files[relative] = digest.hexdigest()
 (root / 'manifest.json').write_text(
-    json.dumps({{'build_id': sys.argv[2], 'chromium_version': sys.argv[3], 'files': files}}, indent=2)
+    json.dumps(
+        {{
+            'build_id': sys.argv[2],
+            'chromium_version': sys.argv[3],
+            'mcp_version': sys.argv[4],
+            'depot_tools_version': sys.argv[5],
+            'scriptcat_version': sys.argv[6],
+            'files': files,
+        }},
+        indent=2,
+    )
     + '\\n',
     encoding='utf-8',
 )

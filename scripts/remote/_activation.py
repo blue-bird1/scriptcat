@@ -26,6 +26,9 @@ PROFILE_LOCK_PATH = (
 class ReleaseManifest:
     build_id: str
     chromium_version: str
+    mcp_version: str
+    depot_tools_version: str
+    scriptcat_version: str
     files: dict[str, str]
 
 
@@ -41,6 +44,9 @@ def activate_archive(
     extension_root: Path,
     expected_build_id: str,
     expected_chromium_version: str,
+    expected_mcp_version: str,
+    expected_depot_tools_version: str,
+    expected_scriptcat_version: str,
 ) -> str:
     staging = Path("/tmp") / f"scriptcat-mcp-stage-{os.getpid()}"
     if staging.exists():
@@ -56,6 +62,19 @@ def activate_archive(
             raise WorkflowError(
                 "release Chromium version does not match the upstream lock"
             )
+        expected_versions = {
+            "MCP": (manifest.mcp_version, expected_mcp_version),
+            "depot_tools": (
+                manifest.depot_tools_version,
+                expected_depot_tools_version,
+            ),
+            "ScriptCat": (manifest.scriptcat_version, expected_scriptcat_version),
+        }
+        for component, (actual, expected) in expected_versions.items():
+            if actual != expected:
+                raise WorkflowError(
+                    f"release {component} version does not match the upstream lock"
+                )
         verify_manifest(release, manifest)
         verify_chromium_binary(release, manifest.chromium_version)
         extension_temporary = prepare_extension(release, extension_root)
@@ -126,12 +145,22 @@ def read_manifest(release: Path) -> ReleaseManifest:
         raise WorkflowError(f"release manifest is invalid: {error}") from error
     build_id = raw.get("build_id")
     chromium_version = raw.get("chromium_version")
+    mcp_version = raw.get("mcp_version")
+    depot_tools_version = raw.get("depot_tools_version")
+    scriptcat_version = raw.get("scriptcat_version")
     files = raw.get("files")
     if (
         not isinstance(build_id, str)
         or not build_id
         or "/" in build_id
         or not isinstance(chromium_version, str)
+        or not chromium_version
+        or not isinstance(mcp_version, str)
+        or not mcp_version
+        or not isinstance(depot_tools_version, str)
+        or not depot_tools_version
+        or not isinstance(scriptcat_version, str)
+        or not scriptcat_version
         or not isinstance(files, dict)
         or not all(
             isinstance(key, str) and isinstance(value, str)
@@ -139,7 +168,14 @@ def read_manifest(release: Path) -> ReleaseManifest:
         )
     ):
         raise WorkflowError("release manifest has an unsupported shape")
-    return ReleaseManifest(build_id, chromium_version, files)
+    return ReleaseManifest(
+        build_id,
+        chromium_version,
+        mcp_version,
+        depot_tools_version,
+        scriptcat_version,
+        files,
+    )
 
 
 def verify_manifest(release: Path, manifest: ReleaseManifest) -> None:

@@ -3,6 +3,7 @@ hooks = true
 
 [mcp_servers.chrome-devtools-scriptcat]
 command = "node"
+env = { CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = "1" }
 args = [
   "/home/bluebird/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js",
   "--executable-path=/home/bluebird/.local/share/scriptcat-mcp/current/chromium/chrome-linux/chrome",
