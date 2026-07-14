@@ -383,7 +383,7 @@ test -f package-lock.json
 set_phase mcp-lock-import
 pnpm import
 set_phase mcp-install
-pnpm install --frozen-lockfile
+pnpm install --frozen-lockfile --config.node-linker=hoisted
 set_phase mcp-build
 pnpm build
 set_phase mcp-tests
