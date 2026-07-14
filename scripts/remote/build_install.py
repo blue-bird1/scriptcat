@@ -6,7 +6,7 @@ import argparse
 import hashlib
 import sys
 from collections.abc import Sequence
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -29,6 +29,7 @@ if __package__ in (None, ""):
     )
     from remote._lock import UpstreamLock, load_lock
     from remote._patching import patch_preparation_script
+    from remote._portable_package import portable_package_script
 else:
     from ._activation import activate_archive
     from ._common import (
@@ -49,11 +50,12 @@ else:
     )
     from ._lock import UpstreamLock, load_lock
     from ._patching import patch_preparation_script
+    from ._portable_package import portable_package_script
 
 
 LOCK_PATH = Path("browser/upstreams.lock.json")
 ARCHIVE_NAME = "scriptcat-mcp-portable.tar.zst"
-EXTENSION_ROOT = Path.home() / ".codex" / "chrome-extensions" / "scriptcat" / "v1.3.2"
+EXTENSION_BASE = Path.home() / ".codex" / "chrome-extensions" / "scriptcat"
 
 
 def parser() -> argparse.ArgumentParser:
@@ -99,13 +101,11 @@ def run(argv: Sequence[str]) -> int:
     if arguments.archive_only:
         print(archive)
         return 0
-    expected_build_id = hashlib.sha256(f"{lock.digest}{commit}".encode()).hexdigest()[
-        :24
-    ]
+    expected_build_id = release_build_id(lock.digest, commit)
     build_id = activate_archive(
         archive,
         local_data_root(),
-        EXTENSION_ROOT,
+        extension_root(lock.scriptcat.version),
         expected_build_id,
         lock.chromium.version,
         lock.mcp.version,
@@ -114,6 +114,22 @@ def run(argv: Sequence[str]) -> int:
     )
     print(f"activated ScriptCat MCP portable release {build_id}")
     return 0
+
+
+def release_build_id(lock_digest: str, project_commit: str) -> str:
+    return hashlib.sha256(f"{lock_digest}{project_commit}".encode()).hexdigest()[:24]
+
+
+def extension_root(scriptcat_version: str) -> Path:
+    version_path = PurePosixPath(scriptcat_version)
+    if (
+        version_path.is_absolute()
+        or len(version_path.parts) != 1
+        or version_path.name != scriptcat_version
+        or scriptcat_version in {".", ".."}
+    ):
+        raise WorkflowError("scriptcat.version is unsafe for an extension path")
+    return EXTENSION_BASE / scriptcat_version
 
 
 def download_archive(config: RemoteConfig, lock: UpstreamLock) -> Path:
@@ -134,6 +150,7 @@ def remote_build_script(
     config: RemoteConfig, lock: UpstreamLock, project_commit: str, project_origin: str
 ) -> str:
     patch_helpers, patch_commands = patch_preparation_script(lock)
+    build_id = release_build_id(lock.digest, project_commit)
     return f"""#!/usr/bin/env bash
 set -Eeuo pipefail
 umask 022
@@ -199,6 +216,7 @@ for process_dir in /proc/[0-9]*; do
 done
 project_commit={shell_quote(project_commit)}
 project_origin={shell_quote(project_origin)}
+build_id={shell_quote(build_id)}
 if [ ! -d "$checkout/.git" ]; then
   git clone "$project_origin" "$checkout"
 fi
@@ -207,6 +225,10 @@ git -C "$checkout" checkout main
 git -C "$checkout" reset --hard origin/main
 git -C "$checkout" clean -ffd
 test "$(git -C "$checkout" rev-parse HEAD)" = "$project_commit"
+SOURCE_DATE_EPOCH=$(git -C "$checkout" show -s --format=%ct "$project_commit")
+test "$SOURCE_DATE_EPOCH" -gt 0
+export SOURCE_DATE_EPOCH
+export SC_MANAGED_MCP_RANDOM_KEY="$build_id"
 {patch_helpers}
 ensure_chromium_source() {{
   local destination="$build_root/src/src"
@@ -407,51 +429,7 @@ pnpm build:managed-mcp
 test -f dist/ext/manifest.json
 rsync -a --delete --exclude .git dist/ext/ "$runtime/scriptcat/"
 test -f "$runtime/scriptcat/manifest.json"
-set_phase portable-package
-build_id=$(printf '%s' {shell_quote(lock.digest + project_commit)} | sha256sum | cut -c1-24)
-python3 - \
-  "$runtime" \
-  "$build_id" \
-  {shell_quote(lock.chromium.version)} \
-  {shell_quote(lock.mcp.version)} \
-  {shell_quote(lock.depot_tools.version)} \
-  {shell_quote(lock.scriptcat.version)} <<'PY'
-import hashlib
-import json
-import pathlib
-import sys
-
-root = pathlib.Path(sys.argv[1])
-files = {{}}
-for path in sorted(item for item in root.rglob('*') if item.is_file()):
-    relative = path.relative_to(root).as_posix()
-    digest = hashlib.sha256()
-    with path.open('rb') as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
-            digest.update(chunk)
-    files[relative] = digest.hexdigest()
-(root / 'manifest.json').write_text(
-    json.dumps(
-        {{
-            'build_id': sys.argv[2],
-            'chromium_version': sys.argv[3],
-            'mcp_version': sys.argv[4],
-            'depot_tools_version': sys.argv[5],
-            'scriptcat_version': sys.argv[6],
-            'files': files,
-        }},
-        indent=2,
-    )
-    + '\\n',
-    encoding='utf-8',
-)
-PY
-(cd "$runtime" && find . -type f ! -name SHA256SUMS -print0 | LC_ALL=C sort -z | \
-  xargs -0 sha256sum --zero > SHA256SUMS)
-archive_root="$build_root/out/release-$build_id"
-rm -rf "$archive_root"
-mv "$runtime" "$archive_root"
-tar --zstd -C "$build_root/out" -cf "$build_root/out/{ARCHIVE_NAME}" "$(basename "$archive_root")"
+{portable_package_script(ARCHIVE_NAME, lock)}
 printf 'remote build completed: %s\\n' "$build_id"
 """
 

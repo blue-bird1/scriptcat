@@ -1,0 +1,76 @@
+---
+description: Scriptcat @require 用法（@connect、库格式、IIFE 兼容）
+alwaysApply: false
+---
+# Scriptcat @require
+
+Scriptcat 兼容 Tampermonkey，但 @require 有额外要求。参考 [scriptcat.org lib](https://github.com/scriptscat/lib)（ajaxHooker、ElementGetter）的实践。
+
+## @connect 必须声明
+
+@require 到外部域名（如 `raw.githubusercontent.com`）时，**必须在脚本头声明 `@connect 域名`**，否则加载会静默失败。
+
+```javascript
+// @require      https://raw.githubusercontent.com/user/repo/main/vendor/lib.js
+// @connect      raw.githubusercontent.com
+```
+
+## 库的导出格式
+
+scriptcat.org lib 使用**顶层 `var X = ...`** 创建全局，主脚本**直接使用 `X`**（不用 `window.X`）。
+
+### 推荐格式（参考 ajaxHooker、ElementGetter）
+
+```javascript
+// 库文件（被 @require 的）
+var ajaxHooker = function() {
+  'use strict';
+  // ...
+  return { hook: fn => ..., filter: arr => ..., ... };
+}();
+```
+
+```javascript
+// 主脚本
+/* global ajaxHooker */
+(function() {
+  'use strict';
+  ajaxHooker.hook(request => { ... });
+})();
+```
+
+### 主脚本写法
+
+1. 用 `/* global X */` 声明全局（避免 lint 报错）
+2. 直接使用 `X`，不要用 `window.X`
+
+## IIFE 模块格式的兼容
+
+若构建产物为 Vite/Rollup 的 IIFE：`var PageAgent = (function(exports){...return exports})({})`，则 `PageAgent` 是 exports 对象，构造函数在 `PageAgent.PageAgent`。主脚本需兼容两种格式：
+
+```javascript
+/* global PageAgent */
+const PageAgentCls = (typeof PageAgent === 'function')
+  ? PageAgent
+  : (typeof PageAgent !== 'undefined' && PageAgent?.PageAgent);
+if (typeof PageAgentCls !== 'function') {
+  console.error('PageAgent 未加载，请检查 @require');
+  return;
+}
+```
+
+## 自托管 vendor 的 build 建议
+
+当 IIFE 输出为 exports 对象时，可在 build 末尾追加显式挂载到全局，提高兼容性：
+
+```javascript
+;(function(g){
+  var p = typeof PageAgent !== "undefined" ? (PageAgent.PageAgent || PageAgent) : undefined;
+  if (p) g.PageAgent = p;
+})(typeof globalThis !== "undefined" ? globalThis : typeof window !== "undefined" ? window : typeof self !== "undefined" ? self : this);
+```
+
+## 参考
+
+- [scriptcat.org lib](https://github.com/scriptscat/lib) - ajaxHooker、ElementGetter 等
+- [Scriptcat 文档](https://docs.scriptcat.org/docs/dev/meta) - @require、@connect、inject-into

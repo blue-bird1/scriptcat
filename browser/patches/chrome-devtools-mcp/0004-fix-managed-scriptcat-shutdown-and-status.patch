@@ -1,0 +1,751 @@
+From 95593a83fcefbf99c2536255dd47fb97efed0b29 Mon Sep 17 00:00:00 2001
+From: bluebird <linlanxi7552659@gmail.com>
+Date: Wed, 15 Jul 2026 06:17:58 +0800
+Subject: [PATCH] fix: harden managed ScriptCat browser lifecycle
+
+---
+ src/ProfileLock.ts                   |  76 ++++++++++--
+ src/ScriptCatBackend.ts              |  48 +++++++
+ src/ScriptCatManager.ts              |  13 +-
+ src/browser.ts                       | 179 +++++++++++++++++++++++----
+ tests/ManagedBrowserShutdown.test.ts | 166 +++++++++++++++++++++++++
+ tests/ScriptCatManager.test.ts       |  78 +++++++++++-
+ 6 files changed, 521 insertions(+), 39 deletions(-)
+ create mode 100644 tests/ManagedBrowserShutdown.test.ts
+
+diff --git a/src/ProfileLock.ts b/src/ProfileLock.ts
+index 41cfa08..9ef1ab0 100644
+--- a/src/ProfileLock.ts
++++ b/src/ProfileLock.ts
+@@ -13,10 +13,15 @@ import {ManagedMcpError} from './ManagedMcpError.js';
+ export const PROFILE_LOCK_FILENAME = '.scriptcat-mcp.lock';
+ const LOCK_READY = 'LOCKED\n';
+ const LOCK_TIMEOUT_MS = 5_000;
++const LOCK_RELEASE_TIMEOUT_MS = 2_000;
+ 
+ let lockProcess: ChildProcessWithoutNullStreams | undefined;
++let lockReleasePromise: Promise<void> | undefined;
+ 
+ export async function acquireProfileLock(userDataDir: string): Promise<void> {
++  if (lockReleasePromise) {
++    await lockReleasePromise;
++  }
+   if (lockProcess && lockProcess.exitCode === null) {
+     return;
+   }
+@@ -118,21 +123,72 @@ async function waitForLock(
+ }
+ 
+ export async function releaseProfileLock(): Promise<void> {
++  if (lockReleasePromise) {
++    return await lockReleasePromise;
++  }
+   const child = lockProcess;
+-  lockProcess = undefined;
+   if (!child || child.exitCode !== null) {
++    lockProcess = undefined;
+     return;
+   }
+ 
++  const releasePromise = closeLockProcess(child);
++  lockReleasePromise = releasePromise;
++  try {
++    await releasePromise;
++  } finally {
++    if (lockProcess === child && child.exitCode !== null) {
++      lockProcess = undefined;
++    }
++    if (lockReleasePromise === releasePromise) {
++      lockReleasePromise = undefined;
++    }
++  }
++}
++
++async function closeLockProcess(
++  child: ChildProcessWithoutNullStreams,
++): Promise<void> {
+   child.stdin.end();
+-  await new Promise<void>(resolve => {
+-    const timeout = setTimeout(() => {
+-      child.kill('SIGTERM');
+-      resolve();
+-    }, 2_000);
+-    child.once('exit', () => {
+-      clearTimeout(timeout);
+-      resolve();
+-    });
++  if (await waitForExit(child, LOCK_RELEASE_TIMEOUT_MS)) {
++    return;
++  }
++  child.kill('SIGTERM');
++  if (await waitForExit(child, LOCK_RELEASE_TIMEOUT_MS)) {
++    return;
++  }
++  child.kill('SIGKILL');
++  await waitForExit(child);
++}
++
++async function waitForExit(
++  child: ChildProcessWithoutNullStreams,
++  timeout?: number,
++): Promise<boolean> {
++  if (child.exitCode !== null) {
++    return true;
++  }
++  return await new Promise(resolve => {
++    let timeoutId: NodeJS.Timeout | undefined;
++    const finish = (exited: boolean) => {
++      if (timeoutId) {
++        clearTimeout(timeoutId);
++      }
++      child.off('exit', onExit);
++      resolve(exited);
++    };
++    const onExit = () => {
++      finish(true);
++    };
++    child.once('exit', onExit);
++    if (child.exitCode !== null) {
++      finish(true);
++      return;
++    }
++    if (timeout !== undefined) {
++      timeoutId = setTimeout(() => {
++        finish(false);
++      }, timeout);
++    }
+   });
+ }
+diff --git a/src/ScriptCatBackend.ts b/src/ScriptCatBackend.ts
+index f5289f6..d7b9ade 100644
+--- a/src/ScriptCatBackend.ts
++++ b/src/ScriptCatBackend.ts
+@@ -35,6 +35,43 @@ export class ScriptCatBackend {
+     return Boolean(this.#findOffscreenTarget());
+   }
+ 
++  async userScriptsAccessEnabled(): Promise<boolean | null> {
++    const target = this.#findServiceWorkerTarget();
++    if (!target) {
++      return null;
++    }
++    try {
++      const worker = await target.worker();
++      if (!worker) {
++        return null;
++      }
++      return await withTimeout(
++        worker.evaluate(async () => {
++          try {
++            const chromeApi = globalThis as unknown as {
++              chrome?: {
++                userScripts?: {
++                  getScripts(options: {ids: string[]}): Promise<unknown>;
++                };
++              };
++            };
++            const userScripts = chromeApi.chrome?.userScripts;
++            if (typeof userScripts?.getScripts !== 'function') {
++              return false;
++            }
++            return Array.isArray(await userScripts.getScripts({ids: []}));
++          } catch {
++            return false;
++          }
++        }),
++        this.#timeout,
++        'userScripts access probe',
++      );
++    } catch {
++      return null;
++    }
++  }
++
+   async send<T>(
+     action: string,
+     data?: unknown,
+@@ -140,6 +177,17 @@ export class ScriptCatBackend {
+       );
+   }
+ 
++  #findServiceWorkerTarget(): Target | undefined {
++    const expectedPrefix = `chrome-extension://${this.#extensionId}/`;
++    return this.#browser
++      .targets()
++      .find(
++        target =>
++          target.type() === 'service_worker' &&
++          target.url().startsWith(expectedPrefix),
++      );
++  }
++
+   async #getOffscreenPage(): Promise<Page> {
+     const target =
+       this.#findOffscreenTarget() ??
+diff --git a/src/ScriptCatManager.ts b/src/ScriptCatManager.ts
+index 4733fe2..3f50cf3 100644
+--- a/src/ScriptCatManager.ts
++++ b/src/ScriptCatManager.ts
+@@ -52,6 +52,7 @@ export interface ScriptCatStatus {
+     path?: string;
+   };
+   serviceWorkerReady: boolean;
++  userScriptsAccessEnabled: boolean | null;
+   backendTransportReady: boolean;
+   repositoryRoot: string;
+ }
+@@ -173,8 +174,6 @@ export class ScriptCatManager {
+       );
+     }
+ 
+-    await setExtensionUserScriptsAccess(this.#browser, this.#extensionId, true);
+-
+     const reloadedId = await this.#browser.installExtension(
+       this.#extensionPath,
+     );
+@@ -185,6 +184,7 @@ export class ScriptCatManager {
+         {expectedId: this.#extensionId, reloadedId},
+       );
+     }
++    await setExtensionUserScriptsAccess(this.#browser, this.#extensionId, true);
+     await this.#waitUntilReady();
+   }
+ 
+@@ -197,6 +197,7 @@ export class ScriptCatManager {
+         ready: false,
+         extension: {id: this.#extensionId},
+         serviceWorkerReady: false,
++        userScriptsAccessEnabled: null,
+         backendTransportReady: false,
+         repositoryRoot: this.#repositoryRoot,
+       };
+@@ -210,10 +211,15 @@ export class ScriptCatManager {
+         serviceWorkerReady = false;
+       }
+     }
++    const userScriptsAccessEnabled =
++      await this.#backend.userScriptsAccessEnabled();
+     const backendTransportReady = this.#backend.transportReady();
+     return {
+       ready: Boolean(
+-        extension?.enabled && serviceWorkerReady && backendTransportReady,
++        extension?.enabled &&
++        serviceWorkerReady &&
++        userScriptsAccessEnabled === true &&
++        backendTransportReady,
+       ),
+       extension: {
+         id: this.#extensionId,
+@@ -223,6 +229,7 @@ export class ScriptCatManager {
+         path: extension?.path,
+       },
+       serviceWorkerReady,
++      userScriptsAccessEnabled,
+       backendTransportReady,
+       repositoryRoot: this.#repositoryRoot,
+     };
+diff --git a/src/browser.ts b/src/browser.ts
+index 4c7318a..fbc428c 100644
+--- a/src/browser.ts
++++ b/src/browser.ts
+@@ -4,7 +4,7 @@
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ 
+-import {execSync} from 'node:child_process';
++import {execSync, type ChildProcess} from 'node:child_process';
+ import fs from 'node:fs';
+ import os from 'node:os';
+ import path from 'node:path';
+@@ -21,6 +21,10 @@ import {puppeteer} from './third_party/index.js';
+ 
+ let browser: Browser | undefined;
+ let browserMode: 'launched' | 'connected' | undefined;
++let browserLaunchPromise: Promise<Browser> | undefined;
++let browserClosePromise: Promise<void> | undefined;
++
++const PROCESS_EXIT_TIMEOUT_MS = 2_000;
+ 
+ function makeTargetFilter(enableExtensions = false) {
+   const ignoredPrefixes = new Set(['chrome://', 'chrome-untrusted://']);
+@@ -282,56 +286,181 @@ export async function ensureBrowserLaunched(
+   if (browser?.connected) {
+     return browser;
+   }
+-  if (options.profileLock) {
+-    if (!options.userDataDir) {
+-      throw new Error('A user data directory is required for profile locking.');
+-    }
+-    await acquireProfileLock(options.userDataDir);
++  if (browserLaunchPromise) {
++    return await browserLaunchPromise;
+   }
+-  // Assign mode before browser; see the connect path above for rationale.
+-  try {
+-    const launched = await launch(options);
+-    browserMode = 'launched';
+-    browser = launched;
+-    return browser;
+-  } catch (error) {
++
++  const launchPromise = (async (): Promise<Browser> => {
+     if (options.profileLock) {
+-      await releaseProfileLock();
++      if (!options.userDataDir) {
++        throw new Error(
++          'A user data directory is required for profile locking.',
++        );
++      }
++      await acquireProfileLock(options.userDataDir);
++    }
++    // Assign mode before browser; see the connect path above for rationale.
++    try {
++      const launched = await launch(options);
++      browserMode = 'launched';
++      browser = launched;
++      return browser;
++    } catch (error) {
++      if (options.profileLock) {
++        await releaseProfileLock();
++      }
++      throw error;
++    }
++  })();
++  browserLaunchPromise = launchPromise;
++  try {
++    return await launchPromise;
++  } finally {
++    if (browserLaunchPromise === launchPromise) {
++      browserLaunchPromise = undefined;
+     }
+-    throw error;
+   }
+ }
+ 
+ /**
+  * Shutdown hook for the active browser. Closes a launched browser (so the
+  * Chrome subprocess is reaped) or disconnects from an attached browser (so
+- * the user's Chrome instance stays alive). No-op if no browser is active or
+- * the connection has already been dropped. Called from the server entrypoint
+- * on stdin EOF / SIGTERM / SIGINT.
++ * the user's Chrome instance stays alive). A launched browser remains owned
++ * until its OS process exits, even if its CDP connection has already dropped.
++ * Called from the server entrypoint on stdin EOF / SIGTERM / SIGINT.
+  */
+ export async function closeBrowser(): Promise<void> {
++  if (browserClosePromise) {
++    return await browserClosePromise;
++  }
++
++  const closePromise = closeActiveBrowser();
++  browserClosePromise = closePromise;
++  try {
++    await closePromise;
++  } finally {
++    if (browserClosePromise === closePromise) {
++      browserClosePromise = undefined;
++    }
++  }
++}
++
++async function closeActiveBrowser(): Promise<void> {
++  const launchPromise = browserLaunchPromise;
++  if (launchPromise) {
++    try {
++      await launchPromise;
++    } catch {
++      return;
++    }
++  }
++
+   const b = browser;
+   const mode = browserMode;
+   browser = undefined;
+   browserMode = undefined;
+-  if (!b || !b.connected) {
+-    await releaseProfileLock();
++  if (!b) {
+     return;
+   }
+   if (mode === 'launched') {
++    await closeLaunchedBrowser(b);
+     try {
+-      await b.close().catch(err => {
+-        logger?.('Failed to close browser', err);
+-      });
+-    } finally {
+       await releaseProfileLock();
++    } catch (error) {
++      logger?.('Failed to release the managed profile lock', error);
+     }
+     return;
+   }
++  if (!b.connected) {
++    return;
++  }
+   await b.disconnect().catch(err => {
+     logger?.('Failed to disconnect from browser', err);
+   });
+-  await releaseProfileLock();
++}
++
++async function closeLaunchedBrowser(b: Browser): Promise<void> {
++  const child = b.process();
++  if (!child) {
++    throw new Error('The launched browser does not expose its OS process.');
++  }
++
++  let closeFailed = !b.connected;
++  if (b.connected) {
++    try {
++      await b.close();
++    } catch (error) {
++      closeFailed = true;
++      logger?.('Failed to close browser', error);
++    }
++  }
++
++  if (isProcessExited(child)) {
++    return;
++  }
++  if (
++    !closeFailed &&
++    (await waitForProcessExit(child, PROCESS_EXIT_TIMEOUT_MS))
++  ) {
++    return;
++  }
++
++  stopBrowserProcess(child, 'SIGTERM');
++  if (await waitForProcessExit(child, PROCESS_EXIT_TIMEOUT_MS)) {
++    return;
++  }
++
++  stopBrowserProcess(child, 'SIGKILL');
++  if (await waitForProcessExit(child, PROCESS_EXIT_TIMEOUT_MS)) {
++    return;
++  }
++
++  logger?.('Chrome did not exit after SIGKILL; waiting to reap it.');
++  await waitForProcessExit(child);
++}
++
++function isProcessExited(child: ChildProcess): boolean {
++  return child.exitCode !== null || child.signalCode !== null;
++}
++
++function stopBrowserProcess(child: ChildProcess, signal: NodeJS.Signals): void {
++  try {
++    child.kill(signal);
++  } catch (error) {
++    logger?.(`Failed to send ${signal} to Chrome`, error);
++  }
++}
++
++async function waitForProcessExit(
++  child: ChildProcess,
++  timeout?: number,
++): Promise<boolean> {
++  if (isProcessExited(child)) {
++    return true;
++  }
++  return await new Promise(resolve => {
++    let timeoutId: NodeJS.Timeout | undefined;
++    const finish = (exited: boolean) => {
++      if (timeoutId) {
++        clearTimeout(timeoutId);
++      }
++      child.off('exit', onExit);
++      resolve(exited);
++    };
++    const onExit = () => {
++      finish(true);
++    };
++    child.once('exit', onExit);
++    if (isProcessExited(child)) {
++      finish(true);
++      return;
++    }
++    if (timeout !== undefined) {
++      timeoutId = setTimeout(() => {
++        finish(false);
++      }, timeout);
++    }
++  });
+ }
+ 
+ export type Channel = 'stable' | 'canary' | 'beta' | 'dev';
+diff --git a/tests/ManagedBrowserShutdown.test.ts b/tests/ManagedBrowserShutdown.test.ts
+new file mode 100644
+index 0000000..71940a5
+--- /dev/null
++++ b/tests/ManagedBrowserShutdown.test.ts
+@@ -0,0 +1,166 @@
++/**
++ * @license
++ * Copyright 2026 Google LLC
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import assert from 'node:assert';
++import type {ChildProcess} from 'node:child_process';
++import {spawn} from 'node:child_process';
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++import {describe, it} from 'node:test';
++
++import {executablePath} from 'puppeteer';
++
++import {closeBrowser, ensureBrowserLaunched} from '../src/browser.js';
++import {PROFILE_LOCK_FILENAME, releaseProfileLock} from '../src/ProfileLock.js';
++
++const CLOSE_TEST_TIMEOUT_MS = 5_000;
++
++async function profileLockIsAvailable(profile: string): Promise<boolean> {
++  const child = spawn('flock', [
++    '--exclusive',
++    '--nonblock',
++    path.join(profile, PROFILE_LOCK_FILENAME),
++    'true',
++  ]);
++  return await new Promise((resolve, reject) => {
++    child.once('error', reject);
++    child.once('exit', code => {
++      resolve(code === 0);
++    });
++  });
++}
++
++async function waitForExit(child: ChildProcess): Promise<void> {
++  if (child.exitCode !== null || child.signalCode !== null) {
++    return;
++  }
++  await new Promise<void>(resolve => {
++    child.once('exit', () => {
++      resolve();
++    });
++  });
++}
++
++async function waitForTermination(
++  terminationRequested: Promise<void>,
++): Promise<void> {
++  await Promise.race([
++    terminationRequested,
++    new Promise<void>((_resolve, reject) => {
++      setTimeout(() => {
++        reject(new Error('Timed out waiting for Chrome termination.'));
++      }, CLOSE_TEST_TIMEOUT_MS);
++    }),
++  ]);
++}
++
++async function launchManagedBrowser(): Promise<{
++  browser: Awaited<ReturnType<typeof ensureBrowserLaunched>>;
++  child: ChildProcess;
++  profile: string;
++}> {
++  const profile = await fs.mkdtemp(
++    path.join(os.tmpdir(), 'scriptcat-managed-browser-'),
++  );
++  const browser = await ensureBrowserLaunched({
++    headless: true,
++    isolated: false,
++    userDataDir: profile,
++    executablePath: await executablePath(),
++    devtools: false,
++    profileLock: true,
++  });
++  const child = browser.process();
++  assert.ok(child);
++  return {browser, child, profile};
++}
++
++function delayTermination(child: ChildProcess): {
++  terminationRequested: Promise<void>;
++  restore(): void;
++  terminate(): void;
++} {
++  const originalKill = child.kill.bind(child);
++  let notifyTermination: () => void;
++  const terminationRequested = new Promise<void>(resolve => {
++    notifyTermination = resolve;
++  });
++  child.kill = signal => {
++    if (signal === 'SIGTERM') {
++      notifyTermination();
++      return true;
++    }
++    return originalKill(signal);
++  };
++  return {
++    terminationRequested,
++    restore() {
++      child.kill = originalKill;
++    },
++    terminate() {
++      originalKill('SIGTERM');
++    },
++  };
++}
++
++async function cleanupManagedBrowser(
++  child: ChildProcess,
++  profile: string,
++): Promise<void> {
++  if (child.exitCode === null && child.signalCode === null) {
++    child.kill('SIGKILL');
++    await waitForExit(child);
++  }
++  await releaseProfileLock();
++  await fs.rm(profile, {recursive: true, force: true});
++}
++
++describe('managed browser shutdown', () => {
++  it('reaps a disconnected launched Chrome before releasing its profile lock', async () => {
++    const {browser, child, profile} = await launchManagedBrowser();
++    const termination = delayTermination(child);
++    try {
++      browser.disconnect();
++      const closing = closeBrowser();
++      await waitForTermination(termination.terminationRequested);
++      assert.strictEqual(await profileLockIsAvailable(profile), false);
++      termination.restore();
++      termination.terminate();
++      await closing;
++      await waitForExit(child);
++      assert.ok(child.exitCode !== null || child.signalCode !== null);
++      assert.strictEqual(await profileLockIsAvailable(profile), true);
++    } finally {
++      termination.restore();
++      await cleanupManagedBrowser(child, profile);
++    }
++  });
++
++  it('reaps Chrome after a close failure before releasing its profile lock', async () => {
++    const {browser, child, profile} = await launchManagedBrowser();
++    const termination = delayTermination(child);
++    const close = browser.close.bind(browser);
++    browser.close = async () => {
++      throw new Error('Test browser close failure.');
++    };
++    try {
++      const closing = closeBrowser();
++      await waitForTermination(termination.terminationRequested);
++      assert.strictEqual(await profileLockIsAvailable(profile), false);
++      termination.restore();
++      termination.terminate();
++      await closing;
++      await waitForExit(child);
++      assert.ok(child.exitCode !== null || child.signalCode !== null);
++      assert.strictEqual(await profileLockIsAvailable(profile), true);
++    } finally {
++      browser.close = close;
++      termination.restore();
++      await cleanupManagedBrowser(child, profile);
++    }
++  });
++});
+diff --git a/tests/ScriptCatManager.test.ts b/tests/ScriptCatManager.test.ts
+index c72de9f..cebf737 100644
+--- a/tests/ScriptCatManager.test.ts
++++ b/tests/ScriptCatManager.test.ts
+@@ -14,6 +14,8 @@ import {ManagedMcpError} from '../src/ManagedMcpError.js';
+ import {ScriptCatManager} from '../src/ScriptCatManager.js';
+ import type {Browser} from '../src/third_party/index.js';
+ 
++const EXTENSION_ID = 'ckchkcgpbkhleahkgkbiiikpcjdbopje';
++
+ describe('ScriptCatManager', () => {
+   it('rejects a symlink that escapes the configured repository', async () => {
+     const tempRoot = await fs.mkdtemp(
+@@ -36,7 +38,7 @@ describe('ScriptCatManager', () => {
+     try {
+       const manager = await ScriptCatManager.create({} as Browser, {
+         extensionPath,
+-        extensionId: 'ckchkcgpbkhleahkgkbiiikpcjdbopje',
++        extensionId: EXTENSION_ID,
+         repositoryRoot,
+         timeout: 1_000,
+       });
+@@ -52,4 +54,78 @@ describe('ScriptCatManager', () => {
+       await fs.rm(tempRoot, {recursive: true, force: true});
+     }
+   });
++
++  it('only reports ready while the service worker can use userScripts', async () => {
++    const tempRoot = await fs.mkdtemp(
++      path.join(os.tmpdir(), 'scriptcat-manager-status-'),
++    );
++    const extensionPath = path.join(tempRoot, 'extension');
++    const repositoryRoot = path.join(tempRoot, 'repository');
++    await Promise.all([fs.mkdir(extensionPath), fs.mkdir(repositoryRoot)]);
++
++    const chromeApi = {
++      userScripts: {
++        getScripts: async (): Promise<unknown[]> => [],
++      },
++    };
++    const priorChrome = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
++    Object.defineProperty(globalThis, 'chrome', {
++      configurable: true,
++      value: chromeApi,
++    });
++
++    const worker = {
++      evaluate: async (callback: () => unknown): Promise<unknown> =>
++        await callback(),
++    };
++    const browser = {
++      extensions: async () =>
++        new Map([
++          [
++            EXTENSION_ID,
++            {
++              enabled: true,
++              workers: async () => [worker],
++            },
++          ],
++        ]),
++      targets: () => [
++        {
++          type: () => 'service_worker',
++          url: () => `chrome-extension://${EXTENSION_ID}/service-worker.js`,
++          worker: async () => worker,
++        },
++        {
++          type: () => 'other',
++          url: () => `chrome-extension://${EXTENSION_ID}/src/offscreen.html`,
++        },
++      ],
++    } as Browser;
++
++    try {
++      const manager = await ScriptCatManager.create(browser, {
++        extensionPath,
++        extensionId: EXTENSION_ID,
++        repositoryRoot,
++        timeout: 1_000,
++      });
++      const available = await manager.status();
++      assert.strictEqual(available.userScriptsAccessEnabled, true);
++      assert.strictEqual(available.ready, true);
++
++      chromeApi.userScripts.getScripts = async () => {
++        throw new Error('userScripts access disabled');
++      };
++      const unavailable = await manager.status();
++      assert.strictEqual(unavailable.userScriptsAccessEnabled, false);
++      assert.strictEqual(unavailable.ready, false);
++    } finally {
++      if (priorChrome) {
++        Object.defineProperty(globalThis, 'chrome', priorChrome);
++      } else {
++        Reflect.deleteProperty(globalThis, 'chrome');
++      }
++      await fs.rm(tempRoot, {recursive: true, force: true});
++    }
++  });
+ });
+-- 
+2.43.0

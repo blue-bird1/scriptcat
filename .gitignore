@@ -1,6 +1,10 @@
 # Ignore all untracked files by default.
 *
 
+# Generated Python cache files remain ignored despite tooling whitelists below.
+__pycache__/
+*.py[cod]
+
 # Repository control files.
 !.gitignore
 !AGENTS.md
@@ -67,10 +71,21 @@ scripts/remote/__pycache__/
 scripts/remote/**/*.pyc
 !scripts/hooks/
 !scripts/hooks/block-local-chromium-build-commands.py
+!scripts/hooks/test_block_local_chromium_build_commands.py
 
 # Project-scoped Codex MCP setup for ScriptCat debugging.
 !.codex/
 !.codex/config.toml
+
+# Project-scoped Cursor MCP setup and userscript validation workflow.
+!.cursor/
+!.cursor/mcp.json
+!.cursor/rules/
+!.cursor/rules/scriptcat-context.mdc
+!.cursor/rules/scriptcat-require.mdc
+!.cursor/rules/scriptcat-userscript-quality.mdc
+!.cursor/rules/userscript-browser-mcp-test.mdc
+!.cursor/rules/scriptcat-workflow.mdc
 
 # Project-local skill used by ScriptCat MCP setup.
 !.agents/

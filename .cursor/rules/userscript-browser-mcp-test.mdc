@@ -1,0 +1,11 @@
+---
+description: 编辑用户脚本 (*.user.js) 时，以专用 ScriptCat MCP 进行真实注入验收
+globs: "*.user.js"
+alwaysApply: false
+---
+
+# Userscript 浏览器验收
+
+- 当本轮改动涉及 `*.user.js` 时，使用 `mcp__chrome_devtools_scriptcat__` 进行实际页面验证；普通 `chrome-devtools` 与 `cursor-ide-browser` 不具备 ScriptCat 注入环境。
+- 先调用 `scriptcat_status`，再通过 `scriptcat_upsert_script` 写入仓库内规范化的目标脚本路径。
+- 打开匹配 `@match` 的真实页面，确认脚本注入、UI、控制台、网络请求和核心交互；静态 DOM 检查或只运行 lint/build 不能替代运行验收。

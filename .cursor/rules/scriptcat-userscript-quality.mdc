@@ -1,0 +1,40 @@
+---
+description: 油猴脚本：技术缺陷与自检（写 *.user.js 时触发）
+globs:
+  - "*.user.js"
+alwaysApply: false
+---
+
+## 写脚本时暴露的问题（主 agent 内省）
+
+不依赖已有对话，从「我直接写 userscript 代码」出发会暴露的：
+
+**选择器与 DOM**：用看起来对的选择器不验证唯一性、稳定性；不准备 fallback；不处理元素尚未存在。
+
+**异步与错误**：只写 onload 不写 onerror/ontimeout；JSON.parse 不包 try/catch；网络失败只 console.error，用户无感知。
+
+**边界**：不处理空列表、null、undefined；不处理脚本重复注入；不处理 DOM 未就绪。
+
+**安全**：innerHTML 插入用户输入；默认 CDN 可用；文本硬编码不抽变量。
+
+**用户与体验**：不设计首次使用流程；错误提示只说失败不说原因和下一步；不考虑无障碍。
+
+**范围**：为「以后可能用到」加抽象；一次改太多不先做最小可用。
+
+## 子 agent 多维度内省（写脚本时触发）
+
+通过「直接问子 agent 可能暴露什么问题」得出——属技术层缺陷，可作写脚本时的自检清单。更深层缺陷（如规则压倒指令）需通过**实验**发现：给窄任务，观察是否违背指令。
+
+**DOM/选择器**：选择器是否唯一、稳定？有 fallback 吗？元素可能尚未存在吗？SPA 路由变化后需重跑吗？是否依赖易变文案？
+
+**异步/网络**：@connect 声明了吗？只写 onload 不写 onerror/ontimeout？4xx/5xx 处理了吗？有竞态吗？
+
+**配置/存储**：@grant 声明了吗？默认值类型一致吗？JSON.parse 有校验吗？配置升级有迁移吗？
+
+**用户可见 UI**：class 会与页面冲突吗？暗色模式？弹窗有关闭方式吗？防重复提交？提示持续时间够吗？
+
+**错误处理**：空 catch 吞掉异常？错误信息用户能懂吗？async 的 rejection 捕获了吗？GM_* 失败考虑了吗？
+
+**元数据**：@match 过宽或过窄？@connect 漏子域名？@grant 有多余？@run-at 与 DOM 访问时机匹配？
+
+**其他**：MutationObserver 用后 disconnect？setInterval 有清理？防重复注入？@require 失败有降级？

@@ -1,22 +1,26 @@
-From 26bc2a0a694a65cffd5d4ffccdd14177ed6a027a Mon Sep 17 00:00:00 2001
+undefined
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command "prettier" not found
+From faad224359bae7cc0bb7cff9d28e845928bdb9b1 Mon Sep 17 00:00:00 2001
 From: Codex <codex@local.invalid>
 Date: Tue, 14 Jul 2026 04:22:30 +0800
-Subject: [PATCH] feat: add managed MCP build mode
+Subject: [PATCH] feat: harden managed MCP build and update policy
 
 ---
- package.json                                |  1 +
- rspack.config.ts                            |  2 ++
- src/app/managed_mcp.ts                      |  1 +
- src/app/migrate.ts                          |  9 ++++++---
- src/app/service/service_worker/index.ts     |  4 +++-
- src/app/service/service_worker/runtime.ts   |  3 ++-
- src/app/service/service_worker/script.ts    | 10 ++++++++++
- src/app/service/service_worker/subscribe.ts |  3 ++-
- 8 files changed, 27 insertions(+), 6 deletions(-)
+ package.json                                       |  1 +
+ rspack.config.ts                                   | 11 +++-
+ src/app/managed_mcp.ts                             |  4 ++
+ src/app/migrate.ts                                 |  9 ++-
+ src/app/service/service_worker/index.ts            | 65 ++++++++++++----------
+ .../service_worker/regular_updatecheck.test.ts     | 45 +++++++++++++++
+ .../service/service_worker/regular_updatecheck.ts  | 12 +++-
+ src/app/service/service_worker/runtime.ts          |  3 +-
+ src/app/service/service_worker/script.ts           | 16 ++++++
+ src/app/service/service_worker/subscribe.ts        |  4 +-
+ 10 files changed, 132 insertions(+), 38 deletions(-)
  create mode 100644 src/app/managed_mcp.ts
-
+ create mode 100644 src/app/service/service_worker/regular_updatecheck.test.ts
 diff --git a/package.json b/package.json
-index 23c6dbd986be10aefbd9d10f253b5facebd7bfde..c74534eb4790940aa3446a209bb68884da625b48 100644
+index 23c6dbd..c74534e 100644
 --- a/package.json
 +++ b/package.json
 @@ -14,6 +14,7 @@
@@ -28,34 +32,46 @@ index 23c6dbd986be10aefbd9d10f253b5facebd7bfde..c74534eb4790940aa3446a209bb68884
      "dev:react-devtools": "cross-env NODE_ENV=development REACT_DEVTOOLS=true rspack",
      "dev:noMap": "cross-env NODE_ENV=development NO_MAP=true rspack",
 diff --git a/rspack.config.ts b/rspack.config.ts
-index fff70db2a59cc61c04a6ccc9379e85cd7383fad9..80572a4eec8d046823077526945d6d80dbcb66bb 100644
+index fff70db..749b1f8 100644
 --- a/rspack.config.ts
 +++ b/rspack.config.ts
-@@ -10,6 +10,7 @@ const dirname = path.resolve();
+@@ -10,6 +10,14 @@ const dirname = path.resolve();
  const isDev = process.env.NODE_ENV === "development";
  const isBeta = version.includes("-");
  const isReactTools = process.env.REACT_DEVTOOLS === "true";
 +const isManagedMcp = process.env.SC_MANAGED_MCP === "true";
++const managedMcpRandomKey = isManagedMcp ? process.env.SC_MANAGED_MCP_RANDOM_KEY : undefined;
++
++if (isManagedMcp && !managedMcpRandomKey?.trim()) {
++  throw new Error("SC_MANAGED_MCP_RANDOM_KEY is required for managed MCP builds");
++}
++
++const randomKey = managedMcpRandomKey ?? uuidv4();
  
  // Target browsers, see: https://github.com/browserslist/browserslist
  // 依照 https://developer.mozilla.org/en-US/docs/Mozilla/Add-ons/WebExtensions/API/userScripts#browser_compatibility
-@@ -128,6 +129,7 @@ export default {
+@@ -127,7 +135,8 @@ export default {
+   plugins: [
      new rspack.DefinePlugin({
        "process.env.VI_TESTING": "'false'",
-       "process.env.SC_RANDOM_KEY": `'${uuidv4()}'`,
+-      "process.env.SC_RANDOM_KEY": `'${uuidv4()}'`,
++      "process.env.SC_RANDOM_KEY": JSON.stringify(randomKey),
 +      "process.env.SC_MANAGED_MCP": JSON.stringify(isManagedMcp ? "true" : "false"),
      }),
      new rspack.CopyRspackPlugin({
        patterns: [
 diff --git a/src/app/managed_mcp.ts b/src/app/managed_mcp.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..33fc5669748fe874d99062efd091e109b5e00c3d
+index 0000000..5bb616e
 --- /dev/null
 +++ b/src/app/managed_mcp.ts
-@@ -0,0 +1 @@
-+export const isManagedMcp = process.env.SC_MANAGED_MCP === "true";
+@@ -0,0 +1,4 @@
++export const REGULAR_SCRIPT_UPDATE_ALARM = "checkScriptUpdate";
++export const REGULAR_EXTENSION_UPDATE_ALARM = "checkUpdate";
++
++export const isManagedMcp = () => process.env.SC_MANAGED_MCP === "true";
 diff --git a/src/app/migrate.ts b/src/app/migrate.ts
-index 63244e79eb8ee542b1a2a5fe467acc51a75ca101..aa83f499f27ee544a2af27aa4e8357d1c00d59f6 100644
+index 63244e7..15dab8d 100644
 --- a/src/app/migrate.ts
 +++ b/src/app/migrate.ts
 @@ -10,6 +10,7 @@ import type { Permission } from "./repo/permission";
@@ -73,7 +89,7 @@ index 63244e79eb8ee542b1a2a5fe467acc51a75ca101..aa83f499f27ee544a2af27aa4e8357d1
 -          chrome.tabs.create({
 -            url: `${DocumentationSite}/docs/change/v0.17/`,
 -          });
-+          if (!isManagedMcp) {
++          if (!isManagedMcp()) {
 +            chrome.tabs.create({
 +              url: `${DocumentationSite}/docs/change/v0.17/`,
 +            });
@@ -82,36 +98,223 @@ index 63244e79eb8ee542b1a2a5fe467acc51a75ca101..aa83f499f27ee544a2af27aa4e8357d1
              chrome.runtime.reload();
            }, 1000);
 diff --git a/src/app/service/service_worker/index.ts b/src/app/service/service_worker/index.ts
-index 51f3812830918ac86eba189cef7a22041b5ebf76..b238925e4879f6482056cee034b18134a9479ad9 100644
+index 51f3812..e170654 100644
 --- a/src/app/service/service_worker/index.ts
 +++ b/src/app/service/service_worker/index.ts
 @@ -21,6 +21,7 @@ import { FaviconDAO } from "@App/app/repo/favicon";
  import { onRegularUpdateCheckAlarm } from "./regular_updatecheck";
  import { cacheInstance } from "@App/app/cache";
  import { InfoNotification } from "./utils";
-+import { isManagedMcp } from "@App/app/managed_mcp";
++import { isManagedMcp, REGULAR_EXTENSION_UPDATE_ALARM, REGULAR_SCRIPT_UPDATE_ALARM } from "@App/app/managed_mcp";
  
  // service worker的管理器
  export default class ServiceWorkerManager {
-@@ -194,7 +195,7 @@ export default class ServiceWorkerManager {
+@@ -137,8 +138,8 @@ export default class ServiceWorkerManager {
+         // 非预期的异常API错误，停止处理
+       }
+       switch (alarm.name) {
+-        case "checkScriptUpdate":
+-          regularScriptUpdateCheck();
++        case REGULAR_SCRIPT_UPDATE_ALARM:
++          if (!isManagedMcp()) regularScriptUpdateCheck();
+           break;
+         case "cloudSync":
+           // 进行一次云同步
+@@ -148,37 +149,42 @@ export default class ServiceWorkerManager {
+             });
+           });
+           break;
+-        case "checkUpdate":
++        case REGULAR_EXTENSION_UPDATE_ALARM:
+           // 检查扩展更新
+-          regularExtensionUpdateCheck();
++          if (!isManagedMcp()) regularExtensionUpdateCheck();
+           break;
+       }
+     });
+-    // 12小时检查一次扩展更新
+-    chrome.alarms.get("checkUpdate", (alarm) => {
+-      const lastError = chrome.runtime.lastError;
+-      if (lastError) {
+-        console.error("chrome.runtime.lastError in chrome.alarms.get:", lastError);
+-        // 非预期的异常API错误，停止处理
+-      }
+-      if (!alarm) {
+-        chrome.alarms.create(
+-          "checkUpdate",
+-          {
+-            delayInMinutes: 0,
+-            periodInMinutes: 12 * 60,
+-          },
+-          () => {
+-            const lastError = chrome.runtime.lastError;
+-            if (lastError) {
+-              console.error("chrome.runtime.lastError in chrome.alarms.create:", lastError);
+-              // Starting in Chrome 117, the number of active alarms is limited to 500. Once this limit is reached, chrome.alarms.create() will fail.
+-              console.error("Chrome alarm is unable to create. Please check whether limit is reached.");
++    if (isManagedMcp()) {
++      chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM);
++      chrome.alarms.clear(REGULAR_EXTENSION_UPDATE_ALARM);
++    } else {
++      // 12小时检查一次扩展更新
++      chrome.alarms.get(REGULAR_EXTENSION_UPDATE_ALARM, (alarm) => {
++        const lastError = chrome.runtime.lastError;
++        if (lastError) {
++          console.error("chrome.runtime.lastError in chrome.alarms.get:", lastError);
++          // 非预期的异常API错误，停止处理
++        }
++        if (!alarm) {
++          chrome.alarms.create(
++            REGULAR_EXTENSION_UPDATE_ALARM,
++            {
++              delayInMinutes: 0,
++              periodInMinutes: 12 * 60,
++            },
++            () => {
++              const lastError = chrome.runtime.lastError;
++              if (lastError) {
++                console.error("chrome.runtime.lastError in chrome.alarms.create:", lastError);
++                // Starting in Chrome 117, the number of active alarms is limited to 500. Once this limit is reached, chrome.alarms.create() will fail.
++                console.error("Chrome alarm is unable to create. Please check whether limit is reached.");
++              }
+             }
+-          }
+-        );
+-      }
+-    });
++          );
++        }
++      });
++    }
+ 
+     // 云同步
+     systemConfig.watch("cloud_sync", (value) => {
+@@ -194,7 +200,7 @@ export default class ServiceWorkerManager {
        return true;
      });
  
 -    if (process.env.NODE_ENV === "production") {
-+    if (process.env.NODE_ENV === "production" && !isManagedMcp) {
++    if (process.env.NODE_ENV === "production" && !isManagedMcp()) {
        chrome.runtime.onInstalled.addListener((details) => {
          const lastError = chrome.runtime.lastError;
          if (lastError) {
-@@ -251,6 +252,7 @@ export default class ServiceWorkerManager {
+@@ -251,6 +257,7 @@ export default class ServiceWorkerManager {
          _navUrl: string,
          _tab: chrome.tabs.Tab
        ) => {
-+        if (isManagedMcp) return;
++        if (isManagedMcp()) return;
          // 已忽略后台换页
          // 在非私隐模式，正常Tab的操作下，用户的打开新Tab，或在当时Tab转至新网域时，会触发此function
          // 同一网域，SPA换页等不触发
+diff --git a/src/app/service/service_worker/regular_updatecheck.test.ts b/src/app/service/service_worker/regular_updatecheck.test.ts
+new file mode 100644
+index 0000000..c3487d6
+--- /dev/null
++++ b/src/app/service/service_worker/regular_updatecheck.test.ts
+@@ -0,0 +1,45 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import { REGULAR_SCRIPT_UPDATE_ALARM } from "@App/app/managed_mcp";
++import { initRegularUpdateCheck, onRegularUpdateCheckAlarm } from "./regular_updatecheck";
++import type { SystemConfig } from "@App/pkg/config/config";
++import type { ScriptService } from "./script";
++
++describe("managed MCP regular updates", () => {
++  let clearAlarm = vi.fn();
++  let createAlarm = vi.fn();
++
++  beforeEach(() => {
++    vi.stubEnv("SC_MANAGED_MCP", "true");
++    clearAlarm = vi.fn();
++    createAlarm = vi.fn();
++    vi.stubGlobal("chrome", {
++      ...chrome,
++      alarms: {
++        clear: clearAlarm,
++        create: createAlarm,
++      },
++    });
++  });
++
++  afterEach(() => {
++    vi.unstubAllEnvs();
++    vi.unstubAllGlobals();
++  });
++
++  it("clears a persisted regular update alarm without checking or silently installing scripts", async () => {
++    const systemConfig = {
++      getCheckScriptUpdateCycle: vi.fn().mockResolvedValue(60),
++    } as unknown as SystemConfig;
++    const scriptService = {
++      checkScriptUpdate: vi.fn(),
++    } as unknown as ScriptService;
++
++    await initRegularUpdateCheck(systemConfig);
++    const result = await onRegularUpdateCheckAlarm(systemConfig, scriptService);
++
++    expect(clearAlarm).toHaveBeenCalledWith(REGULAR_SCRIPT_UPDATE_ALARM);
++    expect(createAlarm).not.toHaveBeenCalled();
++    expect(scriptService.checkScriptUpdate).not.toHaveBeenCalled();
++    expect(result).toBeNull();
++  });
++});
+diff --git a/src/app/service/service_worker/regular_updatecheck.ts b/src/app/service/service_worker/regular_updatecheck.ts
+index 80686b8..eeb4213 100644
+--- a/src/app/service/service_worker/regular_updatecheck.ts
++++ b/src/app/service/service_worker/regular_updatecheck.ts
+@@ -1,4 +1,5 @@
+ import { type SystemConfig } from "@App/pkg/config/config";
++import { isManagedMcp, REGULAR_SCRIPT_UPDATE_ALARM } from "@App/app/managed_mcp";
+ import { type ScriptService } from "./script";
+ import { type SubscribeService } from "./subscribe";
+ 
+@@ -14,6 +15,10 @@ const ALLOW_CHECK_DELAY_MS = 3000;
+ export let allowRegularUpdateCheck = 0; // 避免SW启动时alarm触发
+ 
+ export const initRegularUpdateCheck = async (systemConfig: SystemConfig) => {
++  if (isManagedMcp()) {
++    chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM);
++    return;
++  }
+   // regularScriptUpdateCheck
+   const [result, updateCycleSecond] = await Promise.all([
+     chrome.storage.local.get(["checkupdate_script_lasttime"]),
+@@ -24,7 +29,7 @@ export const initRegularUpdateCheck = async (systemConfig: SystemConfig) => {
+     // SW启动时，即使停用了更新功能也要设置一下变数值
+     allowRegularUpdateCheck = now + ALLOW_CHECK_DELAY_MS; // 可以触发alarm的更新程序了
+     // 设定更改的话，现时的Alarm需要清除。不判断是否SW启动了，总之就清除一下
+-    chrome.alarms.clear("checkScriptUpdate"); // 如没有可以清除的Alarm，Promise会返回false
++    chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM); // 如没有可以清除的Alarm，Promise会返回false
+     // 不需要检查更新。退出操作
+     return;
+   }
+@@ -43,7 +48,7 @@ export const initRegularUpdateCheck = async (systemConfig: SystemConfig) => {
+   targetPeriodInMinutes = Math.ceil(targetPeriodInMinutes / 5) * 5; // 5的倍数
+   if (targetPeriodInMinutes < 15) targetPeriodInMinutes = 15; // 至少15分钟
+   chrome.alarms.create(
+-    "checkScriptUpdate",
++    REGULAR_SCRIPT_UPDATE_ALARM,
+     {
+       when,
+       periodInMinutes: targetPeriodInMinutes,
+@@ -75,6 +80,7 @@ export const onRegularUpdateCheckAlarm = async (
+   script: ScriptService,
+   subscribe?: SubscribeService
+ ) => {
++  if (isManagedMcp()) return null;
+   const now = Date.now();
+   if (!allowRegularUpdateCheck || now < allowRegularUpdateCheck) return null; // 避免SW启动时alarm触发
+   const [result, updateCycleSecond] = await Promise.all([
+@@ -84,7 +90,7 @@ export const onRegularUpdateCheckAlarm = async (
+   if (updateCycleSecond === 0) {
+     // 按道理，不会跑到这个条件
+     // Alarm应没有触发才对。无论为何，还是清一下alarm吧
+-    chrome.alarms.clear("checkScriptUpdate");
++    chrome.alarms.clear(REGULAR_SCRIPT_UPDATE_ALARM);
+     // 不需要检查更新。退出操作
+     return null;
+   }
 diff --git a/src/app/service/service_worker/runtime.ts b/src/app/service/service_worker/runtime.ts
-index 83fc7e4d14946f72c1f19dc3b4274f725c2b66e5..21e1629921330979420d35237326b12762b82fcc 100644
+index 83fc7e4..59f5f14 100644
 --- a/src/app/service/service_worker/runtime.ts
 +++ b/src/app/service/service_worker/runtime.ts
 @@ -51,6 +51,7 @@ import type { CompiledResource, ResourceType } from "@App/app/repo/resource";
@@ -127,12 +330,12 @@ index 83fc7e4d14946f72c1f19dc3b4274f725c2b66e5..21e1629921330979420d35237326b127
  
        // 检查是否开启了开发者模式
 -      if (!this.isUserScriptsAvailable) {
-+      if (!this.isUserScriptsAvailable && !isManagedMcp) {
++      if (!this.isUserScriptsAvailable && !isManagedMcp()) {
          // 未开启加上警告引导
          this.showNoDeveloperModeWarning();
          let cid: ReturnType<typeof setInterval> | number;
 diff --git a/src/app/service/service_worker/script.ts b/src/app/service/service_worker/script.ts
-index 6ce3f964a47682ef120a74bd7677fbd0cb964211..f01104b661a7318959fb10a2e222c2b5a88d8fc5 100644
+index 6ce3f96..8e79cf6 100644
 --- a/src/app/service/service_worker/script.ts
 +++ b/src/app/service/service_worker/script.ts
 @@ -47,6 +47,7 @@ import { getSimilarityScore, ScriptUpdateCheck } from "./script_update_check";
@@ -159,22 +362,35 @@ index 6ce3f964a47682ef120a74bd7677fbd0cb964211..f01104b661a7318959fb10a2e222c2b5
  
    // 打开更新窗口
    public async openUpdatePage(script: Script, source: "user" | "system") {
-+    if (isManagedMcp && source === "system") return;
++    if (isManagedMcp() && source === "system") return;
      const { uuid, name, downloadUrl, checkUpdateUrl } = script;
      const logger = this.logger.with({
        uuid,
-@@ -1406,6 +1413,9 @@ export class ScriptService {
+@@ -939,6 +946,12 @@ export class ScriptService {
+         err?: string | Error;
+       }
+   > {
++    if (isManagedMcp() && opts.checkType === "system") {
++      return {
++        ok: false,
++        err: "Managed MCP does not run system update checks.",
++      };
++    }
+     // const executeSlienceUpdate = opts.checkType === "system";
+     const executeSlienceUpdate = opts.checkType === "system" && (await this.systemConfig.getSilenceUpdateScript());
+     // const executeSlienceUpdate = true;
+@@ -1406,6 +1419,9 @@ export class ScriptService {
      this.group.on("enable", this.enableScript.bind(this));
      this.group.on("enables", this.enableScripts.bind(this));
      this.group.on("fetchInfo", this.fetchInfo.bind(this));
-+    if (isManagedMcp) {
++    if (isManagedMcp()) {
 +      this.group.on("getSource", this.getSource.bind(this));
 +    }
      this.group.on("updateRunStatus", this.updateRunStatus.bind(this));
      this.group.on("getFilterResult", this.getFilterResult.bind(this));
      this.group.on("getScriptRunResourceByUUID", this.getScriptRunResourceByUUID.bind(this));
 diff --git a/src/app/service/service_worker/subscribe.ts b/src/app/service/service_worker/subscribe.ts
-index 5ec19875a6dc3cb4dbc80c328b4584f99d6104ce..7c5160e5f1f5f9ca1eea5937b21cd8479e580c15 100644
+index 5ec1987..80961d9 100644
 --- a/src/app/service/service_worker/subscribe.ts
 +++ b/src/app/service/service_worker/subscribe.ts
 @@ -17,6 +17,7 @@ import { uuidv4 } from "@App/pkg/utils/uuid";
@@ -185,12 +401,20 @@ index 5ec19875a6dc3cb4dbc80c328b4584f99d6104ce..7c5160e5f1f5f9ca1eea5937b21cd847
  
  export class SubscribeService {
    logger: Logger;
-@@ -224,7 +225,7 @@ export class SubscribeService {
+@@ -206,6 +207,7 @@ export class SubscribeService {
+ 
+   // 检查更新
+   async checkUpdate(url: string, source: InstallSource) {
++    if (isManagedMcp() && source === "system") return false;
+     const subscribe = await this.subscribeDAO.get(url);
+     if (!subscribe) {
+       return false;
+@@ -224,7 +226,7 @@ export class SubscribeService {
          // 进行更新
          if (true === (await this.trySilenceUpdate(code, url))) {
            // slience update
 -        } else {
-+        } else if (!isManagedMcp || source === "user") {
++        } else if (!isManagedMcp() || source === "user") {
            const si = [false, createScriptInfo(uuid, code, url, source, metadata), {}];
            await cacheInstance.set(`${CACHE_KEY_SCRIPT_INFO}${uuid}`, si);
            chrome.tabs.create({

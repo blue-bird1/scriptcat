@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shlex
 import sys
 from collections.abc import Iterable, Sequence
@@ -11,8 +12,14 @@ from pathlib import Path
 from typing import Any
 
 SHELL_SEPARATORS = frozenset({";", "&&", "||", "|", "&", "(", ")"})
-BUILD_COMMANDS = frozenset({"gclient", "autoninja", "ninja"})
-COMMAND_WRAPPERS = frozenset({"command", "exec", "nice", "nohup"})
+REDIRECTION_TOKENS = frozenset({"<", ">", ">>", "<<", "<<<"})
+SHELL_COMMANDS = frozenset({"bash", "sh", "dash", "zsh"})
+COMMAND_WRAPPERS = frozenset({"command", "exec", "nice", "nohup", "time"})
+READ_ONLY_GCLIENT_COMMANDS = frozenset({"revinfo", "root", "status"})
+READ_ONLY_NINJA_TOOLS = frozenset(
+    {"commands", "compdb", "deps", "list", "missingdeps", "query", "rules", "targets"}
+)
+ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
 
 def command_strings(value: Any) -> Iterable[str]:
@@ -27,13 +34,15 @@ def command_strings(value: Any) -> Iterable[str]:
 
 
 def is_blocked(command: str) -> bool:
+    """Return whether a shell command can invoke a forbidden local build."""
     try:
-        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()")
+        lexer = shlex.shlex(command, posix=True, punctuation_chars=";&|()<>")
         lexer.whitespace_split = True
         lexer.commenters = ""
         tokens = list(lexer)
     except ValueError:
-        return False
+        return True
+
     segment: list[str] = []
     for token in (*tokens, ";"):
         if token in SHELL_SEPARATORS:
@@ -49,69 +58,201 @@ def is_blocked_segment(tokens: Sequence[str]) -> bool:
     index = skip_assignments(tokens, 0)
     if index >= len(tokens):
         return False
+
     command = Path(tokens[index]).name
-    index += 1
+    arguments = tokens[index + 1 :]
     if command == "env":
-        while index < len(tokens) and (
-            tokens[index].startswith("-") or "=" in tokens[index]
-        ):
-            index += 1
-        return is_blocked_segment(tokens[index:])
+        next_index = env_command_index(arguments)
+        return next_index is None or is_blocked_segment(arguments[next_index:])
     if command in COMMAND_WRAPPERS:
-        return is_blocked_segment(tokens[index:])
-    if command in BUILD_COMMANDS:
-        return True
+        next_index = wrapper_command_index(command, arguments)
+        return next_index is None or is_blocked_segment(arguments[next_index:])
+    if command == "gclient":
+        return gclient_builds(arguments)
     if command == "gn":
-        return index < len(tokens) and tokens[index] == "gen"
+        return gn_builds(arguments)
+    if command in {"autoninja", "ninja"}:
+        return ninja_builds(arguments)
     if command == "ssh":
-        remote = ssh_remote_command(tokens[index:])
-        return bool(remote and is_blocked(remote))
-    if command in {"bash", "sh"}:
-        for option_index in range(index, len(tokens) - 1):
-            option = tokens[option_index]
-            if option == "-c" or (option.startswith("-") and "c" in option[1:]):
-                return is_blocked(tokens[option_index + 1])
+        remote = ssh_remote_command(arguments)
+        return remote is None or bool(remote and is_blocked(remote))
+    if command in SHELL_COMMANDS:
+        return shell_builds(arguments)
     return False
 
 
 def skip_assignments(tokens: Sequence[str], index: int) -> int:
-    while index < len(tokens):
-        name, separator, _ = tokens[index].partition("=")
-        if not separator or not name.replace("_", "a").isalnum() or name[0].isdigit():
-            break
+    while index < len(tokens) and ASSIGNMENT.fullmatch(tokens[index]):
         index += 1
     return index
 
 
-def ssh_remote_command(tokens: Sequence[str]) -> str:
-    option_with_value = {
-        "-b",
-        "-c",
-        "-D",
-        "-E",
-        "-F",
-        "-i",
-        "-J",
-        "-l",
-        "-m",
-        "-o",
-        "-p",
-        "-S",
-        "-W",
-        "-w",
-    }
+def env_command_index(arguments: Sequence[str]) -> int | None:
     index = 0
-    while index < len(tokens):
-        token = tokens[index]
-        if token == "--":
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return index + 1
+        if argument in {"-C", "--chdir", "-u", "--unset"}:
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        if argument.startswith(("-C", "--chdir=", "-u", "--unset=")):
+            index += 1
+            continue
+        if argument.startswith("-") or ASSIGNMENT.fullmatch(argument):
+            index += 1
+            continue
+        return index
+    return None
+
+
+def wrapper_command_index(wrapper: str, arguments: Sequence[str]) -> int | None:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return index + 1
+        if argument in REDIRECTION_TOKENS:
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        if wrapper == "nice" and argument in {"-n", "--adjustment"}:
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        if wrapper == "time" and argument in {"-f", "--format", "-o", "--output"}:
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        if wrapper == "exec" and argument == "-a":
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        if argument.startswith("-"):
+            index += 1
+            continue
+        return index
+    return None
+
+
+def gclient_builds(arguments: Sequence[str]) -> bool:
+    subcommand = first_subcommand(arguments)
+    return subcommand is None or subcommand not in READ_ONLY_GCLIENT_COMMANDS
+
+
+def gn_builds(arguments: Sequence[str]) -> bool:
+    return first_subcommand(arguments) == "gen"
+
+
+def ninja_builds(arguments: Sequence[str]) -> bool:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return True
+        if argument in {"-C", "-f", "-j", "-k", "-l", "-m", "-w"}:
+            if index + 1 >= len(arguments):
+                return True
+            index += 2
+            continue
+        if argument in {"-n", "--dry-run"}:
+            return False
+        if argument in {"-t", "--tool"}:
+            if index + 1 >= len(arguments):
+                return True
+            return arguments[index + 1] not in READ_ONLY_NINJA_TOOLS
+        if argument.startswith("-"):
+            index += 1
+            continue
+        return True
+    return True
+
+
+def first_subcommand(arguments: Sequence[str]) -> str | None:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return arguments[index + 1] if index + 1 < len(arguments) else None
+        if argument in {"--args", "--root", "--script-executable"}:
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        if argument.startswith("-"):
+            index += 1
+            continue
+        return argument
+    return None
+
+
+def shell_builds(arguments: Sequence[str]) -> bool:
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
+            return True
+        if argument == "-c" or (argument.startswith("-") and "c" in argument[1:]):
+            if index + 1 >= len(arguments):
+                return True
+            return is_blocked(arguments[index + 1])
+        if argument == "-s" or (argument.startswith("-") and "s" in argument[1:]):
+            return True
+        if argument in REDIRECTION_TOKENS:
+            return True
+        if argument.startswith("-"):
+            index += 1
+            continue
+        return True
+    return True
+
+
+def ssh_remote_command(arguments: Sequence[str]) -> str | None:
+    options_with_value = frozenset(
+        {
+            "-b",
+            "-c",
+            "-D",
+            "-E",
+            "-F",
+            "-i",
+            "-J",
+            "-l",
+            "-m",
+            "-o",
+            "-p",
+            "-S",
+            "-W",
+            "-w",
+        }
+    )
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--":
             index += 1
             break
-        if not token.startswith("-"):
+        if not argument.startswith("-"):
             break
-        index += 2 if token in option_with_value else 1
-    if index >= len(tokens):
+        if argument in options_with_value:
+            if index + 1 >= len(arguments):
+                return None
+            index += 2
+            continue
+        index += 1
+    if index >= len(arguments):
         return ""
-    return shlex.join(tokens[index + 1 :])
+
+    remote_arguments = arguments[index + 1 :]
+    if any(argument in REDIRECTION_TOKENS for argument in remote_arguments):
+        return None
+    return " ".join(remote_arguments)
 
 
 def parse_payload(argv: Sequence[str]) -> Iterable[str]:

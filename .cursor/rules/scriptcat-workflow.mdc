@@ -1,0 +1,11 @@
+---
+description: ScriptCat 用户脚本的专用浏览器运行与安装流程
+alwaysApply: true
+---
+
+# ScriptCat 工作流
+
+- `chrome-devtools-scriptcat` 使用固定 profile、managed ScriptCat 扩展、headless Chromium 和 CDP pipe；用户脚本调试与验收通过 `mcp__chrome_devtools_scriptcat__` 完成。
+- 每次专用浏览器操作先调用 `scriptcat_status`，确认扩展 ID、版本、启用状态、`userScriptsAccessEnabled` 和 service worker 就绪状态；只有该字段为 `true` 时授权可用。
+- 以 `scriptcat_upsert_script` 写入仓库内规范化的 `*.user.js` 路径；使用对应的 ScriptCat 工具管理启用、读取、列举和删除脚本。
+- 用户日常浏览器安装使用 `pnpm install:scriptcat -- <script.user.js>`，该路径通过 VSCode sync 端口更新脚本，不管理专用 MCP profile。

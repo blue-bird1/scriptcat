@@ -13,7 +13,7 @@ Use the managed ScriptCat tools through `mcp__chrome_devtools_scriptcat__`. The 
 
 The MCP starts the portable Chromium, loads the managed extension, grants its `userScripts` access through the custom CDP method, reloads it, and waits for the service worker. Do not start Chrome separately or manipulate the profile.
 
-1. Call `scriptcat_status` and confirm the expected ID, enabled status, user-scripts access, and service-worker readiness.
+1. Call `scriptcat_status` and confirm the expected ID, version, enabled status, `userScriptsAccessEnabled`, and service-worker readiness. Treat `false` or `null` for `userScriptsAccessEnabled` as not ready.
 2. If access must change, call `set_extension_user_scripts_access` with that extension ID and the requested `enabled` value, then call `scriptcat_status` again.
 3. If the extension is absent, has the wrong version, or remains unavailable, repair or rebuild the managed portable artifact with `scripts/remote/`; do not attempt in-profile installation.
 

@@ -1,0 +1,46 @@
+---
+description: scriptcat 固定上下文（环境、账号、脚本URL/API、发布基础事实）。
+alwaysApply: true
+---
+
+# scriptcat 固定上下文
+
+## 仓库与身份
+
+- **仓库**：https://github.com/blue-bird1/scriptcat
+- **所有者 / @author**：`blue-bird1`
+- **默认分支**：`main`
+- **发布渠道**：Greasy Fork
+- **License**：MIT
+
+## Greasy Fork 账号
+
+- **用户名**：`blue-bird1`
+- **user id**：`700344`
+- **主页**：https://greasyfork.org/zh-CN/users/700344-blue-bird1
+- **用户 API**：`https://api.greasyfork.org/en/users/700344.json`
+
+## 资源 URL 约定
+
+- raw：`https://raw.githubusercontent.com/blue-bird1/scriptcat/main/`
+- jsDelivr：`https://cdn.jsdelivr.net/gh/blue-bird1/scriptcat@main/`
+
+> 发布到 Greasy Fork 时，`@require` 默认优先 raw。
+
+## Greasy Fork 脚本数据（以用户 API 为准）
+
+| Script ID | 名称 | 脚本页 | 代码 URL |
+|---|---|---|---|
+| 415257 | 网易 buff 增强脚本 | `https://greasyfork.org/scripts/415257-网易-buff-增强脚本` | `https://update.greasyfork.org/scripts/415257/网易 buff 增强脚本.user.js` |
+| 497146 | Z-Library ui enhance | `https://greasyfork.org/scripts/497146-z-library-ui-enhance` | `https://update.greasyfork.org/scripts/497146/Z-Library ui enhance.user.js` |
+| 530247 | 豆瓣自动推荐书籍标签 | `https://greasyfork.org/scripts/530247-豆瓣自动推荐书籍标签` | `https://update.greasyfork.org/scripts/530247/豆瓣自动推荐书籍标签.user.js` |
+| 549676 | SteamPy Plus | `https://greasyfork.org/scripts/549676-steampy-plus` | `https://update.greasyfork.org/scripts/549676/SteamPy Plus.user.js` |
+| 552069 | B站番剧显示BGM评分 | `https://greasyfork.org/scripts/552069-b站番剧显示bgm评分` | `https://update.greasyfork.org/scripts/552069/B站番剧显示BGM评分.user.js` |
+| 559256 | KeyLol SteamPY 价格及总价显示 | `https://greasyfork.org/scripts/559256-keylol-steampy-价格及总价显示` | `https://update.greasyfork.org/scripts/559256/KeyLol SteamPY 价格及总价显示.user.js` |
+| 562643 | 豆瓣丛书增强 | `https://greasyfork.org/scripts/562643-豆瓣丛书增强` | `https://update.greasyfork.org/scripts/562643/豆瓣丛书增强.user.js` |
+| 569505 | Page Agent (油猴版) | `https://greasyfork.org/scripts/569505-page-agent-油猴版` | `https://update.greasyfork.org/scripts/569505/Page Agent (油猴版).user.js` |
+
+## 元数据一致性约定
+
+- 脚本头中的 `@namespace`、`@author`、`@require` 必须使用本项目真实信息，禁止占位符。
+- 若仓库地址发生变更（fork / 自托管），需同步更新脚本头和文档引用。
