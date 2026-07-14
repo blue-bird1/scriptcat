@@ -74,7 +74,7 @@ directories.sort()
 with (root / 'SHA256SUMS').open('wb') as stream:
     for relative in sorted([*files, 'manifest.json']):
         digest = digest_file(root / relative).encode('ascii')
-        stream.write(digest + b'  ' + relative.encode('utf-8') + b'\0')
+        stream.write(digest + b'  ' + relative.encode('utf-8') + bytes([0]))
 PY
 archive_root="$build_root/out/release-$build_id"
 rm -rf "$archive_root"
