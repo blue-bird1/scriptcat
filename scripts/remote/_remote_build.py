@@ -12,7 +12,9 @@ def _browser_test_sandbox_helpers() -> str:
     return r"""browser_test_process_group_exists() {
   local expected_process_group=$1 process_dir process_stat process_state process_group
   for process_dir in /proc/[0-9]*; do
-    process_stat=$(<"$process_dir/stat") || continue
+    if ! process_stat=$(cat "$process_dir/stat" 2>/dev/null); then
+      continue
+    fi
     read -r process_state _ process_group _ <<< "${process_stat##*) }"
     [ "$process_state" = Z ] && continue
     if [ "$process_group" = "$expected_process_group" ]; then
@@ -335,7 +337,7 @@ pnpm build
 set_phase mcp-managed-extension-protection-tests
 run_browser_test_in_sandbox scriptcat-mcp-tests "$mcp" "$PATH" '
   PUPPETEER_EXECUTABLE_PATH="$BROWSER_BINARY" \
-    node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts tests/tools/extensions.test.ts
+    node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts tests/ManagedReleaseConsistency.test.ts tests/tools/extensions.test.ts
 '
 set_phase mcp-bundle
 pnpm bundle

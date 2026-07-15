@@ -96,6 +96,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
                     b"tests/ScriptCatManager.test.ts",
                     b"tests/cli.test.ts",
                     b"tests/ManagedBrowserShutdown.test.ts",
+                    b"tests/ManagedReleaseConsistency.test.ts",
                     b"tests/tools/extensions.test.ts",
                 ],
             )

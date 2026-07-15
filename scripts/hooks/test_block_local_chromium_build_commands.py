@@ -25,6 +25,8 @@ READ_ONLY_COMMANDS = (
 FORBIDDEN_COMMANDS = (
     "gclient sync",
     "gn --root . gen out/Release",
+    "gn clean out/Release",
+    "gn args out/Release",
     "ninja -C out/Release chrome",
     "ninja -n -t recompact",
     "ninja -t recompact -n",

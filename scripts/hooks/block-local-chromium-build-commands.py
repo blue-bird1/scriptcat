@@ -16,6 +16,7 @@ REDIRECTION_TOKENS = frozenset({"<", ">", ">>", "<<", "<<<"})
 SHELL_COMMANDS = frozenset({"bash", "sh", "dash", "zsh"})
 COMMAND_WRAPPERS = frozenset({"command", "exec", "nice", "nohup", "time"})
 READ_ONLY_GCLIENT_COMMANDS = frozenset({"revinfo", "root", "status"})
+READ_ONLY_GN_COMMANDS = frozenset({"desc", "help", "ls", "path", "refs"})
 READ_ONLY_NINJA_TOOLS = frozenset(
     {"commands", "compdb", "deps", "list", "missingdeps", "query", "rules", "targets"}
 )
@@ -147,7 +148,10 @@ def gclient_builds(arguments: Sequence[str]) -> bool:
 
 
 def gn_builds(arguments: Sequence[str]) -> bool:
-    return first_subcommand(arguments) == "gen"
+    subcommand = first_subcommand(arguments)
+    if subcommand == "args":
+        return "--list" not in arguments
+    return subcommand not in READ_ONLY_GN_COMMANDS
 
 
 def ninja_builds(arguments: Sequence[str]) -> bool:
