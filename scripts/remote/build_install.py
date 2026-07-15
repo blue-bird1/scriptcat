@@ -27,6 +27,8 @@ def migration_install_command() -> tuple[str, ...]:
         str(LOCK_PATH),
         "--build-id",
         "RELEASE_BUILD_ID",
+        "--archive-sha256",
+        "ARCHIVE_SHA256",
     )
 
 
@@ -35,7 +37,7 @@ def migration_message() -> str:
     return (
         "scripts/remote/build_install.py is deprecated; run build.py, package.py, "
         "and install.py as separate explicit stages. After package.py produces the "
-        f"archive and release build ID, run: {install_command}"
+        f"archive, SHA-256 sidecar, and release build ID, run: {install_command}"
     )
 
 

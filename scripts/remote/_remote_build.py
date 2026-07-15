@@ -9,7 +9,33 @@ from ._verified_build import component_build_id, verified_build_finalize_script
 
 def _browser_test_sandbox_helpers() -> str:
     """Render the shared non-root private mount namespace test launcher."""
-    return r"""run_browser_test_in_sandbox() {
+    return r"""browser_test_process_group_exists() {
+  local expected_process_group=$1 process_dir process_stat process_state process_group
+  for process_dir in /proc/[0-9]*; do
+    process_stat=$(<"$process_dir/stat") || continue
+    read -r process_state _ process_group _ <<< "${process_stat##*) }"
+    [ "$process_state" = Z ] && continue
+    if [ "$process_group" = "$expected_process_group" ]; then
+      return 0
+    fi
+  done
+  return 1
+}
+terminate_browser_test_process_group() {
+  local process_group=${test_session_pgid:-}
+  test_session_pid=
+  test_session_pgid=
+  [[ "$process_group" =~ ^[0-9]+$ ]] || return 0
+  browser_test_process_group_exists "$process_group" || return 0
+  printf 'terminating browser test process group: pgid=%s\n' "$process_group" >&2
+  kill -TERM -- "-$process_group" 2>/dev/null || true
+  for _ in {1..30}; do
+    browser_test_process_group_exists "$process_group" || return 0
+    sleep 1
+  done
+  kill -KILL -- "-$process_group" 2>/dev/null || true
+}
+run_browser_test_in_sandbox() {
   local test_name=$1 test_workdir=$2 test_path=$3 test_command=$4
   local test_uid test_gid test_status relative_workdir
   case "$test_workdir" in
@@ -65,12 +91,13 @@ def _browser_test_sandbox_helpers() -> str:
   ' "$test_name" "$build_root" "$test_root" "$test_uid" "$test_gid" \
     "$relative_workdir" "$test_path" "$test_command" 9>&- &
   test_session_pid=$!
+  test_session_pgid=$test_session_pid
   if wait "$test_session_pid"; then
     test_status=0
   else
     test_status=$?
   fi
-  test_session_pid=
+  terminate_browser_test_process_group
   rm -rf -- "$test_root"
   test_root=
   return "$test_status"
@@ -100,16 +127,10 @@ run_log=\"$build_root/out/build-$run_id.log\"
 phase=bootstrap
 test_root=
 test_session_pid=
+test_session_pgid=
 exec > >(tee \"$run_log\") 2>&1
 cleanup_remote_test() {{
-  if [[ \"$test_session_pid\" =~ ^[0-9]+$ ]] && kill -0 \"$test_session_pid\" 2>/dev/null; then
-    kill -TERM -- \"-$test_session_pid\" 2>/dev/null || true
-    for _ in {{1..30}}; do
-      kill -0 \"$test_session_pid\" 2>/dev/null || break
-      sleep 1
-    done
-    kill -KILL -- \"-$test_session_pid\" 2>/dev/null || true
-  fi
+  terminate_browser_test_process_group
   case \"$test_root\" in
     /tmp/scriptcat-browser-tests.*) rm -rf -- \"$test_root\" ;;
   esac
@@ -137,10 +158,16 @@ for process_dir in /proc/[0-9]*; do
   process_id=\"${{process_dir##*/}}\"
   test \"$process_id\" = \"$$\" && continue
   process_cwd=$(readlink \"$process_dir/cwd\" 2>/dev/null || true)
+  process_executable=$(readlink \"$process_dir/exe\" 2>/dev/null || true)
   process_command=$(tr '\\0' ' ' < \"$process_dir/cmdline\" 2>/dev/null || true)
-  case \"$process_cwd:$process_command\" in
+  case \"$process_cwd:$process_executable:$process_command\" in
     \"$build_root\"/*:*gclient*|\"$build_root\"/*:*autoninja*|\"$build_root\"/*:*ninja*|\"$build_root\"/*:*browser_tests*)
       printf 'legacy build process is still using %s: pid=%s command=%s\\n' \\
+        \"$build_root\" \"$process_id\" \"$process_command\" >&2
+      exit 75
+      ;;
+    *:\"$build_root\"/src/src/out/Release/chrome:*)
+      printf 'legacy Chromium descendant is still using %s: pid=%s command=%s\\n' \\
         \"$build_root\" \"$process_id\" \"$process_command\" >&2
       exit 75
       ;;

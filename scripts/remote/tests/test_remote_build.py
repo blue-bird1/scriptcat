@@ -198,6 +198,52 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             )
             self.assertFalse(Path(sandbox_browser_tests).exists())
 
+    def test_sandbox_cleans_descendant_after_session_leader_exits(self) -> None:
+        sandbox_launcher = self._render_sandbox_launcher()
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            result_directory = temporary / "result"
+            descendant_pid_path = result_directory / "descendant-pid"
+            result_directory.mkdir()
+            session_command = (
+                f"sleep 120 & printf '%s\\n' \"$!\" > {descendant_pid_path}"
+            )
+            session_launcher = f"setsid bash -c {shlex.quote(session_command)} &"
+            harness = "\n".join(
+                (
+                    "#!/usr/bin/env bash",
+                    "set -Eeuo pipefail",
+                    "test_root=",
+                    "test_session_pid=",
+                    "test_session_pgid=",
+                    sandbox_launcher,
+                    session_launcher,
+                    "test_session_pgid=$!",
+                    'wait "$test_session_pgid"',
+                    "terminate_browser_test_process_group",
+                    "",
+                )
+            )
+
+            harness_result = subprocess.run(
+                ("bash", "-c", harness),
+                check=False,
+                cwd=temporary,
+                text=True,
+                capture_output=True,
+            )
+            self.assertEqual(harness_result.returncode, 0, harness_result.stderr)
+
+            descendant_pid = int(descendant_pid_path.read_text(encoding="utf-8"))
+            process_stat_path = Path("/proc") / str(descendant_pid) / "stat"
+            process_state = ""
+            if process_stat_path.exists():
+                process_state = process_stat_path.read_text(encoding="utf-8").rsplit(
+                    ") ", maxsplit=1
+                )[1][0]
+            self.assertIn(process_state, ("", "Z"))
+
     def _render_sandbox_launcher(self) -> str:
         repository = Path(__file__).resolve().parents[3]
         script = remote_build_script(
@@ -213,8 +259,9 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             text=True,
             capture_output=True,
         )
-        function_start = script.index("run_browser_test_in_sandbox() {")
-        function_end = script.index("\n}", function_start) + 2
+        function_start = script.index("browser_test_process_group_exists() {")
+        launcher_start = script.index("run_browser_test_in_sandbox() {", function_start)
+        function_end = script.index("\n}", launcher_start) + 2
         return script[function_start:function_end]
 
     def _require_sandbox_primitives(self) -> None:

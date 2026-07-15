@@ -7,6 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
+from scripts.remote._archive import archive_digest_path
 from scripts.remote._lock import load_lock
 from scripts.remote._portable_package import portable_package_script
 from scripts.remote.package import ARCHIVE_PREFIX
@@ -38,11 +39,18 @@ class PortablePackageScriptTest(unittest.TestCase):
 
             self._run_remote_package(script, temporary)
             archive_digest = self._digest(archive)
+            digest_sidecar = archive_digest_path(archive)
+            digest_sidecar_payload = digest_sidecar.read_text(encoding="ascii")
             release_manifest = (release / "manifest.json").read_bytes()
+
+            self.assertEqual(digest_sidecar_payload, f"{archive_digest}\n")
 
             self._run_remote_package(script, temporary)
 
             self.assertEqual(self._digest(archive), archive_digest)
+            self.assertEqual(
+                digest_sidecar.read_text(encoding="ascii"), digest_sidecar_payload
+            )
             self.assertEqual((release / "manifest.json").read_bytes(), release_manifest)
 
     def test_retry_rejects_existing_release_with_modified_runtime(self) -> None:
@@ -72,6 +80,21 @@ class PortablePackageScriptTest(unittest.TestCase):
 
             self.assertNotEqual(completed.returncode, 0)
             self.assertEqual(self._digest(archive), archive_digest)
+
+    def test_retry_rejects_modified_external_archive_digest(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            script, archive, _ = self._create_verified_package_input(temporary)
+            self._run_remote_package(script, temporary)
+            digest_sidecar = archive_digest_path(archive)
+            digest_sidecar.write_text(f"{'0' * 64}\n", encoding="ascii")
+
+            completed = self._run_remote_package(script, temporary, check=False)
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertEqual(
+                digest_sidecar.read_text(encoding="ascii"), f"{'0' * 64}\n"
+            )
 
     def _create_verified_package_input(self, root: Path) -> tuple[Path, Path, Path]:
         repository = Path(__file__).resolve().parents[3]

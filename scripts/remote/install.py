@@ -9,6 +9,7 @@ from pathlib import Path
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from remote._activation import activate_archive
+    from remote._archive import validate_sha256_digest
     from remote._common import (
         cli_main,
         extension_root,
@@ -19,6 +20,7 @@ if __package__ in (None, ""):
     from remote._lock import load_lock
 else:
     from ._activation import activate_archive
+    from ._archive import validate_sha256_digest
     from ._common import (
         cli_main,
         extension_root,
@@ -33,11 +35,12 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Validate and atomically activate a local ScriptCat MCP archive.",
         epilog=(
-            "Requires the exact upstream lock used for the release. The archive, "
-            "selected lock, and explicit release build ID are cross-checked before "
-            "atomic activation under the managed ScriptCat MCP data and extension "
-            "roots. This command does not access Git, the remote build host, or the "
-            "network, and can run outside a project checkout."
+            "Requires the exact upstream lock and trusted archive SHA-256 produced "
+            "for the release. The archive digest is verified before unpacking; its "
+            "manifest, selected lock, and explicit release build ID are then "
+            "cross-checked before atomic activation under the managed ScriptCat MCP "
+            "data and extension roots. This command does not access Git, the remote "
+            "build host, or the network, and can run outside a project checkout."
         ),
     )
     result.add_argument(
@@ -56,6 +59,12 @@ def parser() -> argparse.ArgumentParser:
         ),
     )
     result.add_argument(
+        "--archive-sha256",
+        required=True,
+        metavar="SHA256",
+        help="trusted lowercase SHA-256 digest for the exact archive bytes",
+    )
+    result.add_argument(
         "--build-id",
         required=True,
         metavar="RELEASE_BUILD_ID",
@@ -67,6 +76,7 @@ def parser() -> argparse.ArgumentParser:
 def run(argv: Sequence[str]) -> int:
     arguments = parser().parse_args(argv)
     validate_build_id(arguments.build_id, "--build-id")
+    validate_sha256_digest(arguments.archive_sha256, "--archive-sha256")
     require_commands("tar", "zstd")
     lock = load_lock(arguments.lock.expanduser())
     build_id = activate_archive(
@@ -79,6 +89,7 @@ def run(argv: Sequence[str]) -> int:
         lock.depot_tools.version,
         lock.scriptcat.version,
         lock.digest,
+        expected_archive_sha256=arguments.archive_sha256,
     )
     print(f"activated ScriptCat MCP portable release {build_id}")
     return 0

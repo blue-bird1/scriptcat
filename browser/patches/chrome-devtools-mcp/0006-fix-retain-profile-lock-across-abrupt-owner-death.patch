@@ -1,0 +1,501 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: bluebird <linlanxi7552659@gmail.com>
+Date: Wed, 15 Jul 2026 13:45:00 +0800
+Subject: [PATCH] fix: retain profile lock across abrupt owner death
+
+---
+ src/ProfileLock.ts                    | 126 ++++++++++++++++++++++++-
+ src/browser.ts                        |  21 ++++-
+ tests/ManagedBrowserShutdown.test.ts  | 172 +++++++++++++++++++++++++++++++++-
+ tests/fixtures/ManagedBrowserOwner.ts |  33 +++++++
+ 4 files changed, 347 insertions(+), 5 deletions(-)
+
+diff --git a/src/ProfileLock.ts b/src/ProfileLock.ts
+index 112045c..d64e1fb 100644
+--- a/src/ProfileLock.ts
++++ b/src/ProfileLock.ts
+@@ -4,7 +4,11 @@
+  * SPDX-License-Identifier: Apache-2.0
+  */
+ 
+-import {spawn, type ChildProcessWithoutNullStreams} from 'node:child_process';
++import {
++  spawn,
++  type ChildProcess,
++  type ChildProcessWithoutNullStreams,
++} from 'node:child_process';
+ import fs from 'node:fs/promises';
+ import path from 'node:path';
+ 
+@@ -14,12 +18,67 @@ export const PROFILE_LOCK_FILENAME = '.scriptcat-mcp.lock';
+ const LOCK_READY = 'LOCKED\n';
+ const LOCK_TIMEOUT_MS = 5_000;
+ const LOCK_RELEASE_TIMEOUT_MS = 2_000;
++const PROFILE_LOCK_GUARDIAN = [
++  "browser_pid=''",
++  "browser_start_time=''",
++  "control_pid=''",
++  'owner_closed=0',
++  'read_start_time() {',
++  '  stat_line=$(cat "/proc/$browser_pid/stat" 2>/dev/null) || return 1',
++  '  stat_line=${stat_line##*) }',
++  '  set -- $stat_line',
++  '  [ "$#" -ge 20 ] || return 1',
++  '  shift 19',
++  '  printf \'%s\\n\' "$1"',
++  '}',
++  'browser_process_alive() {',
++  '  [ "$(read_start_time)" = "$browser_start_time" ]',
++  '}',
++  'browser_group_alive() {',
++  '  kill -0 -- "-$browser_pid" 2>/dev/null',
++  '}',
++  'managed_browser_alive() {',
++  '  browser_process_alive || browser_group_alive',
++  '}',
++  'stop_control_reader() {',
++  '  if [ -n "$control_pid" ]; then',
++  '    kill "$control_pid" 2>/dev/null || true',
++  '    wait "$control_pid" 2>/dev/null || true',
++  '    control_pid=',
++  '  fi',
++  '}',
++  "trap 'owner_closed=1' USR1",
++  "trap 'exit 0' HUP INT TERM",
++  "trap 'stop_control_reader' EXIT",
++  "printf 'LOCKED\\n'",
++  "IFS=' ' read -r browser_pid browser_start_time || exit 0",
++  '(cat >/dev/null && kill -USR1 "$$") &',
++  'control_pid=$!',
++  'while managed_browser_alive && [ "$owner_closed" -eq 0 ]; do',
++  '  sleep 0.05',
++  'done',
++  'if managed_browser_alive; then',
++  '  kill -TERM -- "-$browser_pid" 2>/dev/null || true',
++  '  attempts=0',
++  '  while managed_browser_alive && [ "$attempts" -lt 40 ]; do',
++  '    sleep 0.05',
++  '    attempts=$((attempts + 1))',
++  '  done',
++  '  if managed_browser_alive; then',
++  '    kill -KILL -- "-$browser_pid" 2>/dev/null || true',
++  '  fi',
++  'fi',
++  'while managed_browser_alive; do',
++  '  sleep 0.05',
++  'done',
++].join('\n');
+ 
+ export type ProfileLockOwner = object;
+ 
+ let lockProcess: ChildProcessWithoutNullStreams | undefined;
+ let lockOwner: ProfileLockOwner | undefined;
+ let lockedUserDataDir: string | undefined;
++let lockedBrowserPid: number | undefined;
+ let lockReleasePromise: Promise<void> | undefined;
+ 
+ export async function acquireProfileLock(
+@@ -44,6 +103,7 @@ export async function acquireProfileLock(
+   lockProcess = undefined;
+   lockOwner = undefined;
+   lockedUserDataDir = undefined;
++  lockedBrowserPid = undefined;
+   await fs.mkdir(resolvedUserDataDir, {recursive: true});
+   const lockPath = path.join(resolvedUserDataDir, PROFILE_LOCK_FILENAME);
+   const child = spawn(
+@@ -51,12 +111,13 @@ export async function acquireProfileLock(
+     [
+       '--exclusive',
+       '--nonblock',
++      '--no-fork',
+       lockPath,
+       'sh',
+       '-c',
+-      `printf '${LOCK_READY}'; cat >/dev/null`,
++      PROFILE_LOCK_GUARDIAN,
+     ],
+-    {stdio: ['pipe', 'pipe', 'pipe']},
++    {detached: true, stdio: ['pipe', 'pipe', 'pipe']},
+   );
+ 
+   try {
+@@ -73,6 +134,63 @@ export async function acquireProfileLock(
+   }
+ }
+ 
++export async function bindProfileLockToBrowser(
++  owner: ProfileLockOwner,
++  browserProcess: ChildProcess,
++): Promise<void> {
++  const guardian = lockProcess;
++  if (
++    !guardian ||
++    isProcessExited(guardian) ||
++    lockOwner !== owner ||
++    !lockedUserDataDir
++  ) {
++    throw new Error('The managed profile lock is not owned by this browser.');
++  }
++  const browserPid = browserProcess.pid;
++  if (!browserPid) {
++    throw new Error('The launched browser does not expose its process ID.');
++  }
++  if (lockedBrowserPid !== undefined) {
++    if (lockedBrowserPid === browserPid) {
++      return;
++    }
++    throw new Error('The managed profile lock is already bound to a browser.');
++  }
++
++  const browserStartTime = await readProcessStartTime(browserPid);
++  if (lockProcess !== guardian || isProcessExited(guardian)) {
++    throw new Error('The managed profile lock guardian exited during launch.');
++  }
++  await new Promise<void>((resolve, reject) => {
++    guardian.stdin.write(`${browserPid} ${browserStartTime}\n`, error => {
++      if (error) {
++        reject(error);
++        return;
++      }
++      resolve();
++    });
++  });
++  lockedBrowserPid = browserPid;
++}
++
++async function readProcessStartTime(pid: number): Promise<string> {
++  const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
++  const commandEnd = stat.lastIndexOf(') ');
++  if (commandEnd === -1) {
++    throw new Error(`Could not read the launched browser process ${pid}.`);
++  }
++  const fieldsAfterCommand = stat
++    .slice(commandEnd + 2)
++    .trim()
++    .split(/\s+/);
++  const startTime = fieldsAfterCommand[19];
++  if (!startTime) {
++    throw new Error(`Could not read the launched browser process ${pid}.`);
++  }
++  return startTime;
++}
++
+ async function waitForLock(
+   child: ChildProcessWithoutNullStreams,
+   userDataDir: string,
+@@ -158,6 +276,7 @@ export async function releaseProfileLock(
+     lockProcess = undefined;
+     lockOwner = undefined;
+     lockedUserDataDir = undefined;
++    lockedBrowserPid = undefined;
+     return;
+   }
+   if (lockOwner !== owner) {
+@@ -173,6 +292,7 @@ export async function releaseProfileLock(
+       lockProcess = undefined;
+       lockOwner = undefined;
+       lockedUserDataDir = undefined;
++      lockedBrowserPid = undefined;
+     }
+     if (lockReleasePromise === releasePromise) {
+       lockReleasePromise = undefined;
+diff --git a/src/browser.ts b/src/browser.ts
+index e3069ef..6797ec7 100644
+--- a/src/browser.ts
++++ b/src/browser.ts
+@@ -12,6 +12,7 @@ import path from 'node:path';
+ import {logger} from './logger.js';
+ import {
+   acquireProfileLock,
++  bindProfileLockToBrowser,
+   type ProfileLockOwner,
+   releaseProfileLock,
+ } from './ProfileLock.js';
+@@ -310,6 +311,7 @@ export async function ensureBrowserLaunched(
+   const profileLockOwner: ProfileLockOwner = {};
+   const launchPromise = (async (): Promise<Browser> => {
+     let profileLockAcquired = false;
++    let launched: Browser | undefined;
+     try {
+       if (options.profileLock) {
+         if (!options.userDataDir) {
+@@ -320,7 +322,16 @@ export async function ensureBrowserLaunched(
+         await acquireProfileLock(options.userDataDir, profileLockOwner);
+         profileLockAcquired = true;
+       }
+-      const launched = await launch(options);
++      launched = await launch(options);
++      if (profileLockAcquired) {
++        const child = launched.process();
++        if (!child) {
++          throw new Error(
++            'The launched browser does not expose its OS process.',
++          );
++        }
++        await bindProfileLockToBrowser(profileLockOwner, child);
++      }
+       // Assign mode and ownership before browser; see the connect path above
+       // for rationale.
+       browserMode = 'launched';
+@@ -330,6 +341,14 @@ export async function ensureBrowserLaunched(
+       browser = launched;
+       return browser;
+     } catch (error) {
++      if (launched) {
++        await closeLaunchedBrowser(launched).catch(closeError => {
++          logger?.(
++            'Failed to close browser after profile lock setup',
++            closeError,
++          );
++        });
++      }
+       if (profileLockAcquired) {
+         await releaseProfileLock(profileLockOwner);
+       }
+diff --git a/tests/ManagedBrowserShutdown.test.ts b/tests/ManagedBrowserShutdown.test.ts
+index 2866ce2..134f822 100644
+--- a/tests/ManagedBrowserShutdown.test.ts
++++ b/tests/ManagedBrowserShutdown.test.ts
+@@ -10,7 +10,9 @@ import {spawn} from 'node:child_process';
+ import fs from 'node:fs/promises';
+ import os from 'node:os';
+ import path from 'node:path';
++import process from 'node:process';
+ import {describe, it} from 'node:test';
++import {fileURLToPath} from 'node:url';
+ 
+ import {executablePath} from 'puppeteer';
+ 
+@@ -19,9 +21,18 @@ import {
+   closeBrowserWithBackstop,
+   ensureBrowserLaunched,
+ } from '../src/browser.js';
+-import {PROFILE_LOCK_FILENAME} from '../src/ProfileLock.js';
++import {ManagedMcpError} from '../src/ManagedMcpError.js';
++import {
++  acquireProfileLock,
++  PROFILE_LOCK_FILENAME,
++  releaseProfileLock,
++} from '../src/ProfileLock.js';
+ 
+ const CLOSE_TEST_TIMEOUT_MS = 10_000;
++const OWNER_READY_TIMEOUT_MS = 15_000;
++const OWNER_FIXTURE = fileURLToPath(
++  new URL('./fixtures/ManagedBrowserOwner.js', import.meta.url),
++);
+ 
+ async function profileLockIsAvailable(profile: string): Promise<boolean> {
+   const child = spawn('flock', [
+@@ -49,6 +60,99 @@ async function waitForExit(child: ChildProcess): Promise<void> {
+   });
+ }
+ 
++async function waitForOwnerReady(owner: ChildProcess): Promise<number> {
++  const stdout = owner.stdout;
++  if (!stdout) {
++    throw new Error('The managed browser owner has no stdout pipe.');
++  }
++  return await new Promise((resolve, reject) => {
++    let output = '';
++    const finish = (error?: Error, browserPid?: number) => {
++      clearTimeout(timeout);
++      stdout.off('data', onData);
++      owner.off('error', onError);
++      owner.off('exit', onExit);
++      if (error) {
++        reject(error);
++        return;
++      }
++      resolve(browserPid!);
++    };
++    const onData = (chunk: Buffer) => {
++      output += chunk.toString('utf8');
++      const newline = output.indexOf('\n');
++      if (newline === -1) {
++        return;
++      }
++      const browserPid = Number.parseInt(output.slice(0, newline), 10);
++      if (!Number.isSafeInteger(browserPid) || browserPid <= 0) {
++        finish(new Error('The managed browser owner returned an invalid PID.'));
++        return;
++      }
++      finish(undefined, browserPid);
++    };
++    const onError = (error: Error) => {
++      finish(error);
++    };
++    const onExit = () => {
++      finish(new Error('The managed browser owner exited before startup.'));
++    };
++    const timeout = setTimeout(() => {
++      finish(new Error('Timed out waiting for the managed browser owner.'));
++    }, OWNER_READY_TIMEOUT_MS);
++    stdout.on('data', onData);
++    owner.once('error', onError);
++    owner.once('exit', onExit);
++  });
++}
++
++async function readDirectChildren(pid: number): Promise<number[]> {
++  const children = await fs.readFile(
++    `/proc/${pid}/task/${pid}/children`,
++    'utf8',
++  );
++  return children
++    .trim()
++    .split(/\s+/)
++    .filter(Boolean)
++    .map(childPid => Number.parseInt(childPid, 10));
++}
++
++async function readProcessGroupId(pid: number): Promise<number> {
++  const stat = await fs.readFile(`/proc/${pid}/stat`, 'utf8');
++  const commandEnd = stat.lastIndexOf(') ');
++  assert.notStrictEqual(commandEnd, -1);
++  const fieldsAfterCommand = stat
++    .slice(commandEnd + 2)
++    .trim()
++    .split(/\s+/);
++  const processGroupId = Number.parseInt(fieldsAfterCommand[2]!, 10);
++  assert.ok(Number.isSafeInteger(processGroupId));
++  return processGroupId;
++}
++
++function processGroupExists(processGroupId: number): boolean {
++  try {
++    process.kill(-processGroupId, 0);
++    return true;
++  } catch (error) {
++    if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
++      return false;
++    }
++    throw error;
++  }
++}
++
++async function waitForProcessGroupExit(processGroupId: number): Promise<void> {
++  const deadline = Date.now() + CLOSE_TEST_TIMEOUT_MS;
++  while (processGroupExists(processGroupId)) {
++    if (Date.now() >= deadline) {
++      throw new Error('Timed out waiting for a process group to exit.');
++    }
++    await new Promise(resolve => setTimeout(resolve, 50));
++  }
++}
++
+ async function waitForTermination(
+   terminationRequested: Promise<void>,
+ ): Promise<void> {
+@@ -159,6 +263,72 @@ async function cleanupManagedBrowser(
+ }
+ 
+ describe('managed browser shutdown', () => {
++  it('keeps the profile owned after SIGKILL until Chrome is reaped without orphans', async () => {
++    const profile = await fs.mkdtemp(
++      path.join(os.tmpdir(), 'scriptcat-abrupt-browser-owner-'),
++    );
++    const contender = {};
++    const owner = spawn(
++      process.execPath,
++      [OWNER_FIXTURE, profile, await executablePath()],
++      {stdio: ['pipe', 'pipe', 'pipe']},
++    );
++    let browserProcessGroupId: number | undefined;
++    let guardianProcessGroupId: number | undefined;
++    try {
++      const browserPid = await waitForOwnerReady(owner);
++      const guardianPids = (await readDirectChildren(owner.pid!)).filter(
++        childPid => childPid !== browserPid,
++      );
++      assert.strictEqual(guardianPids.length, 1);
++      const guardianPid = guardianPids[0]!;
++      browserProcessGroupId = await readProcessGroupId(browserPid);
++      guardianProcessGroupId = await readProcessGroupId(guardianPid);
++      assert.strictEqual(browserProcessGroupId, browserPid);
++      assert.strictEqual(guardianProcessGroupId, guardianPid);
++
++      process.kill(-browserProcessGroupId, 'SIGSTOP');
++      owner.kill('SIGKILL');
++      await waitForExit(owner);
++      assert.strictEqual(processGroupExists(browserProcessGroupId), true);
++      await assert.rejects(acquireProfileLock(profile, contender), error => {
++        assert.ok(error instanceof ManagedMcpError);
++        assert.strictEqual(error.code, 'PROFILE_BUSY');
++        return true;
++      });
++
++      process.kill(-browserProcessGroupId, 'SIGCONT');
++      await waitForProcessGroupExit(browserProcessGroupId);
++      await waitForProcessGroupExit(guardianProcessGroupId);
++      await acquireProfileLock(profile, contender);
++      await releaseProfileLock(contender);
++      assert.strictEqual(processGroupExists(browserProcessGroupId), false);
++      assert.strictEqual(processGroupExists(guardianProcessGroupId), false);
++    } finally {
++      await releaseProfileLock(contender);
++      if (owner.exitCode === null && owner.signalCode === null) {
++        owner.kill('SIGKILL');
++        await waitForExit(owner);
++      }
++      if (
++        browserProcessGroupId !== undefined &&
++        processGroupExists(browserProcessGroupId)
++      ) {
++        process.kill(-browserProcessGroupId, 'SIGCONT');
++        process.kill(-browserProcessGroupId, 'SIGKILL');
++        await waitForProcessGroupExit(browserProcessGroupId);
++      }
++      if (
++        guardianProcessGroupId !== undefined &&
++        processGroupExists(guardianProcessGroupId)
++      ) {
++        process.kill(-guardianProcessGroupId, 'SIGKILL');
++        await waitForProcessGroupExit(guardianProcessGroupId);
++      }
++      await fs.rm(profile, {recursive: true, force: true});
++    }
++  });
++
+   it('reaps a disconnected Chrome before relaunching with the same profile', async () => {
+     const {browser, child, options, profile} = await launchManagedBrowser();
+     const termination = delayTermination(child);
+diff --git a/tests/fixtures/ManagedBrowserOwner.ts b/tests/fixtures/ManagedBrowserOwner.ts
+new file mode 100644
+index 0000000..288bcd1
+--- /dev/null
++++ b/tests/fixtures/ManagedBrowserOwner.ts
+@@ -0,0 +1,33 @@
++/**
++ * @license
++ * Copyright 2026 Google LLC
++ * SPDX-License-Identifier: Apache-2.0
++ */
++
++import {once} from 'node:events';
++import process from 'node:process';
++
++import {closeBrowser, ensureBrowserLaunched} from '../../src/browser.js';
++
++const [profile, browserExecutable] = process.argv.slice(2);
++if (!profile || !browserExecutable) {
++  throw new Error('The managed browser owner requires a profile and browser.');
++}
++
++const browser = await ensureBrowserLaunched({
++  headless: true,
++  isolated: false,
++  userDataDir: profile,
++  executablePath: browserExecutable,
++  devtools: false,
++  profileLock: true,
++});
++const browserProcess = browser.process();
++if (!browserProcess?.pid) {
++  throw new Error('The managed browser did not expose its process ID.');
++}
++
++process.stdout.write(`${browserProcess.pid}\n`);
++process.stdin.resume();
++await once(process.stdin, 'end');
++await closeBrowser();
+

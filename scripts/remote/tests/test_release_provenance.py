@@ -88,6 +88,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 SCRIPTCAT_VERSION,
                 lock_digest,
                 PROJECT_COMMIT,
+                expected_archive_sha256=sha256(archive),
             )
 
             self.assertEqual(activated, release_id)
@@ -117,6 +118,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                 DEPOT_TOOLS_VERSION,
                 SCRIPTCAT_VERSION,
                 lock_digest,
+                expected_archive_sha256=sha256(archive),
             )
 
             self.assertEqual(activated, release_id)
@@ -159,6 +161,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                         SCRIPTCAT_VERSION,
                         lock_digest,
                         PROJECT_COMMIT,
+                        expected_archive_sha256=sha256(archive),
                     )
                 self.assertFalse(data_root.exists())
 
@@ -197,6 +200,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
                     SCRIPTCAT_VERSION,
                     lock_digest,
                     PROJECT_COMMIT,
+                    expected_archive_sha256=sha256(archive),
                 )
 
     def _write_runtime(self, runtime: Path) -> None:

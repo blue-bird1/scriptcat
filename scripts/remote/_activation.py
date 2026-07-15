@@ -30,6 +30,7 @@ from ._activation_state import (
 )
 from ._archive import (
     ReleaseManifest,
+    copy_verified_archive,
     inspect_release_tree,
     read_manifest,
     sha256,
@@ -66,14 +67,20 @@ def activate_archive(
     expected_scriptcat_version: str,
     expected_lock_digest: str | None = None,
     expected_project_commit: str | None = None,
+    *,
+    expected_archive_sha256: str,
 ) -> str:
     validate_build_id(expected_build_id, "expected build_id")
-    staging = Path("/tmp") / f"scriptcat-mcp-stage-{os.getpid()}"
-    if staging.exists():
-        raise WorkflowError(f"staging path already exists: {staging}")
-    staging.mkdir(mode=0o700)
+    temporary_root = Path("/tmp") / f"scriptcat-mcp-stage-{os.getpid()}"
+    if temporary_root.exists():
+        raise WorkflowError(f"staging path already exists: {temporary_root}")
+    temporary_root.mkdir(mode=0o700)
+    staging = temporary_root / "unpacked"
+    staging.mkdir()
     try:
-        unpack_archive(archive, staging)
+        verified_archive = temporary_root / "release.tar.zst"
+        copy_verified_archive(archive, verified_archive, expected_archive_sha256)
+        unpack_archive(verified_archive, staging)
         release = single_release_root(staging)
         manifest = read_manifest(release)
         verify_expected_manifest(
@@ -107,7 +114,7 @@ def activate_archive(
             finally:
                 remove_tree(extension_temporary)
     finally:
-        shutil.rmtree(staging, ignore_errors=True)
+        shutil.rmtree(temporary_root, ignore_errors=True)
 
 
 def verify_expected_manifest(

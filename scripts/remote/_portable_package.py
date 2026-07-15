@@ -64,6 +64,7 @@ def portable_package_script(
         command -v tar >/dev/null
         command -v zstd >/dev/null
         command -v cmp >/dev/null
+        command -v sha256sum >/dev/null
         mkdir -p "$build_root/out"
         exec 9>"$build_root/.package.lock"
         printf 'waiting for remote package lock: %s\\n' "$build_root/.package.lock"
@@ -78,21 +79,33 @@ def portable_package_script(
         release_temporary="$release_temporary_parent/release-$release_build_id"
         archive="$build_root/out/$archive_name"
         archive_temporary="$build_root/out/.$archive_name-new"
+        archive_digest="$archive.sha256"
+        archive_digest_temporary="$build_root/out/.$archive_name.sha256-new"
 
         release_exists=false
         archive_exists=false
+        archive_digest_exists=false
         if test -e "$release_directory" || test -L "$release_directory"; then
           release_exists=true
         fi
         if test -e "$archive" || test -L "$archive"; then
           archive_exists=true
         fi
+        if test -e "$archive_digest" || test -L "$archive_digest"; then
+          archive_digest_exists=true
+        fi
         if test "$archive_exists" = true && test "$release_exists" != true; then
           printf 'remote archive exists without its immutable release: %s\n' \
             "$archive" >&2
           exit 1
         fi
-        rm -rf -- "$release_temporary_parent" "$archive_temporary"
+        if test "$archive_digest_exists" = true && test "$archive_exists" != true; then
+          printf 'remote archive digest exists without its archive: %s\n' \
+            "$archive_digest" >&2
+          exit 1
+        fi
+        rm -rf -- "$release_temporary_parent" "$archive_temporary" \
+          "$archive_digest_temporary"
 
         fail_phase=verify-and-assemble
         read -r source_date_epoch package_mode <<< "$(
@@ -415,8 +428,19 @@ PY
             zstd --threads=1 --quiet --force -o "$archive_temporary"
           cmp --silent "$archive_temporary" "$archive"
           rm -f -- "$archive_temporary"
-          printf 'remote package completed: release=%s archive=%s\\n' \\
-            "$release_build_id" "$archive"
+          sha256sum -- "$archive" | \\
+            {{ read -r digest _; printf '%s\\n' "$digest"; }} \\
+            > "$archive_digest_temporary"
+          if test "$archive_digest_exists" = true; then
+            test -f "$archive_digest"
+            test ! -L "$archive_digest"
+            cmp --silent "$archive_digest_temporary" "$archive_digest"
+            rm -f -- "$archive_digest_temporary"
+          else
+            mv -- "$archive_digest_temporary" "$archive_digest"
+          fi
+          printf 'remote package completed: release=%s archive=%s sha256=%s\\n' \\
+            "$release_build_id" "$archive" "$archive_digest"
           exit 0
         fi
 
@@ -432,12 +456,16 @@ PY
           --owner=0 --group=0 --numeric-owner -C "$archive_parent" \\
           -cf - "$archive_release" | \\
           zstd --threads=1 --quiet --force -o "$archive_temporary"
+        sha256sum -- "$archive_temporary" | \\
+          {{ read -r digest _; printf '%s\\n' "$digest"; }} \\
+          > "$archive_digest_temporary"
         if test "$package_mode" = create; then
           mv -- "$release_temporary" "$release_directory"
           rmdir "$release_temporary_parent"
         fi
         mv -- "$archive_temporary" "$archive"
-        printf 'remote package completed: release=%s archive=%s\\n' \\
-          "$release_build_id" "$archive"
+        mv -- "$archive_digest_temporary" "$archive_digest"
+        printf 'remote package completed: release=%s archive=%s sha256=%s\\n' \\
+          "$release_build_id" "$archive" "$archive_digest"
         """
     )

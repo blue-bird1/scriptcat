@@ -24,6 +24,7 @@ from scripts.remote.tests._fixtures import (
     create_archive,
     create_release,
     release_manifest,
+    sha256,
     write_file,
 )
 
@@ -58,7 +59,7 @@ class ActivationIntegrityTest(unittest.TestCase):
                 patch.object(_activation, "PROFILE_LOCK_PATH", lock_path),
                 self.assertRaises(_activation.WorkflowError),
             ):
-                activate_archive(*arguments)
+                activate_archive(*arguments, expected_archive_sha256=sha256(archive))
             self.assertFalse(data_root.exists())
 
     def test_repeated_activation_is_idempotent(self) -> None:
@@ -80,11 +81,21 @@ class ActivationIntegrityTest(unittest.TestCase):
                 SCRIPTCAT_VERSION,
             )
             with patch.object(_activation, "PROFILE_LOCK_PATH", lock_path):
-                self.assertEqual(activate_archive(*arguments), BUILD_ID)
+                self.assertEqual(
+                    activate_archive(
+                        *arguments, expected_archive_sha256=sha256(archive)
+                    ),
+                    BUILD_ID,
+                )
                 extension_inode = extension_root.stat().st_ino
                 current_target = os.readlink(data_root / "current")
                 self.assertFalse((data_root / "previous").exists())
-                self.assertEqual(activate_archive(*arguments), BUILD_ID)
+                self.assertEqual(
+                    activate_archive(
+                        *arguments, expected_archive_sha256=sha256(archive)
+                    ),
+                    BUILD_ID,
+                )
             self.assertEqual(extension_root.stat().st_ino, extension_inode)
             self.assertEqual(os.readlink(data_root / "current"), current_target)
             self.assertFalse((data_root / "previous").exists())
