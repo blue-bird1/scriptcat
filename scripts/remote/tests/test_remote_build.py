@@ -29,11 +29,16 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             command_directory = temporary / "commands"
             result_directory = temporary / "result"
             result_path = result_directory / "browser.txt"
+            hostile_bash_env = temporary / "hostile-bash-env"
             quoted_result_path = shlex.quote(str(result_path))
             for directory in (mcp_directory, chromium.parent, command_directory):
                 directory.mkdir(parents=True, exist_ok=True)
             result_directory.mkdir()
             result_directory.chmod(0o777)
+            hostile_bash_env.write_text(
+                ': "${PS1:?BASH_ENV leaked into the namespace shell}"\n',
+                encoding="utf-8",
+            )
             self._write_executable(
                 chromium,
                 "\n".join(
@@ -73,6 +78,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
                     "test_root=",
                     "test_session_pid=",
                     sandbox_launcher,
+                    f"export BASH_ENV={shlex.quote(str(hostile_bash_env))}",
                     "run_browser_test_in_sandbox scriptcat-mcp-tests "
                     f"{shlex.quote(str(mcp_directory))} {shlex.quote(test_path)} "
                     f"{shlex.quote(command)}",
@@ -81,6 +87,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             )
             environment = os.environ | {
                 "PATH": test_path,
+                "PS1": "",
             }
 
             subprocess.run(

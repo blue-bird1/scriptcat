@@ -28,7 +28,12 @@ def _browser_test_sandbox_helpers() -> str:
   install -d -m 0755 "$test_root/build"
   install -d -m 0700 -o "$test_uid" -g "$test_gid" \
     "$test_root/home" "$test_root/tmp" "$test_root/runtime"
-  setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
+  env -i \
+    PATH=/usr/bin:/bin \
+    LANG=en_US.UTF-8 \
+    HOME=/root \
+    TMPDIR=/tmp \
+    setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
     build_root=$1
     test_root=$2
     test_uid=$3
