@@ -7,6 +7,69 @@ from ._patching import patch_preparation_script
 from ._verified_build import component_build_id, verified_build_finalize_script
 
 
+def _browser_test_sandbox_helpers() -> str:
+    """Render the shared non-root private mount namespace test launcher."""
+    return r"""run_browser_test_in_sandbox() {
+  local test_name=$1 test_workdir=$2 test_path=$3 test_command=$4
+  local test_uid test_gid test_status relative_workdir
+  case "$test_workdir" in
+    "$build_root"/*) relative_workdir=${test_workdir#"$build_root"/} ;;
+    *)
+      printf 'browser test workdir is outside the build root: %s\n' "$test_workdir" >&2
+      return 64
+      ;;
+  esac
+  test_uid=$(id -u nobody)
+  test_gid=$(id -g nobody)
+  test "$test_uid" -ne 0
+  test "$test_gid" -ne 0
+  test_root=$(mktemp -d /tmp/scriptcat-browser-tests.XXXXXX)
+  chmod 0755 "$test_root"
+  install -d -m 0755 "$test_root/build"
+  install -d -m 0700 -o "$test_uid" -g "$test_gid" \
+    "$test_root/home" "$test_root/tmp" "$test_root/runtime"
+  setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
+    build_root=$1
+    test_root=$2
+    test_uid=$3
+    test_gid=$4
+    relative_workdir=$5
+    test_path=$6
+    test_command=$7
+    mount --bind "$build_root" "$test_root/build"
+    cd "$test_root/build/$relative_workdir"
+    exec setpriv \
+      --reuid="$test_uid" \
+      --regid="$test_gid" \
+      --clear-groups \
+      --inh-caps=-all \
+      --ambient-caps=-all \
+      --bounding-set=-all \
+      env -i \
+        PATH="$test_path" \
+        LANG=en_US.UTF-8 \
+        HOME="$test_root/home" \
+        TMPDIR="$test_root/tmp" \
+        XDG_CACHE_HOME="$test_root/home/.cache" \
+        XDG_CONFIG_HOME="$test_root/home/.config" \
+        XDG_RUNTIME_DIR="$test_root/runtime" \
+        BROWSER_BINARY="$test_root/build/src/src/out/Release/chrome" \
+        bash -Eeuo pipefail -c "$test_command"
+  ' "$test_name" "$build_root" "$test_root" "$test_uid" "$test_gid" \
+    "$relative_workdir" "$test_path" "$test_command" 9>&- &
+  test_session_pid=$!
+  if wait "$test_session_pid"; then
+    test_status=0
+  else
+    test_status=$?
+  fi
+  test_session_pid=
+  rm -rf -- "$test_root"
+  test_root=
+  return "$test_status"
+}"""
+
+
 def remote_build_script(
     config: RemoteConfig, lock: UpstreamLock, project_commit: str, project_origin: str
 ) -> str:
@@ -92,6 +155,7 @@ test \"$SOURCE_DATE_EPOCH\" -gt 0
 export SOURCE_DATE_EPOCH
 export SC_MANAGED_MCP_RANDOM_KEY=\"$build_id\"
 {patch_helpers}
+{_browser_test_sandbox_helpers()}
 ensure_chromium_source() {{
   local destination=\"$build_root/src/src\"
   local legacy=\"$build_root/src/chromium\"
@@ -182,54 +246,13 @@ gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=
 set_phase chromium-build
 autoninja -C out/Release chrome browser_tests
 run_browser_protocol_tests() {{
-  local test_uid test_gid test_status
-  test_uid=$(id -u nobody)
-  test_gid=$(id -g nobody)
-  test \"$test_uid\" -ne 0
-  test \"$test_gid\" -ne 0
-  test_root=$(mktemp -d /tmp/scriptcat-browser-tests.XXXXXX)
-  chmod 0755 \"$test_root\"
-  install -d -m 0755 \"$test_root/build\"
-  install -d -m 0700 -o \"$test_uid\" -g \"$test_gid\" \\
-    \"$test_root/home\" \"$test_root/tmp\" \"$test_root/runtime\"
-  setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
-    build_root=$1
-    test_root=$2
-    test_uid=$3
-    test_gid=$4
-    mount --bind "$build_root" "$test_root/build"
-    cd "$test_root/build/src/src"
-    exec setpriv \\
-      --reuid="$test_uid" \\
-      --regid="$test_gid" \\
-      --clear-groups \\
-      --inh-caps=-all \\
-      --ambient-caps=-all \\
-      --bounding-set=-all \\
-      env -i \\
-        PATH=/usr/bin:/bin \\
-        LANG=en_US.UTF-8 \\
-        HOME="$test_root/home" \\
-        TMPDIR="$test_root/tmp" \\
-        XDG_CACHE_HOME="$test_root/home/.cache" \\
-        XDG_CONFIG_HOME="$test_root/home/.config" \\
-        XDG_RUNTIME_DIR="$test_root/runtime" \\
-        "$test_root/build/src/src/out/Release/browser_tests" \\
-          --disable-setuid-sandbox \\
-          --ozone-platform=headless \\
-          --gtest_filter="DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch" \\
-          --test-launcher-bot-mode
-  ' scriptcat-browser-tests \"$build_root\" \"$test_root\" \"$test_uid\" \"$test_gid\" 9>&- &
-  test_session_pid=$!
-  if wait \"$test_session_pid\"; then
-    test_status=0
-  else
-    test_status=$?
-  fi
-  test_session_pid=
-  rm -rf -- \"$test_root\"
-  test_root=
-  return \"$test_status\"
+  run_browser_test_in_sandbox scriptcat-browser-tests \"$chromium\" /usr/bin:/bin '
+    \"$test_root/build/src/src/out/Release/browser_tests\" \\
+      --disable-setuid-sandbox \\
+      --ozone-platform=headless \\
+      --gtest_filter=\"DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch\" \\
+      --test-launcher-bot-mode
+  '
 }}
 set_phase chromium-protocol-tests
 run_browser_protocol_tests
@@ -276,8 +299,10 @@ pnpm install --frozen-lockfile --config.node-linker=hoisted
 set_phase mcp-build
 pnpm build
 set_phase mcp-tests
-PUPPETEER_EXECUTABLE_PATH="$chromium/out/Release/chrome" \
-  pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
+run_browser_test_in_sandbox scriptcat-mcp-tests "$mcp" "$PATH" '
+  PUPPETEER_EXECUTABLE_PATH="$BROWSER_BINARY" \
+    pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
+'
 set_phase mcp-bundle
 pnpm bundle
 rsync -a --delete build/src/ \"$runtime/mcp/\"
