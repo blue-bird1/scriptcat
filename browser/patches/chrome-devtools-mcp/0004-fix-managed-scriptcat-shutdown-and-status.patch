@@ -1,20 +1,20 @@
-From 95593a83fcefbf99c2536255dd47fb97efed0b29 Mon Sep 17 00:00:00 2001
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
 From: bluebird <linlanxi7552659@gmail.com>
 Date: Wed, 15 Jul 2026 06:17:58 +0800
 Subject: [PATCH] fix: harden managed ScriptCat browser lifecycle
 
 ---
- src/ProfileLock.ts                   | 132 ++++++++++++++++++---
- src/ScriptCatBackend.ts              |  48 ++++++++
- src/ScriptCatManager.ts              |  13 ++-
- src/browser.ts                       | 216 ++++++++++++++++++++++++++++++-----
- tests/ManagedBrowserShutdown.test.ts | 188 ++++++++++++++++++++++++++++++
- tests/ProfileLock.test.ts            |  47 +++++++-
- tests/ScriptCatManager.test.ts       |  78 ++++++++++++-
- 7 files changed, 664 insertions(+), 58 deletions(-)
+ src/ProfileLock.ts                   | 132 +++++++++++++---
+ src/ScriptCatBackend.ts              | 252 ++++++++++++++++++++----------
+ src/ScriptCatManager.ts              |  12 +-
+ src/browser.ts                       | 216 ++++++++++++++++++++++----
+ tests/ManagedBrowserShutdown.test.ts | 188 ++++++++++++++++++++++
+ tests/ProfileLock.test.ts            |  47 +++++-
+ tests/ScriptCatManager.test.ts       | 292 ++++++++++++++++++++++++++++++++++-
+ 7 files changed, 1002 insertions(+), 137 deletions(-)
 
 diff --git a/src/ProfileLock.ts b/src/ProfileLock.ts
-index 41cfa08..112045c 100644
+index 41cfa088725fb4cd59123f111905fab3c39eb218..112045c90bb4ed6db10e30fa18f89b48e8b428f6 100644
 --- a/src/ProfileLock.ts
 +++ b/src/ProfileLock.ts
 @@ -13,16 +13,39 @@ import {ManagedMcpError} from './ManagedMcpError.js';
@@ -183,13 +183,36 @@ index 41cfa08..112045c 100644
 +  return child.exitCode !== null || child.signalCode !== null;
 +}
 diff --git a/src/ScriptCatBackend.ts b/src/ScriptCatBackend.ts
-index f5289f6..d7b9ade 100644
+index f5289f6a1dadf6cd6aba3ef6b2bc5de2fb8c4140..a91bc8576fd02c092b93a3ca566b91cdedb24be5 100644
 --- a/src/ScriptCatBackend.ts
 +++ b/src/ScriptCatBackend.ts
-@@ -35,6 +35,43 @@ export class ScriptCatBackend {
-     return Boolean(this.#findOffscreenTarget());
+@@ -8,6 +8,11 @@ import {ManagedMcpError, type ManagedMcpErrorCode} from './ManagedMcpError.js';
+ import type {Browser, Page, Target} from './third_party/index.js';
+ 
+ const OFFSCREEN_PATH = '/src/offscreen.html';
++const TRANSPORT_PROBE_ACTION = 'serviceWorker/managed/ping';
++
++interface ManagedTransportProbeResponse {
++  managed: true;
++}
+ 
+ interface ScriptCatMessageResponse<T> {
+   code: number;
+@@ -31,8 +36,50 @@ export class ScriptCatBackend {
+     this.#timeout = timeout;
    }
  
+-  transportReady(): boolean {
+-    return Boolean(this.#findOffscreenTarget());
++  async transportReady(): Promise<boolean> {
++    try {
++      const response = await this.send<unknown>(TRANSPORT_PROBE_ACTION);
++      return isManagedTransportProbeResponse(response);
++    } catch {
++      return false;
++    }
++  }
++
 +  async userScriptsAccessEnabled(): Promise<boolean | null> {
 +    const target = this.#findServiceWorkerTarget();
 +    if (!target) {
@@ -225,31 +248,258 @@ index f5289f6..d7b9ade 100644
 +    } catch {
 +      return null;
 +    }
+   }
+ 
+   async send<T>(
+@@ -41,64 +88,72 @@ export class ScriptCatBackend {
+     backendErrorCode?: ManagedMcpErrorCode,
+   ): Promise<T> {
+     let delivery: ScriptCatDelivery<T>;
+-    try {
+-      const page = await this.#getOffscreenPage();
+-      delivery = await withTimeout(
+-        page.evaluate(
+-          async payload => {
+-            const runtime = (
+-              globalThis as unknown as {
+-                chrome: {
+-                  runtime: {
+-                    lastError?: {message?: string};
+-                    sendMessage(
+-                      message: unknown,
+-                      callback: (response: unknown) => void,
+-                    ): void;
++    const deadline = Date.now() + this.#timeout;
++    const attemptedTargets = new Set<Target>();
++    while (true) {
++      try {
++        const {page} = await this.#getOffscreenPage(attemptedTargets, deadline);
++        delivery = await withTimeout(
++          page.evaluate(
++            async payload => {
++              const runtime = (
++                globalThis as unknown as {
++                  chrome: {
++                    runtime: {
++                      lastError?: {message?: string};
++                      sendMessage(
++                        message: unknown,
++                        callback: (response: unknown) => void,
++                      ): void;
++                    };
+                   };
+-                };
+-              }
+-            ).chrome.runtime;
+-            return await new Promise<ScriptCatDelivery<unknown>>(resolve => {
+-              runtime.sendMessage(
+-                {action: payload.action, data: payload.data},
+-                response => {
+-                  const transportError = runtime.lastError?.message;
+-                  resolve(
+-                    transportError
+-                      ? {transportError}
+-                      : {
+-                          response:
+-                            response as ScriptCatMessageResponse<unknown>,
+-                        },
+-                  );
+-                },
+-              );
+-            });
+-          },
+-          {action, data},
+-        ) as Promise<ScriptCatDelivery<T>>,
+-        this.#timeout,
+-        action,
+-      );
+-    } catch (error) {
+-      if (error instanceof ManagedMcpError) {
+-        throw error;
+-      }
+-      if (error instanceof Error && error.name === 'TimeoutError') {
++                }
++              ).chrome.runtime;
++              return await new Promise<ScriptCatDelivery<unknown>>(resolve => {
++                runtime.sendMessage(
++                  {action: payload.action, data: payload.data},
++                  response => {
++                    const transportError = runtime.lastError?.message;
++                    resolve(
++                      transportError
++                        ? {transportError}
++                        : {
++                            response:
++                              response as ScriptCatMessageResponse<unknown>,
++                          },
++                    );
++                  },
++                );
++              });
++            },
++            {action, data},
++          ) as Promise<ScriptCatDelivery<T>>,
++          remainingTimeout(deadline),
++          action,
++        );
++        break;
++      } catch (error) {
++        if (isRetryableTargetError(error) && Date.now() < deadline) {
++          continue;
++        }
++        if (error instanceof ManagedMcpError) {
++          throw error;
++        }
++        if (error instanceof Error && error.name === 'TimeoutError') {
++          throw new ManagedMcpError(
++            'TIMEOUT',
++            'Timed out waiting for the ScriptCat offscreen message transport.',
++            {action, timeout: this.#timeout},
++            {cause: error},
++          );
++        }
+         throw new ManagedMcpError(
+-          'TIMEOUT',
+-          'Timed out waiting for the ScriptCat offscreen message transport.',
+-          {action, timeout: this.#timeout},
++          'EXTENSION_NOT_READY',
++          'Failed to call the ScriptCat service-worker backend.',
++          {action},
+           {cause: error},
+         );
+       }
+-      throw new ManagedMcpError(
+-        'EXTENSION_NOT_READY',
+-        'Failed to call the ScriptCat service-worker backend.',
+-        {action},
+-        {cause: error},
+-      );
+     }
+ 
+     if (delivery.transportError) {
+@@ -129,43 +184,96 @@ export class ScriptCatBackend {
+     return response.data as T;
+   }
+ 
+-  #findOffscreenTarget(): Target | undefined {
++  #findOffscreenTargets(): Target[] {
++    return this.#browser
++      .targets()
++      .filter(target => this.#isOffscreenTarget(target));
 +  }
 +
-   async send<T>(
-     action: string,
-     data?: unknown,
-@@ -140,6 +177,17 @@ export class ScriptCatBackend {
++  #isOffscreenTarget(target: Target): boolean {
+     const expectedPrefix = `chrome-extension://${this.#extensionId}`;
++    return (
++      target.url().startsWith(expectedPrefix) &&
++      target.url().endsWith(OFFSCREEN_PATH)
++    );
++  }
++
++  #findServiceWorkerTarget(): Target | undefined {
++    const expectedPrefix = `chrome-extension://${this.#extensionId}/`;
+     return this.#browser
+       .targets()
+       .find(
+         target =>
+-          target.url().startsWith(expectedPrefix) &&
+-          target.url().endsWith(OFFSCREEN_PATH),
++          target.type() === 'service_worker' &&
++          target.url().startsWith(expectedPrefix),
        );
    }
  
-+  #findServiceWorkerTarget(): Target | undefined {
-+    const expectedPrefix = `chrome-extension://${this.#extensionId}/`;
-+    return this.#browser
-+      .targets()
-+      .find(
-+        target =>
-+          target.type() === 'service_worker' &&
-+          target.url().startsWith(expectedPrefix),
+-  async #getOffscreenPage(): Promise<Page> {
+-    const target =
+-      this.#findOffscreenTarget() ??
+-      (await this.#browser.waitForTarget(
+-        candidate => {
+-          return (
+-            candidate
+-              .url()
+-              .startsWith(`chrome-extension://${this.#extensionId}`) &&
+-            candidate.url().endsWith(OFFSCREEN_PATH)
+-          );
+-        },
+-        {timeout: this.#timeout},
+-      ));
+-    const page = (await target.page()) ?? (await target.asPage());
+-    if (!page) {
+-      throw new ManagedMcpError(
+-        'EXTENSION_NOT_READY',
+-        'The ScriptCat offscreen message transport is unavailable.',
+-        {extensionId: this.#extensionId},
++  async #getOffscreenPage(
++    attemptedTargets: Set<Target>,
++    deadline: number,
++  ): Promise<{page: Page; target: Target}> {
++    while (true) {
++      const target = this.#findOffscreenTargets().find(
++        candidate => !attemptedTargets.has(candidate),
+       );
++      if (target) {
++        attemptedTargets.add(target);
++        try {
++          const page = (await target.page()) ?? (await target.asPage());
++          if (page) {
++            return {page, target};
++          }
++        } catch (error) {
++          if (!isRetryableTargetError(error)) {
++            throw error;
++          }
++        }
++        continue;
++      }
++      const replacement = await this.#browser.waitForTarget(
++        candidate =>
++          this.#isOffscreenTarget(candidate) &&
++          !attemptedTargets.has(candidate),
++        {timeout: remainingTimeout(deadline)},
 +      );
-+  }
++      attemptedTargets.add(replacement);
++      try {
++        const page = (await replacement.page()) ?? (await replacement.asPage());
++        if (page) {
++          return {page, target: replacement};
++        }
++      } catch (error) {
++        if (!isRetryableTargetError(error)) {
++          throw error;
++        }
++      }
+     }
+-    return page;
+   }
+ }
+ 
++function remainingTimeout(deadline: number): number {
++  return Math.max(1, deadline - Date.now());
++}
 +
-   async #getOffscreenPage(): Promise<Page> {
-     const target =
-       this.#findOffscreenTarget() ??
++function isManagedTransportProbeResponse(
++  response: unknown,
++): response is ManagedTransportProbeResponse {
++  return (
++    typeof response === 'object' &&
++    response !== null &&
++    (response as {managed?: unknown}).managed === true
++  );
++}
++
++function isRetryableTargetError(error: unknown): boolean {
++  return (
++    error instanceof Error &&
++    (error.message.includes('Target closed') ||
++      error.message.includes('Execution context was destroyed'))
++  );
++}
++
+ async function withTimeout<T>(
+   promise: Promise<T>,
+   timeout: number,
 diff --git a/src/ScriptCatManager.ts b/src/ScriptCatManager.ts
-index 4733fe2..3f50cf3 100644
+index 4733fe270ac4156e066876bb57408234d41966eb..1bf55d12c2040fbca82d9ca8ccd821c7de312800 100644
 --- a/src/ScriptCatManager.ts
 +++ b/src/ScriptCatManager.ts
 @@ -52,6 +52,7 @@ export interface ScriptCatStatus {
@@ -260,24 +510,7 @@ index 4733fe2..3f50cf3 100644
    backendTransportReady: boolean;
    repositoryRoot: string;
  }
-@@ -173,8 +174,6 @@ export class ScriptCatManager {
-       );
-     }
- 
--    await setExtensionUserScriptsAccess(this.#browser, this.#extensionId, true);
--
-     const reloadedId = await this.#browser.installExtension(
-       this.#extensionPath,
-     );
-@@ -185,6 +184,7 @@ export class ScriptCatManager {
-         {expectedId: this.#extensionId, reloadedId},
-       );
-     }
-+    await setExtensionUserScriptsAccess(this.#browser, this.#extensionId, true);
-     await this.#waitUntilReady();
-   }
- 
-@@ -197,6 +197,7 @@ export class ScriptCatManager {
+@@ -197,6 +198,7 @@ export class ScriptCatManager {
          ready: false,
          extension: {id: this.#extensionId},
          serviceWorkerReady: false,
@@ -285,13 +518,14 @@ index 4733fe2..3f50cf3 100644
          backendTransportReady: false,
          repositoryRoot: this.#repositoryRoot,
        };
-@@ -210,10 +211,15 @@ export class ScriptCatManager {
+@@ -210,10 +212,15 @@ export class ScriptCatManager {
          serviceWorkerReady = false;
        }
      }
+-    const backendTransportReady = this.#backend.transportReady();
 +    const userScriptsAccessEnabled =
 +      await this.#backend.userScriptsAccessEnabled();
-     const backendTransportReady = this.#backend.transportReady();
++    const backendTransportReady = await this.#backend.transportReady();
      return {
        ready: Boolean(
 -        extension?.enabled && serviceWorkerReady && backendTransportReady,
@@ -302,7 +536,7 @@ index 4733fe2..3f50cf3 100644
        ),
        extension: {
          id: this.#extensionId,
-@@ -223,6 +229,7 @@ export class ScriptCatManager {
+@@ -223,6 +230,7 @@ export class ScriptCatManager {
          path: extension?.path,
        },
        serviceWorkerReady,
@@ -311,7 +545,7 @@ index 4733fe2..3f50cf3 100644
        repositoryRoot: this.#repositoryRoot,
      };
 diff --git a/src/browser.ts b/src/browser.ts
-index 4c7318a..92d3113 100644
+index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e134e7f62 100644
 --- a/src/browser.ts
 +++ b/src/browser.ts
 @@ -4,13 +4,17 @@
@@ -583,7 +817,7 @@ index 4c7318a..92d3113 100644
  export type Channel = 'stable' | 'canary' | 'beta' | 'dev';
 diff --git a/tests/ManagedBrowserShutdown.test.ts b/tests/ManagedBrowserShutdown.test.ts
 new file mode 100644
-index 0000000..704ba8d
+index 0000000000000000000000000000000000000000..704ba8d01e60c2654d4dd516e95786b38a369052
 --- /dev/null
 +++ b/tests/ManagedBrowserShutdown.test.ts
 @@ -0,0 +1,188 @@
@@ -776,7 +1010,7 @@ index 0000000..704ba8d
 +  });
 +});
 diff --git a/tests/ProfileLock.test.ts b/tests/ProfileLock.test.ts
-index 68ac1d1..39b8eb5 100644
+index 68ac1d103bec8a2ab4b96df9b5dbc3dd7dba4793..39b8eb5ebb4d8f4cc78eae1edd8bd8fc3ad9c19c 100644
 --- a/tests/ProfileLock.test.ts
 +++ b/tests/ProfileLock.test.ts
 @@ -9,7 +9,7 @@ import {spawn} from 'node:child_process';
@@ -863,19 +1097,126 @@ index 68ac1d1..39b8eb5 100644
 +  });
  });
 diff --git a/tests/ScriptCatManager.test.ts b/tests/ScriptCatManager.test.ts
-index c72de9f..cebf737 100644
+index c72de9fbaa7304a9e33c78e43f2c3014b8765ac3..18f0dfa37b7128d7c8f021983ce39cf47252face 100644
 --- a/tests/ScriptCatManager.test.ts
 +++ b/tests/ScriptCatManager.test.ts
-@@ -14,6 +14,8 @@ import {ManagedMcpError} from '../src/ManagedMcpError.js';
- import {ScriptCatManager} from '../src/ScriptCatManager.js';
- import type {Browser} from '../src/third_party/index.js';
+@@ -12,7 +12,114 @@ import {describe, it} from 'node:test';
  
-+const EXTENSION_ID = 'ckchkcgpbkhleahkgkbiiikpcjdbopje';
+ import {ManagedMcpError} from '../src/ManagedMcpError.js';
+ import {ScriptCatManager} from '../src/ScriptCatManager.js';
+-import type {Browser} from '../src/third_party/index.js';
++import type {Browser, Page, Target} from '../src/third_party/index.js';
 +
++const EXTENSION_ID = 'ckchkcgpbkhleahkgkbiiikpcjdbopje';
++const OFFSCREEN_URL = `chrome-extension://${EXTENSION_ID}/src/offscreen.html`;
++
++interface WorkerLike {
++  evaluate(callback: () => unknown): Promise<unknown>;
++}
++
++function response(data: unknown): {code: number; data: unknown} {
++  return {code: 0, data};
++}
++
++type RuntimeMessageHandler = (message: unknown) => unknown;
++
++function offscreenTarget(page: Page): Target {
++  return {
++    type: () => 'other',
++    url: () => OFFSCREEN_URL,
++    page: async () => page,
++    asPage: async () => page,
++  } as unknown as Target;
++}
++
++function serviceWorkerTarget(worker: WorkerLike): Target {
++  return {
++    type: () => 'service_worker',
++    url: () => `chrome-extension://${EXTENSION_ID}/service-worker.js`,
++    worker: async () => worker,
++  } as unknown as Target;
++}
++
++function installChromeApi(
++  handleRuntimeMessage: RuntimeMessageHandler = message =>
++    response(
++      (message as {action?: unknown}).action === 'serviceWorker/managed/ping'
++        ? {managed: true}
++        : [],
++    ),
++): () => void {
++  const priorChrome = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
++  Object.defineProperty(globalThis, 'chrome', {
++    configurable: true,
++    value: {
++      userScripts: {
++        getScripts: async (): Promise<unknown[]> => [],
++      },
++      runtime: {
++        sendMessage: (
++          message: unknown,
++          callback: (result: unknown) => void,
++        ): void => {
++          callback(handleRuntimeMessage(message));
++        },
++      },
++    },
++  });
++  return () => {
++    if (priorChrome) {
++      Object.defineProperty(globalThis, 'chrome', priorChrome);
++    } else {
++      Reflect.deleteProperty(globalThis, 'chrome');
++    }
++  };
++}
++
++async function createManagerPaths(): Promise<{
++  extensionPath: string;
++  repositoryRoot: string;
++  tempRoot: string;
++}> {
++  const tempRoot = await fs.mkdtemp(
++    path.join(os.tmpdir(), 'scriptcat-manager-status-'),
++  );
++  const extensionPath = path.join(tempRoot, 'extension');
++  const repositoryRoot = path.join(tempRoot, 'repository');
++  await Promise.all([fs.mkdir(extensionPath), fs.mkdir(repositoryRoot)]);
++  return {extensionPath, repositoryRoot, tempRoot};
++}
++
++function healthyPage(): Page {
++  return {
++    evaluate: async (
++      callback: (payload: unknown) => unknown,
++      payload: unknown,
++    ): Promise<unknown> => await callback(payload),
++  } as unknown as Page;
++}
++
++function readyWorker(): WorkerLike {
++  return {
++    evaluate: async (callback: () => unknown): Promise<unknown> =>
++      await callback(),
++  };
++}
++
++function readyExtension(worker: WorkerLike) {
++  return async () =>
++    new Map([
++      [
++        EXTENSION_ID,
++        {
++          enabled: true,
++          workers: async () => [worker],
++        },
++      ],
++    ]);
++}
+ 
  describe('ScriptCatManager', () => {
    it('rejects a symlink that escapes the configured repository', async () => {
-     const tempRoot = await fs.mkdtemp(
-@@ -36,7 +38,7 @@ describe('ScriptCatManager', () => {
+@@ -36,7 +143,7 @@ describe('ScriptCatManager', () => {
      try {
        const manager = await ScriptCatManager.create({} as Browser, {
          extensionPath,
@@ -884,56 +1225,105 @@ index c72de9f..cebf737 100644
          repositoryRoot,
          timeout: 1_000,
        });
-@@ -52,4 +54,78 @@ describe('ScriptCatManager', () => {
+@@ -52,4 +159,278 @@ describe('ScriptCatManager', () => {
        await fs.rm(tempRoot, {recursive: true, force: true});
      }
    });
 +
-+  it('only reports ready while the service worker can use userScripts', async () => {
-+    const tempRoot = await fs.mkdtemp(
-+      path.join(os.tmpdir(), 'scriptcat-manager-status-'),
-+    );
-+    const extensionPath = path.join(tempRoot, 'extension');
-+    const repositoryRoot = path.join(tempRoot, 'repository');
-+    await Promise.all([fs.mkdir(extensionPath), fs.mkdir(repositoryRoot)]);
-+
-+    const chromeApi = {
-+      userScripts: {
-+        getScripts: async (): Promise<unknown[]> => [],
-+      },
-+    };
-+    const priorChrome = Object.getOwnPropertyDescriptor(globalThis, 'chrome');
-+    Object.defineProperty(globalThis, 'chrome', {
-+      configurable: true,
-+      value: chromeApi,
++  it('requires the managed ping action and its exact response payload', async () => {
++    const {extensionPath, repositoryRoot, tempRoot} =
++      await createManagerPaths();
++    const receivedMessages: unknown[] = [];
++    let legacyGetAllScriptsProbe = false;
++    const restoreChrome = installChromeApi(message => {
++      receivedMessages.push(message);
++      const action = (message as {action?: unknown}).action;
++      if (action === 'serviceWorker/script/getAllScripts') {
++        legacyGetAllScriptsProbe = true;
++        return response([]);
++      }
++      if (action === 'serviceWorker/managed/ping') {
++        return response({managed: true});
++      }
++      return response({managed: false});
 +    });
-+
-+    const worker = {
-+      evaluate: async (callback: () => unknown): Promise<unknown> =>
-+        await callback(),
-+    };
++    const worker = readyWorker();
 +    const browser = {
-+      extensions: async () =>
-+        new Map([
-+          [
-+            EXTENSION_ID,
-+            {
-+              enabled: true,
-+              workers: async () => [worker],
-+            },
-+          ],
-+        ]),
++      extensions: readyExtension(worker),
 +      targets: () => [
-+        {
-+          type: () => 'service_worker',
-+          url: () => `chrome-extension://${EXTENSION_ID}/service-worker.js`,
-+          worker: async () => worker,
-+        },
-+        {
-+          type: () => 'other',
-+          url: () => `chrome-extension://${EXTENSION_ID}/src/offscreen.html`,
-+        },
++        serviceWorkerTarget(worker),
++        offscreenTarget(healthyPage()),
 +      ],
++    } as Browser;
++
++    try {
++      const manager = await ScriptCatManager.create(browser, {
++        extensionPath,
++        extensionId: EXTENSION_ID,
++        repositoryRoot,
++        timeout: 1_000,
++      });
++      const status = await manager.status();
++      assert.strictEqual(status.backendTransportReady, true);
++      assert.strictEqual(status.ready, true);
++      assert.strictEqual(legacyGetAllScriptsProbe, false);
++      assert.deepStrictEqual(receivedMessages, [
++        {action: 'serviceWorker/managed/ping', data: undefined},
++      ]);
++    } finally {
++      restoreChrome();
++      await fs.rm(tempRoot, {recursive: true, force: true});
++    }
++  });
++
++  it('rejects malformed and failed managed ping responses', async () => {
++    const {extensionPath, repositoryRoot, tempRoot} =
++      await createManagerPaths();
++    let probeResponse: unknown = response({managed: true});
++    const restoreChrome = installChromeApi(() => probeResponse);
++    const worker = readyWorker();
++    const browser = {
++      extensions: readyExtension(worker),
++      targets: () => [
++        serviceWorkerTarget(worker),
++        offscreenTarget(healthyPage()),
++      ],
++    } as Browser;
++
++    try {
++      const manager = await ScriptCatManager.create(browser, {
++        extensionPath,
++        extensionId: EXTENSION_ID,
++        repositoryRoot,
++        timeout: 1_000,
++      });
++      assert.strictEqual((await manager.status()).ready, true);
++
++      probeResponse = response({managed: false});
++      const malformed = await manager.status();
++      assert.strictEqual(malformed.backendTransportReady, false);
++      assert.strictEqual(malformed.ready, false);
++
++      probeResponse = {code: -1, message: 'managed backend unavailable'};
++      const failed = await manager.status();
++      assert.strictEqual(failed.backendTransportReady, false);
++      assert.strictEqual(failed.ready, false);
++    } finally {
++      restoreChrome();
++      await fs.rm(tempRoot, {recursive: true, force: true});
++    }
++  });
++
++  it('only reports ready while the service worker can use userScripts', async () => {
++    const {extensionPath, repositoryRoot, tempRoot} =
++      await createManagerPaths();
++
++    const restoreChrome = installChromeApi();
++    const worker = readyWorker();
++    const page = healthyPage();
++    const browser = {
++      extensions: readyExtension(worker),
++      targets: () => [serviceWorkerTarget(worker), offscreenTarget(page)],
 +    } as Browser;
 +
 +    try {
@@ -947,18 +1337,169 @@ index c72de9f..cebf737 100644
 +      assert.strictEqual(available.userScriptsAccessEnabled, true);
 +      assert.strictEqual(available.ready, true);
 +
-+      chromeApi.userScripts.getScripts = async () => {
++      (
++        globalThis as unknown as {
++          chrome: {userScripts: {getScripts: () => Promise<unknown>}};
++        }
++      ).chrome.userScripts.getScripts = async () => {
 +        throw new Error('userScripts access disabled');
 +      };
 +      const unavailable = await manager.status();
 +      assert.strictEqual(unavailable.userScriptsAccessEnabled, false);
 +      assert.strictEqual(unavailable.ready, false);
 +    } finally {
-+      if (priorChrome) {
-+        Object.defineProperty(globalThis, 'chrome', priorChrome);
-+      } else {
-+        Reflect.deleteProperty(globalThis, 'chrome');
-+      }
++      restoreChrome();
++      await fs.rm(tempRoot, {recursive: true, force: true});
++    }
++  });
++
++  it('grants userScripts access before reloading the managed extension', async () => {
++    const {extensionPath, repositoryRoot, tempRoot} =
++      await createManagerPaths();
++    const restoreChrome = installChromeApi();
++    const worker = readyWorker();
++    const events: string[] = [];
++    let installCount = 0;
++    const browser = {
++      _connection: {
++        send: async (): Promise<void> => {
++          events.push('grant');
++        },
++      },
++      installExtension: async (): Promise<string> => {
++        installCount += 1;
++        events.push(installCount === 1 ? 'install' : 'reload');
++        return EXTENSION_ID;
++      },
++      extensions: readyExtension(worker),
++      targets: () => [
++        serviceWorkerTarget(worker),
++        offscreenTarget(healthyPage()),
++      ],
++    } as unknown as Browser;
++
++    try {
++      const manager = await ScriptCatManager.create(browser, {
++        extensionPath,
++        extensionId: EXTENSION_ID,
++        repositoryRoot,
++        timeout: 1_000,
++      });
++      await manager.initialize();
++      assert.deepStrictEqual(events, ['install', 'grant', 'reload']);
++    } finally {
++      restoreChrome();
++      await fs.rm(tempRoot, {recursive: true, force: true});
++    }
++  });
++
++  it('uses a replacement offscreen target for the readiness round trip', async () => {
++    const {extensionPath, repositoryRoot, tempRoot} =
++      await createManagerPaths();
++    const restoreChrome = installChromeApi();
++    const worker = readyWorker();
++    const targetClosed = new Error('Target closed');
++    let staleCalls = 0;
++    let replacementCalls = 0;
++    const stalePage = {
++      evaluate: async (): Promise<never> => {
++        staleCalls += 1;
++        throw targetClosed;
++      },
++    } as unknown as Page;
++    const replacementPage = {
++      evaluate: async (
++        callback: (payload: unknown) => unknown,
++        payload: unknown,
++      ): Promise<unknown> => {
++        replacementCalls += 1;
++        return await callback(payload);
++      },
++    } as unknown as Page;
++    const staleTarget = offscreenTarget(stalePage);
++    const replacementTarget = offscreenTarget(replacementPage);
++    const browser = {
++      extensions: readyExtension(worker),
++      targets: () => [
++        serviceWorkerTarget(worker),
++        staleTarget,
++        replacementTarget,
++      ],
++    } as unknown as Browser;
++
++    try {
++      const manager = await ScriptCatManager.create(browser, {
++        extensionPath,
++        extensionId: EXTENSION_ID,
++        repositoryRoot,
++        timeout: 1_000,
++      });
++      const status = await manager.status();
++      assert.strictEqual(status.backendTransportReady, true);
++      assert.strictEqual(status.ready, true);
++      assert.strictEqual(staleCalls, 1);
++      assert.strictEqual(replacementCalls, 1);
++    } finally {
++      restoreChrome();
++      await fs.rm(tempRoot, {recursive: true, force: true});
++    }
++  });
++
++  it('retries a list request after the status target closes', async () => {
++    const {extensionPath, repositoryRoot, tempRoot} =
++      await createManagerPaths();
++    const restoreChrome = installChromeApi();
++    const worker = readyWorker();
++    const targetClosed = new Error('Execution context was destroyed');
++    let initialAvailable = true;
++    let initialCalls = 0;
++    let replacementCalls = 0;
++    const initialPage = {
++      evaluate: async (
++        callback: (payload: unknown) => unknown,
++        payload: unknown,
++      ): Promise<unknown> => {
++        initialCalls += 1;
++        if (!initialAvailable) {
++          throw targetClosed;
++        }
++        return await callback(payload);
++      },
++    } as unknown as Page;
++    const replacementPage = {
++      evaluate: async (
++        callback: (payload: unknown) => unknown,
++        payload: unknown,
++      ): Promise<unknown> => {
++        replacementCalls += 1;
++        return await callback(payload);
++      },
++    } as unknown as Page;
++    const initialTarget = offscreenTarget(initialPage);
++    const replacementTarget = offscreenTarget(replacementPage);
++    const browser = {
++      extensions: readyExtension(worker),
++      targets: () => [
++        serviceWorkerTarget(worker),
++        initialTarget,
++        replacementTarget,
++      ],
++    } as unknown as Browser;
++
++    try {
++      const manager = await ScriptCatManager.create(browser, {
++        extensionPath,
++        extensionId: EXTENSION_ID,
++        repositoryRoot,
++        timeout: 1_000,
++      });
++      assert.strictEqual((await manager.status()).ready, true);
++      initialAvailable = false;
++      assert.deepStrictEqual(await manager.listScripts(), []);
++      assert.strictEqual(initialCalls, 2);
++      assert.strictEqual(replacementCalls, 1);
++    } finally {
++      restoreChrome();
 +      await fs.rm(tempRoot, {recursive: true, force: true});
 +    }
 +  });

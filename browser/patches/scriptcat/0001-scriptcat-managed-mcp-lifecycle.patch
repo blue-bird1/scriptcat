@@ -6,15 +6,17 @@ Subject: [PATCH] feat: harden managed MCP build and update policy
 ---
  package.json                                       |  1 +
  rspack.config.ts                                   | 11 +++-
- src/app/managed_mcp.ts                             |  4 ++
+ src/app/managed_mcp.test.ts                        | 47 ++++++++++++++
+ src/app/managed_mcp.ts                             | 15 +++++
  src/app/migrate.ts                                 |  9 ++-
- src/app/service/service_worker/index.ts            | 65 ++++++++++++----------
+ src/app/service/service_worker/index.ts            | 71 ++++++++++++----------
  .../service_worker/regular_updatecheck.test.ts     | 45 +++++++++++++++
  .../service/service_worker/regular_updatecheck.ts  | 12 +++-
  src/app/service/service_worker/runtime.ts          |  3 +-
  src/app/service/service_worker/script.ts           | 16 ++++++
  src/app/service/service_worker/subscribe.ts        |  4 +-
- 10 files changed, 132 insertions(+), 38 deletions(-)
+ 11 files changed, 196 insertions(+), 38 deletions(-)
+ create mode 100644 src/app/managed_mcp.test.ts
  create mode 100644 src/app/managed_mcp.ts
  create mode 100644 src/app/service/service_worker/regular_updatecheck.test.ts
 diff --git a/package.json b/package.json
@@ -63,11 +65,75 @@ new file mode 100644
 index 0000000..5bb616e
 --- /dev/null
 +++ b/src/app/managed_mcp.ts
-@@ -0,0 +1,4 @@
+@@ -0,0 +1,15 @@
++import type { Server } from "@Packages/message/server";
++
 +export const REGULAR_SCRIPT_UPDATE_ALARM = "checkScriptUpdate";
 +export const REGULAR_EXTENSION_UPDATE_ALARM = "checkUpdate";
++export const MANAGED_MCP_ROUTE_NAME = "managed";
++export const MANAGED_MCP_PING_ACTION = "ping";
++export const MANAGED_MCP_PING_RESPONSE = Object.freeze({ managed: true });
 +
 +export const isManagedMcp = () => process.env.SC_MANAGED_MCP === "true";
++
++export function registerManagedMcpRoutes(api: Server) {
++  if (!isManagedMcp()) return;
++
++  api.group(MANAGED_MCP_ROUTE_NAME).on(MANAGED_MCP_PING_ACTION, () => MANAGED_MCP_PING_RESPONSE);
++}
+diff --git a/src/app/managed_mcp.test.ts b/src/app/managed_mcp.test.ts
+new file mode 100644
+index 0000000..dbe4e00
+--- /dev/null
++++ b/src/app/managed_mcp.test.ts
+@@ -0,0 +1,47 @@
++import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
++import EventEmitter from "eventemitter3";
++import { Server } from "@Packages/message/server";
++import { MockMessage } from "@Packages/message/mock_message";
++import { initTestEnv } from "@Tests/utils";
++import { registerManagedMcpRoutes } from "./managed_mcp";
++
++initTestEnv();
++
++const managedPingRoute = "managed/ping";
++const managedPingAction = `serviceWorker/${managedPingRoute}`;
++
++const createServiceWorkerServer = () => {
++  const message = new MockMessage(new EventEmitter<string, any>());
++  return { message, server: new Server("serviceWorker", message) };
++};
++
++describe("managed MCP ping route", () => {
++  beforeEach(() => {
++    vi.stubEnv("SC_MANAGED_MCP", "true");
++  });
++
++  afterEach(() => {
++    vi.unstubAllEnvs();
++  });
++
++  it("returns the managed health response through the service worker", async () => {
++    const { message, server } = createServiceWorkerServer();
++    registerManagedMcpRoutes(server);
++
++    await expect(message.sendMessage({ action: managedPingAction })).resolves.toEqual({
++      code: 0,
++      data: { managed: true },
++    });
++  });
++
++  it("does not register the managed health route outside managed builds", async () => {
++    vi.stubEnv("SC_MANAGED_MCP", "false");
++    const { message, server } = createServiceWorkerServer();
++    registerManagedMcpRoutes(server);
++
++    await expect(message.sendMessage({ action: managedPingAction })).resolves.toEqual({
++      code: -1,
++      message: `no such api ${managedPingRoute}`,
++    });
++  });
++});
 diff --git a/src/app/migrate.ts b/src/app/migrate.ts
 index 63244e7..15dab8d 100644
 --- a/src/app/migrate.ts
@@ -99,14 +165,26 @@ diff --git a/src/app/service/service_worker/index.ts b/src/app/service/service_w
 index 51f3812..e170654 100644
 --- a/src/app/service/service_worker/index.ts
 +++ b/src/app/service/service_worker/index.ts
-@@ -21,6 +21,7 @@ import { FaviconDAO } from "@App/app/repo/favicon";
+@@ -21,6 +21,12 @@ import { FaviconDAO } from "@App/app/repo/favicon";
  import { onRegularUpdateCheckAlarm } from "./regular_updatecheck";
  import { cacheInstance } from "@App/app/cache";
  import { InfoNotification } from "./utils";
-+import { isManagedMcp, REGULAR_EXTENSION_UPDATE_ALARM, REGULAR_SCRIPT_UPDATE_ALARM } from "@App/app/managed_mcp";
++import {
++  isManagedMcp,
++  registerManagedMcpRoutes,
++  REGULAR_EXTENSION_UPDATE_ALARM,
++  REGULAR_SCRIPT_UPDATE_ALARM,
++} from "@App/app/managed_mcp";
  
  // service worker的管理器
  export default class ServiceWorkerManager {
+@@ -39,5 +45,6 @@ export default class ServiceWorkerManager {
+   initManager() {
++    registerManagedMcpRoutes(this.api);
+     this.api.on("logger", this.logger.bind(this));
+     this.api.on("preparationOffscreen", async () => {
+       // 准备好环境
+       await this.sender.init();
 @@ -137,8 +138,8 @@ export default class ServiceWorkerManager {
          // 非预期的异常API错误，停止处理
        }

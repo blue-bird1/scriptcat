@@ -29,12 +29,12 @@
     {
       "target": "chrome-devtools-mcp",
       "path": "browser/patches/chrome-devtools-mcp",
-      "sha256": "e0480892c50e128de2c4ae631ab84841e0d9d6a834d14a00d717b571c2fe666e"
+      "sha256": "e6d3b98f0a5efdfcd1cd7394746d9acc4a136b5ed4f27dcc5601d6a6eb5fb82c"
     },
     {
       "target": "scriptcat",
       "path": "browser/patches/scriptcat",
-      "sha256": "3b62ff3523c70251c8046134abf6eef64a0f90b8d1e3816a4a53e472341c8d0c"
+      "sha256": "80b31b838837eb463e02d4b9528ce35064096a691924fe497197144c515bfbd2"
     }
   ]
 }
