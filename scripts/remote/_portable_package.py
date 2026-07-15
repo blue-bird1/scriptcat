@@ -20,11 +20,16 @@ def portable_package_script(
     *,
     component_build_id: str,
     release_build_id: str,
+    project_commit: str,
     build_root: str = REMOTE_BUILD_ROOT,
 ) -> str:
     """Generate the self-contained remote packaging program for a verified build."""
     validate_build_id(component_build_id, "component build ID")
     validate_build_id(release_build_id, "release build ID")
+    if len(project_commit) != 40 or any(
+        character not in "0123456789abcdef" for character in project_commit
+    ):
+        raise WorkflowError("project commit must be a lowercase 40-hex Git commit")
     if not _ARCHIVE_NAME_PATTERN.fullmatch(archive_name):
         raise WorkflowError(f"archive name is unsafe or unsupported: {archive_name!r}")
 
@@ -39,6 +44,7 @@ def portable_package_script(
         release_build_id={shell_quote(release_build_id)}
         archive_name={shell_quote(archive_name)}
         lock_digest={shell_quote(lock.digest)}
+        project_commit={shell_quote(project_commit)}
         chromium_version={shell_quote(lock.chromium.version)}
         mcp_version={shell_quote(lock.mcp.version)}
         depot_tools_version={shell_quote(lock.depot_tools.version)}
@@ -92,7 +98,7 @@ def portable_package_script(
         read -r source_date_epoch package_mode <<< "$(
           python3 - "$runtime" "$build_manifest" "$release_directory" \\
             "$release_temporary" "$release_build_id" "$component_build_id" \\
-            "$lock_digest" \\
+            "$lock_digest" "$project_commit" \\
             "$chromium_version" "$mcp_version" "$depot_tools_version" \\
             "$scriptcat_version" <<'PY'
 import hashlib
@@ -124,6 +130,9 @@ BUILD_MANIFEST_KEYS = {{
 RELEASE_RESERVED_FILES = {{"manifest.json", "SHA256SUMS"}}
 RELEASE_MANIFEST_KEYS = {{
     "build_id",
+    "component_build_id",
+    "project_commit",
+    "lock_digest",
     "chromium_version",
     "mcp_version",
     "depot_tools_version",
@@ -262,6 +271,9 @@ def write_release_manifest(root, release_build_id, versions):
         fail("runtime reserves a release metadata filename")
     release_manifest = {{
         "build_id": release_build_id,
+        "component_build_id": versions["build_id"],
+        "project_commit": versions["project_commit"],
+        "lock_digest": versions["lock_digest"],
         "chromium_version": versions["chromium_version"],
         "mcp_version": versions["mcp_version"],
         "depot_tools_version": versions["depot_tools_version"],
@@ -319,6 +331,9 @@ def verify_release(root, release_build_id, build_manifest, runtime_files, runtim
         root / "manifest.json",
         {{
             "build_id": release_build_id,
+            "component_build_id": build_manifest["build_id"],
+            "project_commit": build_manifest["project_commit"],
+            "lock_digest": build_manifest["lock_digest"],
             "chromium_version": build_manifest["chromium_version"],
             "mcp_version": build_manifest["mcp_version"],
             "depot_tools_version": build_manifest["depot_tools_version"],
@@ -358,10 +373,11 @@ release_temporary = pathlib.Path(sys.argv[4])
 expected = {{
     "build_id": sys.argv[6],
     "lock_digest": sys.argv[7],
-    "chromium_version": sys.argv[8],
-    "mcp_version": sys.argv[9],
-    "depot_tools_version": sys.argv[10],
-    "scriptcat_version": sys.argv[11],
+    "project_commit": sys.argv[8],
+    "chromium_version": sys.argv[9],
+    "mcp_version": sys.argv[10],
+    "depot_tools_version": sys.argv[11],
+    "scriptcat_version": sys.argv[12],
 }}
 build_manifest = read_build_manifest(build_manifest_path, expected)
 files, directories = inspect_tree(runtime)

@@ -15,6 +15,24 @@ from scripts.remote._remote_build import remote_build_script
 
 
 class McpBrowserSandboxRegressionTest(unittest.TestCase):
+    def test_scriptcat_focus_tests_cover_managed_mcp_and_updatecheck(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        script = remote_build_script(
+            RemoteConfig(),
+            load_lock(repository / "browser/upstreams.lock.json"),
+            "0" * 40,
+            "https://example.invalid/scriptcat.git",
+        )
+
+        focused_tests = (
+            "pnpm test:ci -- src/app/managed_mcp.test.ts "
+            "src/app/service/service_worker/regular_updatecheck.test.ts"
+        )
+        self.assertIn(focused_tests, script)
+        self.assertLess(
+            script.index(focused_tests), script.index("pnpm build:managed-mcp")
+        )
+
     def test_mcp_browser_command_runs_non_root_in_private_namespace(self) -> None:
         """Keep the root-launched ManagedBrowserShutdown failure from recurring."""
         sandbox_launcher = self._render_sandbox_launcher()

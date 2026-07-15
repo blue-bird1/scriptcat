@@ -11,7 +11,7 @@ Use this skill before browser-debugging this repository's userscripts. The test 
 
 Use the managed ScriptCat tools through `mcp__chrome_devtools_scriptcat__`. The fixed ScriptCat extension ID is `ckchkcgpbkhleahkgkbiiikpcjdbopje`.
 
-The MCP starts the portable Chromium and performs the managed-extension lifecycle in two passes: it first loads or installs the extension, then performs the required install/reload pass, calls `setUserScriptsAccess` to grant `userScripts` authorization, and waits for the extension service worker and backend to become ready. Do not start Chrome separately or manipulate the profile.
+The MCP starts the portable Chromium and performs the managed-extension lifecycle in this order: it first loads or installs the extension, verifies the expected extension ID, calls `setUserScriptsAccess` to grant `userScripts` authorization, performs the second install/reload pass required after the grant, and then waits for the extension service worker and backend to become ready. Do not start Chrome separately or manipulate the profile.
 
 1. Call `scriptcat_status` and confirm the expected ID, version, enabled status, `userScriptsAccessEnabled`, and service-worker readiness. Treat `false` or `null` for `userScriptsAccessEnabled` as not ready.
 2. If access must change, call `set_extension_user_scripts_access` with that extension ID and the requested `enabled` value, then call `scriptcat_status` again.

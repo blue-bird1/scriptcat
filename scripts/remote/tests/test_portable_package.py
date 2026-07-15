@@ -13,6 +13,7 @@ from scripts.remote.package import ARCHIVE_PREFIX
 
 COMPONENT_BUILD_ID = "0123456789abcdef01234567"
 RELEASE_BUILD_ID = "89abcdef0123456701234567"
+PROJECT_COMMIT = "0" * 40
 
 
 class PortablePackageScriptTest(unittest.TestCase):
@@ -25,6 +26,7 @@ class PortablePackageScriptTest(unittest.TestCase):
             lock,
             component_build_id=lock.digest[:24],
             release_build_id=lock.digest[-24:],
+            project_commit=PROJECT_COMMIT,
         )
 
         self.assertNotIn(chr(0), script)
@@ -88,7 +90,7 @@ class PortablePackageScriptTest(unittest.TestCase):
         manifest = {
             "schema": 1,
             "build_id": COMPONENT_BUILD_ID,
-            "project_commit": "0" * 40,
+            "project_commit": PROJECT_COMMIT,
             "lock_digest": lock.digest,
             "source_date_epoch": 1,
             "chromium_version": lock.chromium.version,
@@ -120,6 +122,7 @@ class PortablePackageScriptTest(unittest.TestCase):
                 lock,
                 component_build_id=COMPONENT_BUILD_ID,
                 release_build_id=RELEASE_BUILD_ID,
+                project_commit=PROJECT_COMMIT,
                 build_root=str(build_root),
             ),
             encoding="utf-8",

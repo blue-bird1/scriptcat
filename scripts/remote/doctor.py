@@ -139,8 +139,10 @@ def run(argv: Sequence[str]) -> int:
     require_commands("ip", "ssh")
     require_wg0()
     config = RemoteConfig()
-    remote_checked(config, REMOTE_DOCTOR)
+    completed = remote_checked(config, REMOTE_DOCTOR, capture=arguments.json)
     if arguments.json:
+        if completed.stdout:
+            print(completed.stdout, file=sys.stderr, end="")
         print(
             json.dumps(
                 {

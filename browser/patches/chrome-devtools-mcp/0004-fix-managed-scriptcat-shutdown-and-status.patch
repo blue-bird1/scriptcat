@@ -4,14 +4,15 @@ Date: Wed, 15 Jul 2026 06:17:58 +0800
 Subject: [PATCH] fix: harden managed ScriptCat browser lifecycle
 
 ---
- src/ProfileLock.ts                   | 132 +++++++++++++---
- src/ScriptCatBackend.ts              | 252 ++++++++++++++++++++----------
+ src/ProfileLock.ts                   | 132 ++++++++++--
+ src/ScriptCatBackend.ts              | 266 +++++++++++++++++-------
  src/ScriptCatManager.ts              |  12 +-
- src/browser.ts                       | 216 ++++++++++++++++++++++----
- tests/ManagedBrowserShutdown.test.ts | 188 ++++++++++++++++++++++
- tests/ProfileLock.test.ts            |  47 +++++-
- tests/ScriptCatManager.test.ts       | 292 ++++++++++++++++++++++++++++++++++-
- 7 files changed, 1002 insertions(+), 137 deletions(-)
+ src/bin/chrome-devtools-mcp-main.ts  |  14 +-
+ src/browser.ts                       | 243 +++++++++++++++++++---
+ tests/ManagedBrowserShutdown.test.ts | 261 ++++++++++++++++++++++++
+ tests/ProfileLock.test.ts            |  47 ++++-
+ tests/ScriptCatManager.test.ts       | 385 ++++++++++++++++++++++++++++++++++-
+ 8 files changed, 1213 insertions(+), 147 deletions(-)
 
 diff --git a/src/ProfileLock.ts b/src/ProfileLock.ts
 index 41cfa088725fb4cd59123f111905fab3c39eb218..112045c90bb4ed6db10e30fa18f89b48e8b428f6 100644
@@ -183,7 +184,7 @@ index 41cfa088725fb4cd59123f111905fab3c39eb218..112045c90bb4ed6db10e30fa18f89b48
 +  return child.exitCode !== null || child.signalCode !== null;
 +}
 diff --git a/src/ScriptCatBackend.ts b/src/ScriptCatBackend.ts
-index f5289f6a1dadf6cd6aba3ef6b2bc5de2fb8c4140..a91bc8576fd02c092b93a3ca566b91cdedb24be5 100644
+index f5289f6a1dadf6cd6aba3ef6b2bc5de2fb8c4140..8192b77869992474c44b8877248679c99e9156f0 100644
 --- a/src/ScriptCatBackend.ts
 +++ b/src/ScriptCatBackend.ts
 @@ -8,6 +8,11 @@ import {ManagedMcpError, type ManagedMcpErrorCode} from './ManagedMcpError.js';
@@ -436,7 +437,7 @@ index f5289f6a1dadf6cd6aba3ef6b2bc5de2fb8c4140..a91bc8576fd02c092b93a3ca566b91cd
 +    while (true) {
 +      const target = this.#findOffscreenTargets().find(
 +        candidate => !attemptedTargets.has(candidate),
-       );
++      );
 +      if (target) {
 +        attemptedTargets.add(target);
 +        try {
@@ -456,7 +457,7 @@ index f5289f6a1dadf6cd6aba3ef6b2bc5de2fb8c4140..a91bc8576fd02c092b93a3ca566b91cd
 +          this.#isOffscreenTarget(candidate) &&
 +          !attemptedTargets.has(candidate),
 +        {timeout: remainingTimeout(deadline)},
-+      );
+       );
 +      attemptedTargets.add(replacement);
 +      try {
 +        const page = (await replacement.page()) ?? (await replacement.asPage());
@@ -544,8 +545,39 @@ index 4733fe270ac4156e066876bb57408234d41966eb..1bf55d12c2040fbca82d9ca8ccd821c7
        backendTransportReady,
        repositoryRoot: this.#repositoryRoot,
      };
+diff --git a/src/bin/chrome-devtools-mcp-main.ts b/src/bin/chrome-devtools-mcp-main.ts
+index 1ceb9ec223196f241c0611c396bdbcaf1bf265f1..5c0957c38b970ff897167da23d30e5da65ad0d48 100644
+--- a/src/bin/chrome-devtools-mcp-main.ts
++++ b/src/bin/chrome-devtools-mcp-main.ts
+@@ -9,5 +9,5 @@ import '../polyfill.js';
+ import process from 'node:process';
+-
++
+-import {closeBrowser} from '../browser.js';
++import {closeBrowserWithBackstop} from '../browser.js';
+ import {createMcpServer, logDisclaimers} from '../index.js';
+ import {logger, saveLogsToFile} from '../logger.js';
+@@ -44,15 +44,9 @@ async function shutdown(reason: string): Promise<void> {
+   }
+   shuttingDown = true;
+   logger?.(`Shutting down (${reason})`);
+-  // Backstop in case browser teardown hangs (e.g. unresponsive Chrome,
+-  // slow beforeunload handlers, many tabs). Exits 0 because we still
+-  // honored the shutdown request; the log line preserves observability.
+-  // Unref'd so it doesn't keep the loop alive on the clean path.
+-  setTimeout(() => {
+-    logger?.('Shutdown timeout exceeded, forcing exit');
+-    process.exit(0);
+-  }, 10000).unref();
+-  await closeBrowser();
++  await closeBrowserWithBackstop(() => {
++    logger?.('Shutdown timeout exceeded; waiting for Chrome to exit');
++  });
+   process.exit(0);
+ }
+ process.stdin.on('end', () => {
 diff --git a/src/browser.ts b/src/browser.ts
-index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e134e7f62 100644
+index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..e3069eff8632c9df147f630fe14e57d4f8f4f73b 100644
 --- a/src/browser.ts
 +++ b/src/browser.ts
 @@ -4,13 +4,17 @@
@@ -568,7 +600,7 @@ index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e
  import type {
    Browser,
    ChromeReleaseChannel,
-@@ -21,6 +25,11 @@ import {puppeteer} from './third_party/index.js';
+@@ -21,6 +25,12 @@ import {puppeteer} from './third_party/index.js';
  
  let browser: Browser | undefined;
  let browserMode: 'launched' | 'connected' | undefined;
@@ -577,10 +609,11 @@ index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e
 +let browserClosePromise: Promise<void> | undefined;
 +
 +const PROCESS_EXIT_TIMEOUT_MS = 2_000;
++const BROWSER_CLOSE_TIMEOUT_MS = 2_000;
  
  function makeTargetFilter(enableExtensions = false) {
    const ignoredPrefixes = new Set(['chrome://', 'chrome-untrusted://']);
-@@ -279,59 +288,206 @@ export async function launch(options: McpLaunchOptions): Promise<Browser> {
+@@ -279,59 +289,232 @@ export async function launch(options: McpLaunchOptions): Promise<Browser> {
  export async function ensureBrowserLaunched(
    options: McpLaunchOptions,
  ): Promise<Browser> {
@@ -683,6 +716,19 @@ index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e
 +  }
 +}
 +
++export async function closeBrowserWithBackstop(
++  onTimeout: () => void,
++  timeout = 10_000,
++): Promise<void> {
++  const timeoutId = setTimeout(onTimeout, timeout);
++  timeoutId.unref();
++  try {
++    await closeBrowser();
++  } finally {
++    clearTimeout(timeoutId);
++  }
++}
++
 +async function closeActiveBrowser(): Promise<void> {
 +  const launchPromise = browserLaunchPromise;
 +  if (launchPromise) {
@@ -736,23 +782,11 @@ index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e
 +    throw new Error('The launched browser does not expose its OS process.');
 +  }
 +
-+  let closeFailed = !b.connected;
 +  if (b.connected) {
-+    try {
-+      await b.close();
-+    } catch (error) {
-+      closeFailed = true;
-+      logger?.('Failed to close browser', error);
-+    }
++    await closeBrowserOverCdp(b);
 +  }
 +
 +  if (isProcessExited(child)) {
-+    return;
-+  }
-+  if (
-+    !closeFailed &&
-+    (await waitForProcessExit(child, PROCESS_EXIT_TIMEOUT_MS))
-+  ) {
 +    return;
 +  }
 +
@@ -768,6 +802,31 @@ index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e
 +
 +  logger?.('Chrome did not exit after SIGKILL; waiting to reap it.');
 +  await waitForProcessExit(child);
++}
++
++async function closeBrowserOverCdp(b: Browser): Promise<void> {
++  let timeoutId: NodeJS.Timeout | undefined;
++  const close = b.close().then(
++    () => true,
++    error => {
++      logger?.('Failed to close browser over CDP', error);
++      return true;
++    },
++  );
++  const closeSettled = await Promise.race([
++    close,
++    new Promise<boolean>(resolve => {
++      timeoutId = setTimeout(() => {
++        resolve(false);
++      }, BROWSER_CLOSE_TIMEOUT_MS);
++    }),
++  ]);
++  if (timeoutId) {
++    clearTimeout(timeoutId);
++  }
++  if (!closeSettled) {
++    logger?.('Timed out closing browser over CDP; terminating Chrome.');
++  }
 +}
 +
 +function isProcessExited(child: ChildProcess): boolean {
@@ -817,10 +876,10 @@ index 4c7318a40be60fdae368b9aaa4f787e9a9a71b66..92d3113dce56eeba03ef2758ae3b905e
  export type Channel = 'stable' | 'canary' | 'beta' | 'dev';
 diff --git a/tests/ManagedBrowserShutdown.test.ts b/tests/ManagedBrowserShutdown.test.ts
 new file mode 100644
-index 0000000000000000000000000000000000000000..704ba8d01e60c2654d4dd516e95786b38a369052
+index 0000000000000000000000000000000000000000..2866ce25687b2d26fae29ae12c468732d2dfc4ef
 --- /dev/null
 +++ b/tests/ManagedBrowserShutdown.test.ts
-@@ -0,0 +1,188 @@
+@@ -0,0 +1,261 @@
 +/**
 + * @license
 + * Copyright 2026 Google LLC
@@ -837,10 +896,14 @@ index 0000000000000000000000000000000000000000..704ba8d01e60c2654d4dd516e95786b3
 +
 +import {executablePath} from 'puppeteer';
 +
-+import {closeBrowser, ensureBrowserLaunched} from '../src/browser.js';
++import {
++  closeBrowser,
++  closeBrowserWithBackstop,
++  ensureBrowserLaunched,
++} from '../src/browser.js';
 +import {PROFILE_LOCK_FILENAME} from '../src/ProfileLock.js';
 +
-+const CLOSE_TEST_TIMEOUT_MS = 5_000;
++const CLOSE_TEST_TIMEOUT_MS = 10_000;
 +
 +async function profileLockIsAvailable(profile: string): Promise<boolean> {
 +  const child = spawn('flock', [
@@ -932,6 +995,37 @@ index 0000000000000000000000000000000000000000..704ba8d01e60c2654d4dd516e95786b3
 +  };
 +}
 +
++function delayEscalation(child: ChildProcess): {
++  killRequested: Promise<void>;
++  restore(): void;
++  signals: Array<NodeJS.Signals | number | undefined>;
++  terminate(): void;
++} {
++  const originalKill = child.kill.bind(child);
++  const signals: Array<NodeJS.Signals | number | undefined> = [];
++  let notifyKill: () => void;
++  const killRequested = new Promise<void>(resolve => {
++    notifyKill = resolve;
++  });
++  child.kill = signal => {
++    signals.push(signal);
++    if (signal === 'SIGKILL') {
++      notifyKill();
++    }
++    return true;
++  };
++  return {
++    killRequested,
++    restore() {
++      child.kill = originalKill;
++    },
++    signals,
++    terminate() {
++      originalKill('SIGKILL');
++    },
++  };
++}
++
 +async function cleanupManagedBrowser(
 +  children: Array<ChildProcess | null | undefined>,
 +  profile: string,
@@ -1005,6 +1099,44 @@ index 0000000000000000000000000000000000000000..704ba8d01e60c2654d4dd516e95786b3
 +    } finally {
 +      browser.close = close;
 +      termination.restore();
++      await cleanupManagedBrowser([child], profile);
++    }
++  });
++
++  it('escalates a hung CDP close without letting the shutdown backstop release the profile', async () => {
++    const {browser, child, profile} = await launchManagedBrowser();
++    const escalation = delayEscalation(child);
++    const close = browser.close.bind(browser);
++    const closePending = Promise.withResolvers<void>();
++    browser.close = async () => await closePending.promise;
++    const backstopReached = Promise.withResolvers<void>();
++    let shutdownSettled = false;
++    try {
++      const closing = closeBrowserWithBackstop(backstopReached.resolve, 50);
++      void closing.finally(() => {
++        shutdownSettled = true;
++      });
++      await waitForTermination(backstopReached.promise);
++      assert.strictEqual(shutdownSettled, false);
++      assert.strictEqual(await profileLockIsAvailable(profile), false);
++      assert.strictEqual(child.exitCode, null);
++      assert.strictEqual(child.signalCode, null);
++
++      await waitForTermination(escalation.killRequested);
++      assert.deepStrictEqual(escalation.signals, ['SIGTERM', 'SIGKILL']);
++      assert.strictEqual(shutdownSettled, false);
++      assert.strictEqual(await profileLockIsAvailable(profile), false);
++
++      escalation.restore();
++      escalation.terminate();
++      await closing;
++      assert.strictEqual(child.signalCode, 'SIGKILL');
++      assert.strictEqual(await profileLockIsAvailable(profile), true);
++    } finally {
++      closePending.resolve();
++      browser.close = close;
++      escalation.restore();
++      escalation.terminate();
 +      await cleanupManagedBrowser([child], profile);
 +    }
 +  });
@@ -1097,7 +1229,7 @@ index 68ac1d103bec8a2ab4b96df9b5dbc3dd7dba4793..39b8eb5ebb4d8f4cc78eae1edd8bd8fc
 +  });
  });
 diff --git a/tests/ScriptCatManager.test.ts b/tests/ScriptCatManager.test.ts
-index c72de9fbaa7304a9e33c78e43f2c3014b8765ac3..18f0dfa37b7128d7c8f021983ce39cf47252face 100644
+index c72de9fbaa7304a9e33c78e43f2c3014b8765ac3..027173b0ce0a658605b972d164dcacdea136ecfd 100644
 --- a/tests/ScriptCatManager.test.ts
 +++ b/tests/ScriptCatManager.test.ts
 @@ -12,7 +12,114 @@ import {describe, it} from 'node:test';

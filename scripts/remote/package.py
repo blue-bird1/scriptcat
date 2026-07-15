@@ -17,6 +17,7 @@ if __package__ in (None, ""):
         RemoteConfig,
         WorkflowError,
         cli_main,
+        git_output,
         repository_root,
         require_clean_main,
         require_commands,
@@ -32,6 +33,7 @@ else:
         RemoteConfig,
         WorkflowError,
         cli_main,
+        git_output,
         repository_root,
         require_clean_main,
         require_commands,
@@ -92,6 +94,7 @@ def run(argv: Sequence[str]) -> int:
     lock = load_lock(root / arguments.lock)
     validate_patch_stacks(root, lock)
     package_commit = require_clean_main(root)
+    require_pushed_head(root, package_commit)
     release_id = release_build_id(arguments.build_id, package_commit)
     output = output_path(arguments.output, release_id, root)
     ensure_output_available(output)
@@ -105,6 +108,7 @@ def run(argv: Sequence[str]) -> int:
             lock,
             component_build_id=arguments.build_id,
             release_build_id=release_id,
+            project_commit=package_commit,
             build_root=config.build_root,
         ),
     )
@@ -122,6 +126,14 @@ def release_build_id(component_build_id: str, project_commit: str) -> str:
         raise WorkflowError("local project commit is not a lowercase 40-hex Git commit")
     source = f"{component_build_id}{project_commit}".encode()
     return hashlib.sha256(source).hexdigest()[:24]
+
+
+def require_pushed_head(root: Path, commit: str) -> None:
+    upstream = git_output(root, "rev-parse", "@{upstream}")
+    if upstream != commit:
+        raise WorkflowError(
+            "local HEAD is not the pushed main upstream; run build.py before package.py"
+        )
 
 
 def output_path(argument: Path | None, release_id: str, root: Path) -> Path:

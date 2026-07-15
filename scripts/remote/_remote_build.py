@@ -320,7 +320,7 @@ cd \"$scriptcat\"
 set_phase scriptcat-install
 pnpm install --frozen-lockfile
 set_phase scriptcat-tests
-pnpm test:ci -- src/app/service/service_worker/regular_updatecheck.test.ts
+pnpm test:ci -- src/app/managed_mcp.test.ts src/app/service/service_worker/regular_updatecheck.test.ts
 set_phase scriptcat-build
 pnpm build:managed-mcp
 test -f dist/ext/manifest.json
