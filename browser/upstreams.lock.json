@@ -29,7 +29,7 @@
     {
       "target": "chrome-devtools-mcp",
       "path": "browser/patches/chrome-devtools-mcp",
-      "sha256": "72e29cd5c1d89154568e068cc14d4263808bb5b7d718f099dafca65afbcff5ea"
+      "sha256": "a553db80b6840593fb876910ea075d7dbd0d563b41a7574c4bee9ce128fdc2cd"
     },
     {
       "target": "scriptcat",

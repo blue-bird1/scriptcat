@@ -332,10 +332,10 @@ set_phase mcp-install
 pnpm install --frozen-lockfile --config.node-linker=hoisted
 set_phase mcp-build
 pnpm build
-set_phase mcp-tests
+set_phase mcp-managed-extension-protection-tests
 run_browser_test_in_sandbox scriptcat-mcp-tests "$mcp" "$PATH" '
   PUPPETEER_EXECUTABLE_PATH="$BROWSER_BINARY" \
-    node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
+    node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts tests/tools/extensions.test.ts
 '
 set_phase mcp-bundle
 pnpm bundle

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ctypes
 import fcntl
 import hashlib
 import json
@@ -10,23 +11,17 @@ import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from ._activation_state import (
-    ActivationJournal,
-    ActivationStage,
     LinkState,
     capture_link,
-    ensure_transaction_paths_available,
     extension_exists,
     fsync_directory,
-    recover_activation,
-    remove_journal,
     remove_tree,
     replace_symlink,
     restore_link,
-    transaction_paths,
-    write_journal,
 )
 from ._archive import (
     ReleaseManifest,
@@ -46,6 +41,18 @@ PROFILE_LOCK_PATH = (
     / "chrome-devtools-scriptcat-chromium-profile"
     / ".scriptcat-mcp.lock"
 )
+AT_FDCWD = -100
+RENAME_EXCHANGE = 2
+
+
+class ActivationStage(StrEnum):
+    EXTENSION_REDIRECT_STAGED = "extension-redirect-staged"
+    EXTENSION_REDIRECT_PUBLISHED = "extension-redirect-published"
+    PREVIOUS_UPDATED = "previous-updated"
+    CURRENT_UPDATED = "current-updated"
+    CLEANUP_FINISHED = "cleanup-finished"
+
+
 ActivationCheckpoint = Callable[[ActivationStage], None]
 
 
@@ -101,18 +108,12 @@ def activate_archive(
         verify_manifest(release, manifest)
         verify_chromium_binary(release, manifest.chromium_version)
         with profile_lock():
-            recover_activation(data_root, extension_root)
-            extension_temporary = prepare_extension(release, extension_root)
-            try:
-                return commit_activation(
-                    release,
-                    manifest,
-                    data_root,
-                    extension_root,
-                    extension_temporary,
-                )
-            finally:
-                remove_tree(extension_temporary)
+            return commit_activation(
+                release,
+                manifest,
+                data_root,
+                extension_root,
+            )
     finally:
         shutil.rmtree(temporary_root, ignore_errors=True)
 
@@ -163,25 +164,11 @@ def verify_chromium_binary(release: Path, expected_version: str) -> None:
         raise WorkflowError("portable Chromium reports an unexpected version")
 
 
-def prepare_extension(release: Path, extension_root: Path) -> Path:
-    source = release / "scriptcat"
-    if not source.is_dir() or source.is_symlink():
-        raise WorkflowError("release extension directory is missing")
-    extension_root.parent.mkdir(parents=True, exist_ok=True)
-    temporary = transaction_paths(Path(), extension_root).extension_temporary
-    if temporary.exists() or temporary.is_symlink():
-        raise WorkflowError(f"temporary extension path already exists: {temporary}")
-    shutil.copytree(source, temporary)
-    fsync_tree(temporary)
-    return temporary
-
-
 def commit_activation(
     release: Path,
     manifest: ReleaseManifest,
     data_root: Path,
     extension_root: Path,
-    extension_temporary: Path,
     checkpoint: ActivationCheckpoint | None = None,
 ) -> str:
     active_checkpoint = checkpoint or ignore_checkpoint
@@ -192,43 +179,124 @@ def commit_activation(
     current = data_root / "current"
     previous = data_root / "previous"
     current_state = capture_link(current)
-    previous_state = capture_link(previous)
-    extension_existed = extension_exists(extension_root)
-    if current_state == LinkState(True, str(final)) and extension_matches_manifest(
-        extension_root, manifest
+    expected_current = LinkState(True, str(final))
+    redirect_target = data_root / "current" / "scriptcat"
+    if current_state == expected_current and extension_redirect_is_valid(
+        extension_root, redirect_target
     ):
         return manifest.build_id
-    paths = transaction_paths(data_root, extension_root)
-    ensure_transaction_paths_available(paths)
-    journal = ActivationJournal(
-        build_id=manifest.build_id,
-        extension_existed=extension_existed,
-        current=current_state,
-        previous=previous_state,
+
+    ensure_extension_redirect(
+        data_root,
+        extension_root,
+        current_state,
+        active_checkpoint,
     )
-    try:
-        write_journal(paths, journal)
-        active_checkpoint(ActivationStage.JOURNAL_WRITTEN)
-        if extension_existed:
-            os.replace(extension_root, paths.extension_rollback)
-            fsync_directory(extension_root.parent)
-        active_checkpoint(ActivationStage.EXTENSION_BACKED_UP)
-        os.replace(extension_temporary, extension_root)
-        fsync_directory(extension_root.parent)
-        active_checkpoint(ActivationStage.EXTENSION_INSTALLED)
-        if current_state != LinkState(True, str(final)):
-            restore_link(previous, current_state)
+    if current_state != expected_current:
+        restore_link(previous, current_state)
         active_checkpoint(ActivationStage.PREVIOUS_UPDATED)
         replace_symlink(current, str(final))
         active_checkpoint(ActivationStage.CURRENT_UPDATED)
-        remove_journal(paths)
-        active_checkpoint(ActivationStage.JOURNAL_REMOVED)
-    except BaseException:
-        recover_activation(data_root, extension_root)
-        raise
-    remove_tree(paths.extension_rollback)
-    fsync_directory(extension_root.parent)
+    active_checkpoint(ActivationStage.CLEANUP_FINISHED)
     return manifest.build_id
+
+
+def ensure_extension_redirect(
+    data_root: Path,
+    extension_root: Path,
+    current_state: LinkState,
+    checkpoint: ActivationCheckpoint,
+) -> None:
+    redirect_target = data_root / "current" / "scriptcat"
+    extension_root.parent.mkdir(parents=True, exist_ok=True)
+    migration = extension_migration_path(extension_root)
+    if extension_redirect_is_valid(extension_root, redirect_target):
+        if migration.exists() or migration.is_symlink():
+            remove_tree(migration)
+            fsync_directory(extension_root.parent)
+        return
+
+    try:
+        extension_status = extension_root.lstat()
+    except FileNotFoundError:
+        extension_status = None
+    if extension_status is not None and stat.S_ISLNK(extension_status.st_mode):
+        raise WorkflowError(
+            f"managed extension redirect has an unexpected target: {extension_root}"
+        )
+    if extension_status is not None and not stat.S_ISDIR(extension_status.st_mode):
+        raise WorkflowError(f"managed extension path is invalid: {extension_root}")
+    if extension_status is not None:
+        verify_legacy_extension(extension_root, data_root / "current", current_state)
+
+    remove_tree(migration)
+    migration.symlink_to(redirect_target, target_is_directory=True)
+    checkpoint(ActivationStage.EXTENSION_REDIRECT_STAGED)
+    if extension_status is None:
+        os.replace(migration, extension_root)
+    else:
+        exchange_paths(migration, extension_root)
+    fsync_directory(extension_root.parent)
+    checkpoint(ActivationStage.EXTENSION_REDIRECT_PUBLISHED)
+    remove_tree(migration)
+    fsync_directory(extension_root.parent)
+
+
+def verify_legacy_extension(
+    extension_root: Path,
+    current: Path,
+    current_state: LinkState,
+) -> None:
+    if not current_state.exists or current_state.target is None:
+        raise WorkflowError(
+            "cannot atomically migrate a managed extension without an active release"
+        )
+    active_release = Path(current_state.target)
+    if not active_release.is_absolute():
+        active_release = current.parent / active_release
+    active_manifest = read_manifest(active_release)
+    verify_manifest(active_release, active_manifest)
+    if not extension_matches_manifest(extension_root, active_manifest):
+        raise WorkflowError(
+            "managed extension does not match the active release; refusing migration"
+        )
+
+
+def extension_redirect_is_valid(extension_root: Path, target: Path) -> bool:
+    try:
+        status = extension_root.lstat()
+    except FileNotFoundError:
+        return False
+    return stat.S_ISLNK(status.st_mode) and os.readlink(extension_root) == str(target)
+
+
+def extension_migration_path(extension_root: Path) -> Path:
+    return extension_root.with_name(f".{extension_root.name}-activation-migration")
+
+
+def exchange_paths(first: Path, second: Path) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise WorkflowError("atomic extension migration requires renameat2")
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        AT_FDCWD,
+        os.fsencode(first),
+        AT_FDCWD,
+        os.fsencode(second),
+        RENAME_EXCHANGE,
+    )
+    if result != 0:
+        error = OSError(ctypes.get_errno(), "renameat2(RENAME_EXCHANGE) failed")
+        raise WorkflowError(f"atomic extension migration failed: {error}") from error
 
 
 def read_release_provenance(release: Path) -> ReleaseProvenance:
@@ -327,17 +395,19 @@ def materialize_release(
     if final.exists() or final.is_symlink():
         if not final.is_dir() or final.is_symlink():
             raise WorkflowError(f"existing release path is invalid: {final}")
-        existing_manifest = read_manifest(final)
-        verify_manifest(final, existing_manifest)
-        verify_chromium_binary(final, existing_manifest.chromium_version)
-        if (
-            existing_manifest != manifest
-            or (final / "manifest.json").read_bytes()
-            != (release / "manifest.json").read_bytes()
-        ):
+        try:
+            existing_manifest_bytes = (final / "manifest.json").read_bytes()
+            trusted_manifest_bytes = (release / "manifest.json").read_bytes()
+        except OSError as error:
+            raise WorkflowError(
+                f"cannot compare existing release metadata: {error}"
+            ) from error
+        if existing_manifest_bytes != trusted_manifest_bytes:
             raise WorkflowError(
                 "existing release conflicts with the requested build_id"
             )
+        verify_manifest(final, manifest)
+        verify_chromium_binary(final, manifest.chromium_version)
         return final
     remove_tree(temporary)
     try:

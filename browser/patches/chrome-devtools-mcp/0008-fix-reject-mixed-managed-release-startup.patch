@@ -1,0 +1,517 @@
+diff --git a/src/ManagedMcpError.ts b/src/ManagedMcpError.ts
+index 54214415d68c5f7a6c8fdcfdfbd4028349706b8d..4fed6999f999eab9eb7e7a395f5974040fdcf013 100644
+--- a/src/ManagedMcpError.ts
++++ b/src/ManagedMcpError.ts
+@@ -6,6 +6,7 @@
+ 
+ export const MANAGED_EXTENSION_PROTECTED_ERROR_CODE =
+   'MANAGED_EXTENSION_PROTECTED' as const;
++export const RELEASE_MISMATCH_ERROR_CODE = 'RELEASE_MISMATCH' as const;
+ 
+ export type ManagedMcpErrorCode =
+   | 'PROFILE_BUSY'
+@@ -13,6 +14,7 @@ export type ManagedMcpErrorCode =
+   | 'EXTENSION_NOT_READY'
+   | 'INVALID_USERSCRIPT'
+   | typeof MANAGED_EXTENSION_PROTECTED_ERROR_CODE
++  | typeof RELEASE_MISMATCH_ERROR_CODE
+   | 'SCRIPT_NOT_FOUND'
+   | 'TIMEOUT';
+ 
+diff --git a/src/ScriptCatManager.ts b/src/ScriptCatManager.ts
+index 447af0643b29e09f04db72beb9f21140a4e03878..775bda332d839a32945451d500b1572bc71e87d9 100644
+--- a/src/ScriptCatManager.ts
++++ b/src/ScriptCatManager.ts
+@@ -12,6 +12,7 @@ import {pathToFileURL} from 'node:url';
+ import {
+   MANAGED_EXTENSION_PROTECTED_ERROR_CODE,
+   ManagedMcpError,
++  RELEASE_MISMATCH_ERROR_CODE,
+ } from './ManagedMcpError.js';
+ import {ScriptCatBackend} from './ScriptCatBackend.js';
+ import type {Browser, Extension} from './third_party/index.js';
+@@ -90,9 +91,69 @@ export interface ScriptCatManagerOptions {
+   timeout: number;
+ }
+ 
++export interface ManagedReleaseConsistencyOptions {
++  mcpEntrypointPath: string;
++  browserExecutablePath: string;
++  extensionPath: string;
++}
++
++interface CanonicalReleasePath {
++  path: string;
++  releaseRoot: string;
++}
++
+ export type ManagedExtensionMutation =
+   'install' | 'reload' | 'uninstall' | 'disable-user-scripts';
+ 
++export async function assertManagedReleaseConsistency(
++  options: ManagedReleaseConsistencyOptions,
++): Promise<void> {
++  try {
++    const [mcpEntrypoint, browserExecutable, extension] = await Promise.all([
++      canonicalReleasePath('MCP entrypoint', options.mcpEntrypointPath),
++      canonicalReleasePath('browser executable', options.browserExecutablePath),
++      canonicalReleasePath(
++        'managed ScriptCat extension',
++        options.extensionPath,
++      ),
++    ]);
++    const dataRoot = path.dirname(path.dirname(mcpEntrypoint.releaseRoot));
++    const current = await canonicalReleasePath(
++      'managed data current link',
++      path.join(dataRoot, 'current'),
++    );
++    const expectedReleaseRoot = mcpEntrypoint.releaseRoot;
++    if (
++      current.path !== current.releaseRoot ||
++      browserExecutable.releaseRoot !== expectedReleaseRoot ||
++      extension.releaseRoot !== expectedReleaseRoot ||
++      current.releaseRoot !== expectedReleaseRoot
++    ) {
++      throw releaseMismatch({
++        mcpEntrypoint,
++        browserExecutable,
++        extension,
++        current,
++      });
++    }
++  } catch (error) {
++    if (
++      error instanceof ManagedMcpError &&
++      error.code === RELEASE_MISMATCH_ERROR_CODE
++    ) {
++      throw error;
++    }
++    throw releaseMismatch(
++      {
++        mcpEntrypointPath: options.mcpEntrypointPath,
++        browserExecutablePath: options.browserExecutablePath,
++        extensionPath: options.extensionPath,
++      },
++      error,
++    );
++  }
++}
++
+ export async function setExtensionUserScriptsAccess(
+   browser: Browser,
+   id: string,
+@@ -118,6 +179,36 @@ export async function setExtensionUserScriptsAccess(
+   }
+ }
+ 
++async function canonicalReleasePath(
++  label: string,
++  inputPath: string,
++): Promise<CanonicalReleasePath> {
++  const canonicalPath = await fs.realpath(inputPath);
++  let candidate = canonicalPath;
++  while (true) {
++    const parent = path.dirname(candidate);
++    if (path.basename(parent) === 'releases') {
++      return {path: canonicalPath, releaseRoot: candidate};
++    }
++    if (parent === candidate) {
++      throw new Error(`${label} is not inside a managed release.`);
++    }
++    candidate = parent;
++  }
++}
++
++function releaseMismatch(
++  details: Record<string, unknown>,
++  cause?: unknown,
++): ManagedMcpError {
++  return new ManagedMcpError(
++    RELEASE_MISMATCH_ERROR_CODE,
++    'Managed MCP components do not resolve to the same active release.',
++    details,
++    cause === undefined ? undefined : {cause},
++  );
++}
++
+ export class ScriptCatManager {
+   readonly #browser: Browser;
+   readonly #extensionPath: string;
+diff --git a/src/bin/chrome-devtools-mcp-cli-options.ts b/src/bin/chrome-devtools-mcp-cli-options.ts
+index 28db4d6b202fc3cf67a7975b3281b6133d74ac30..79cf1ab3e82ca8fcd31bc30494e7cb66ea437b38 100644
+--- a/src/bin/chrome-devtools-mcp-cli-options.ts
++++ b/src/bin/chrome-devtools-mcp-cli-options.ts
+@@ -445,6 +445,9 @@ export function parseArguments(
+       if (args.managedScriptcatPath && !args.userDataDir) {
+         throw new Error('Managed ScriptCat requires --user-data-dir.');
+       }
++      if (args.managedScriptcatPath && !args.executablePath) {
++        throw new Error('Managed ScriptCat requires --executable-path.');
++      }
+       return true;
+     })
+     .example([
+diff --git a/src/bin/chrome-devtools-mcp-main.ts b/src/bin/chrome-devtools-mcp-main.ts
+index 5c0957c38b970ff897167da23d30e5da65ad0d48..e35833a28ccbfc16d048303b4907f5736e48f5b9 100644
+--- a/src/bin/chrome-devtools-mcp-main.ts
++++ b/src/bin/chrome-devtools-mcp-main.ts
+@@ -7,6 +7,7 @@
+ import '../polyfill.js';
+ 
+ import process from 'node:process';
++import {fileURLToPath} from 'node:url';
+ 
+ import {closeBrowserWithBackstop} from '../browser.js';
+ import {createMcpServer, logDisclaimers} from '../index.js';
+@@ -68,6 +69,7 @@ process.on('SIGHUP', () => {
+ logger?.(`Starting Chrome DevTools MCP Server v${VERSION}`);
+ const {server} = await createMcpServer(args, {
+   logFile,
++  mcpEntrypointPath: fileURLToPath(import.meta.url),
+ });
+ const transport = new StdioServerTransport();
+ await server.connect(transport);
+diff --git a/src/browser.ts b/src/browser.ts
+index 6797ec7b27b29a69539e57046c7664ef22b0770d..6307bc766e9f13755b34918cf9de3030f701ac54 100644
+--- a/src/browser.ts
++++ b/src/browser.ts
+@@ -16,6 +16,10 @@ import {
+   type ProfileLockOwner,
+   releaseProfileLock,
+ } from './ProfileLock.js';
++import {
++  assertManagedReleaseConsistency,
++  type ManagedReleaseConsistencyOptions,
++} from './ScriptCatManager.js';
+ import type {
+   Browser,
+   ChromeReleaseChannel,
+@@ -175,6 +179,7 @@ interface McpLaunchOptions {
+   blocklist?: string[];
+   allowlist?: string[];
+   profileLock?: boolean;
++  managedReleaseConsistency?: ManagedReleaseConsistencyOptions;
+ }
+ 
+ export function detectDisplay(): void {
+@@ -322,6 +327,11 @@ export async function ensureBrowserLaunched(
+         await acquireProfileLock(options.userDataDir, profileLockOwner);
+         profileLockAcquired = true;
+       }
++      if (options.managedReleaseConsistency) {
++        await assertManagedReleaseConsistency(
++          options.managedReleaseConsistency,
++        );
++      }
+       launched = await launch(options);
+       if (profileLockAcquired) {
+         const child = launched.process();
+diff --git a/src/index.ts b/src/index.ts
+index 88476d8de844f400d22d5c21f5fd007d5cff1ed8..fc6d13d00511f641f57a2c1e21671e6d29224b76 100644
+--- a/src/index.ts
++++ b/src/index.ts
+@@ -34,6 +34,7 @@ export async function createMcpServer(
+   serverArgs: ReturnType<typeof parseArguments>,
+   options: {
+     logFile?: fs.WriteStream;
++    mcpEntrypointPath?: string;
+   },
+ ) {
+   if (serverArgs.usageStatistics) {
+@@ -141,6 +142,13 @@ export async function createMcpServer(
+             blocklist,
+             allowlist,
+             profileLock: Boolean(serverArgs.managedScriptcatPath),
++            managedReleaseConsistency: serverArgs.managedScriptcatPath
++              ? {
++                  mcpEntrypointPath: options.mcpEntrypointPath ?? '',
++                  browserExecutablePath: serverArgs.executablePath ?? '',
++                  extensionPath: serverArgs.managedScriptcatPath,
++                }
++              : undefined,
+           });
+ 
+     if (context?.browser !== browser) {
+diff --git a/tests/ManagedBrowserShutdown.test.ts b/tests/ManagedBrowserShutdown.test.ts
+index 134f82269cabd57abcbc13bc475f0536ef230e46..4f2373f7dc65c422d08fd9adbd4b70acb59ef030 100644
+--- a/tests/ManagedBrowserShutdown.test.ts
++++ b/tests/ManagedBrowserShutdown.test.ts
+@@ -15,18 +15,25 @@ import {describe, it} from 'node:test';
+ import {fileURLToPath} from 'node:url';
+ 
+ import {executablePath} from 'puppeteer';
++import sinon from 'sinon';
+ 
+ import {
+   closeBrowser,
+   closeBrowserWithBackstop,
+   ensureBrowserLaunched,
+ } from '../src/browser.js';
+-import {ManagedMcpError} from '../src/ManagedMcpError.js';
++import {
++  ManagedMcpError,
++  RELEASE_MISMATCH_ERROR_CODE,
++} from '../src/ManagedMcpError.js';
+ import {
+   acquireProfileLock,
+   PROFILE_LOCK_FILENAME,
+   releaseProfileLock,
+ } from '../src/ProfileLock.js';
++import {puppeteer} from '../src/third_party/index.js';
++
++import {createManagedReleaseFixture} from './fixtures/ManagedRelease.js';
+ 
+ const CLOSE_TEST_TIMEOUT_MS = 10_000;
+ const OWNER_READY_TIMEOUT_MS = 15_000;
+@@ -263,6 +270,41 @@ async function cleanupManagedBrowser(
+ }
+ 
+ describe('managed browser shutdown', () => {
++  it('releases the profile lock without launching Chrome on a release mismatch', async () => {
++    const fixture = await createManagedReleaseFixture();
++    const profile = await fs.mkdtemp(
++      path.join(os.tmpdir(), 'scriptcat-release-mismatch-profile-'),
++    );
++    const launch = sinon.stub(puppeteer, 'launch');
++    try {
++      await assert.rejects(
++        ensureBrowserLaunched({
++          headless: true,
++          isolated: false,
++          userDataDir: profile,
++          executablePath: fixture.releaseB.browserExecutablePath,
++          devtools: false,
++          profileLock: true,
++          managedReleaseConsistency: {
++            ...fixture.releaseA,
++            browserExecutablePath: fixture.releaseB.browserExecutablePath,
++          },
++        }),
++        error => {
++          assert.ok(error instanceof ManagedMcpError);
++          assert.strictEqual(error.code, RELEASE_MISMATCH_ERROR_CODE);
++          return true;
++        },
++      );
++      sinon.assert.notCalled(launch);
++      assert.strictEqual(await profileLockIsAvailable(profile), true);
++    } finally {
++      launch.restore();
++      await fixture.cleanup();
++      await fs.rm(profile, {recursive: true, force: true});
++    }
++  });
++
+   it('keeps the profile owned after SIGKILL until Chrome is reaped without orphans', async () => {
+     const profile = await fs.mkdtemp(
+       path.join(os.tmpdir(), 'scriptcat-abrupt-browser-owner-'),
+diff --git a/tests/ScriptCatManager.test.ts b/tests/ScriptCatManager.test.ts
+index 027173b0ce0a658605b972d164dcacdea136ecfd..2aecc51537e0ee9eff95d56fd392765b3aa521b2 100644
+--- a/tests/ScriptCatManager.test.ts
++++ b/tests/ScriptCatManager.test.ts
+@@ -10,13 +10,96 @@ import os from 'node:os';
+ import path from 'node:path';
+ import {describe, it} from 'node:test';
+ 
+-import {ManagedMcpError} from '../src/ManagedMcpError.js';
+-import {ScriptCatManager} from '../src/ScriptCatManager.js';
++import {
++  ManagedMcpError,
++  RELEASE_MISMATCH_ERROR_CODE,
++} from '../src/ManagedMcpError.js';
++import {
++  assertManagedReleaseConsistency,
++  ScriptCatManager,
++} from '../src/ScriptCatManager.js';
+ import type {Browser, Page, Target} from '../src/third_party/index.js';
+ 
++import {createManagedReleaseFixture} from './fixtures/ManagedRelease.js';
++import type {ManagedReleasePaths} from './fixtures/ManagedRelease.js';
++
+ const EXTENSION_ID = 'ckchkcgpbkhleahkgkbiiikpcjdbopje';
+ const OFFSCREEN_URL = `chrome-extension://${EXTENSION_ID}/src/offscreen.html`;
+ 
++describe('managed release consistency', () => {
++  it('accepts components from the canonical current release', async () => {
++    const fixture = await createManagedReleaseFixture();
++    try {
++      await assertManagedReleaseConsistency(fixture.releaseA);
++    } finally {
++      await fixture.cleanup();
++    }
++  });
++
++  const mismatchCases = [
++    {
++      name: 'MCP entrypoint',
++      currentRelease: 'release-a',
++      paths: (
++        releaseA: ManagedReleasePaths,
++        releaseB: ManagedReleasePaths,
++      ) => ({
++        ...releaseA,
++        mcpEntrypointPath: releaseB.mcpEntrypointPath,
++      }),
++    },
++    {
++      name: 'browser executable',
++      currentRelease: 'release-a',
++      paths: (
++        releaseA: ManagedReleasePaths,
++        releaseB: ManagedReleasePaths,
++      ) => ({
++        ...releaseA,
++        browserExecutablePath: releaseB.browserExecutablePath,
++      }),
++    },
++    {
++      name: 'managed extension',
++      currentRelease: 'release-a',
++      paths: (
++        releaseA: ManagedReleasePaths,
++        releaseB: ManagedReleasePaths,
++      ) => ({
++        ...releaseA,
++        extensionPath: releaseB.extensionPath,
++      }),
++    },
++    {
++      name: 'current release',
++      currentRelease: 'release-b',
++      paths: (releaseA: ManagedReleasePaths) => releaseA,
++    },
++  ];
++
++  for (const mismatchCase of mismatchCases) {
++    it(`rejects a mismatched ${mismatchCase.name}`, async () => {
++      const fixture = await createManagedReleaseFixture(
++        mismatchCase.currentRelease,
++      );
++      try {
++        await assert.rejects(
++          assertManagedReleaseConsistency(
++            mismatchCase.paths(fixture.releaseA, fixture.releaseB),
++          ),
++          error => {
++            assert.ok(error instanceof ManagedMcpError);
++            assert.strictEqual(error.code, RELEASE_MISMATCH_ERROR_CODE);
++            return true;
++          },
++        );
++      } finally {
++        await fixture.cleanup();
++      }
++    });
++  }
++});
++
+ interface WorkerLike {
+   evaluate(callback: () => unknown): Promise<unknown>;
+ }
+diff --git a/tests/cli.test.ts b/tests/cli.test.ts
+index e5e2cb561dfb9fb9923aeb335a48a7bb738df662..dd21a804f1a76e17ce13f6a6f4b48644dc2fc30d 100644
+--- a/tests/cli.test.ts
++++ b/tests/cli.test.ts
+@@ -117,6 +117,22 @@ describe('cli args parsing', () => {
+     );
+   });
+ 
++  it('requires an explicit browser executable for managed ScriptCat', () => {
++    const result = spawnSync(
++      process.execPath,
++      [
++        'build/src/bin/chrome-devtools-mcp.js',
++        '--user-data-dir=/tmp/scriptcat-profile',
++        '--managed-scriptcat-path=/opt/scriptcat',
++        '--scriptcat-repository-root=/work/scriptcat',
++        '--scriptcat-extension-id=ckchkcgpbkhleahkgkbiiikpcjdbopje',
++      ],
++      {encoding: 'utf8'},
++    );
++    assert.strictEqual(result.status, 1);
++    assert.match(result.stderr, /Managed ScriptCat requires --executable-path/);
++  });
++
+   it('parses an empty browser url', async () => {
+     const args = parseArguments(
+       '1.0.0',
+diff --git a/tests/fixtures/ManagedRelease.ts b/tests/fixtures/ManagedRelease.ts
+new file mode 100644
+index 0000000000000000000000000000000000000000..4b55355d166e14befbbb7a5754615ee7cec03b9d
+--- /dev/null
++++ b/tests/fixtures/ManagedRelease.ts
+@@ -0,0 +1,74 @@
++import fs from 'node:fs/promises';
++import os from 'node:os';
++import path from 'node:path';
++
++export interface ManagedReleasePaths {
++  root: string;
++  mcpEntrypointPath: string;
++  browserExecutablePath: string;
++  extensionPath: string;
++}
++
++export interface ManagedReleaseFixture {
++  dataRoot: string;
++  releaseA: ManagedReleasePaths;
++  releaseB: ManagedReleasePaths;
++  cleanup(): Promise<void>;
++}
++
++export async function createManagedReleaseFixture(
++  currentRelease = 'release-a',
++): Promise<ManagedReleaseFixture> {
++  const dataRoot = await fs.mkdtemp(
++    path.join(os.tmpdir(), 'scriptcat-managed-release-'),
++  );
++  const releaseA = await createRelease(dataRoot, 'release-a');
++  const releaseB = await createRelease(dataRoot, 'release-b');
++  await fs.symlink(
++    path.join('releases', currentRelease),
++    path.join(dataRoot, 'current'),
++  );
++  return {
++    dataRoot,
++    releaseA,
++    releaseB,
++    cleanup: async () => {
++      await fs.rm(dataRoot, {recursive: true, force: true});
++    },
++  };
++}
++
++async function createRelease(
++  dataRoot: string,
++  releaseId: string,
++): Promise<ManagedReleasePaths> {
++  const root = path.join(dataRoot, 'releases', releaseId);
++  const mcpEntrypointPath = path.join(
++    root,
++    'mcp',
++    'bin',
++    'chrome-devtools-mcp.js',
++  );
++  const browserExecutablePath = path.join(
++    root,
++    'chromium',
++    'chrome-linux',
++    'chrome',
++  );
++  const extensionPath = path.join(root, 'scriptcat');
++  await Promise.all([
++    fs.mkdir(path.dirname(mcpEntrypointPath), {recursive: true}),
++    fs.mkdir(path.dirname(browserExecutablePath), {recursive: true}),
++    fs.mkdir(extensionPath, {recursive: true}),
++  ]);
++  await Promise.all([
++    fs.writeFile(mcpEntrypointPath, 'export {};\n'),
++    fs.writeFile(browserExecutablePath, ''),
++  ]);
++  return {
++    root,
++    mcpEntrypointPath,
++    browserExecutablePath,
++    extensionPath,
++  };
++}

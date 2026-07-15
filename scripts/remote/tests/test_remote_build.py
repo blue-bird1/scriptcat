@@ -15,6 +15,91 @@ from scripts.remote._remote_build import remote_build_script
 
 
 class McpBrowserSandboxRegressionTest(unittest.TestCase):
+    def test_mcp_gate_executes_managed_extension_protection_test(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        script = remote_build_script(
+            RemoteConfig(),
+            load_lock(repository / "browser/upstreams.lock.json"),
+            "0" * 40,
+            "https://example.invalid/scriptcat.git",
+        )
+        gate_start = script.index("set_phase mcp-managed-extension-protection-tests")
+        gate_end = script.index("set_phase mcp-bundle", gate_start)
+        gate = script[gate_start:gate_end]
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            mcp_directory = temporary / "mcp"
+            command_directory = temporary / "commands"
+            browser_binary = temporary / "chrome"
+            phase_path = temporary / "phase"
+            invocation_path = temporary / "invocation"
+            mcp_directory.mkdir()
+            command_directory.mkdir()
+            self._write_executable(browser_binary, "#!/usr/bin/env bash\nexit 0\n")
+            self._write_executable(
+                command_directory / "node",
+                "\n".join(
+                    (
+                        "#!/usr/bin/env bash",
+                        "set -Eeuo pipefail",
+                        'test "$PUPPETEER_EXECUTABLE_PATH" '
+                        '= "$EXPECTED_BROWSER_BINARY"',
+                        'printf \'%s\\0\' "$@" > "$MCP_TEST_INVOCATION"',
+                    )
+                )
+                + "\n",
+            )
+            harness = "\n".join(
+                (
+                    "#!/usr/bin/env bash",
+                    "set -Eeuo pipefail",
+                    f"mcp={shlex.quote(str(mcp_directory))}",
+                    f"PATH={shlex.quote(f'{command_directory}:/usr/bin:/bin')}",
+                    f"export BROWSER_BINARY={shlex.quote(str(browser_binary))}",
+                    'set_phase() { printf \'%s\\n\' "$1" > "$MCP_TEST_PHASE"; }',
+                    "run_browser_test_in_sandbox() {",
+                    '  test "$1" = scriptcat-mcp-tests',
+                    '  test "$2" = "$mcp"',
+                    '  test "$3" = "$PATH"',
+                    '  bash -Eeuo pipefail -c "$4"',
+                    "}",
+                    gate,
+                    "",
+                )
+            )
+            environment = os.environ | {
+                "EXPECTED_BROWSER_BINARY": str(browser_binary),
+                "MCP_TEST_INVOCATION": str(invocation_path),
+                "MCP_TEST_PHASE": str(phase_path),
+            }
+
+            subprocess.run(
+                ("bash", "-c", harness),
+                check=True,
+                cwd=mcp_directory,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(
+                phase_path.read_text(encoding="utf-8"),
+                "mcp-managed-extension-protection-tests\n",
+            )
+            self.assertEqual(
+                invocation_path.read_bytes().split(b"\0")[:-1],
+                [
+                    b"scripts/test.mjs",
+                    b"--",
+                    b"tests/ProfileLock.test.ts",
+                    b"tests/ScriptCatManager.test.ts",
+                    b"tests/cli.test.ts",
+                    b"tests/ManagedBrowserShutdown.test.ts",
+                    b"tests/tools/extensions.test.ts",
+                ],
+            )
+
     def test_scriptcat_focus_tests_cover_managed_mcp_and_updatecheck(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         script = remote_build_script(

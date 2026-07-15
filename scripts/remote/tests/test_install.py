@@ -68,16 +68,26 @@ class OfflineInstallContractTest(unittest.TestCase):
                 str(release_path),
             )
             self.assertTrue(release_path.is_dir())
-            self.assertTrue(
-                (
-                    home
-                    / ".codex"
-                    / "chrome-extensions"
-                    / "scriptcat"
-                    / f"v{lock['scriptcat']['version']}"
-                    / "worker.js"
-                ).is_file()
+            extension_path = (
+                home
+                / ".codex"
+                / "chrome-extensions"
+                / "scriptcat"
+                / f"v{lock['scriptcat']['version']}"
             )
+            self.assertTrue(extension_path.is_symlink())
+            self.assertEqual(
+                os.readlink(extension_path),
+                str(
+                    home
+                    / ".local"
+                    / "share"
+                    / "scriptcat-mcp"
+                    / "current"
+                    / "scriptcat"
+                ),
+            )
+            self.assertTrue((extension_path / "worker.js").is_file())
 
     def test_rejects_rewritten_archive_with_recomputed_internal_checksums(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:

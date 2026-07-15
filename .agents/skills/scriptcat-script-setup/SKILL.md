@@ -11,13 +11,13 @@ Use this skill before browser-debugging this repository's userscripts. The test 
 
 Use the managed ScriptCat tools through `mcp__chrome_devtools_scriptcat__`. The fixed ScriptCat extension ID is `ckchkcgpbkhleahkgkbiiikpcjdbopje`.
 
-The MCP starts the portable Chromium and performs the managed-extension lifecycle in this order: it first loads or installs the extension, verifies the expected extension ID, calls `setUserScriptsAccess` to grant `userScripts` authorization, performs the second install/reload pass required after the grant, and then waits for the extension service worker and backend to become ready. Do not start Chrome separately or manipulate the profile.
+The MCP starts the portable Chromium and performs the managed-extension lifecycle in this order: it first loads or installs the extension, verifies the expected extension ID, calls `setUserScriptsAccess` to grant `userScripts` authorization, performs the second install/reload pass required after the grant, and then waits for the extension service worker and backend to become ready. The managed extension is protected after startup: generic install, reload, and uninstall operations are rejected, and its user-scripts access may only be set to `enabled=true` (repeated calls are idempotent). Do not start Chrome separately or manipulate the profile.
 
 1. Call `scriptcat_status` and confirm the expected ID, version, enabled status, `userScriptsAccessEnabled`, and service-worker readiness. Treat `false` or `null` for `userScriptsAccessEnabled` as not ready.
-2. If access must change, call `set_extension_user_scripts_access` with that extension ID and the requested `enabled` value, then call `scriptcat_status` again.
+2. If access is missing or needs recovery, call `set_extension_user_scripts_access` with that extension ID and `enabled=true`, then call `scriptcat_status` again. Passing `enabled=false` for the managed extension returns `MANAGED_EXTENSION_PROTECTED` and leaves the browser unchanged.
 3. If the extension is absent, has the wrong version, or remains unavailable, repair or rebuild the managed portable artifact with `scripts/remote/`; do not attempt in-profile installation.
 
-The managed MCP is the only path for extension lifecycle and authorization. Do not use browser UI, `chrome://extensions/`, X11, `--load-extension`, `developerPrivate`, Preferences files, `install_extension`, or `reload_extension`.
+The managed MCP is the only path for extension lifecycle and authorization. `MANAGED_EXTENSION_PROTECTED` also covers generic `install_extension`, `reload_extension`, and `uninstall_extension` attempts against the fixed managed extension; do not retry those operations. Recover by preserving the managed extension, restoring access with `enabled=true`, or repairing/rebuilding the managed portable artifact when status reports an installation or readiness problem. Do not use browser UI, `chrome://extensions/`, X11, `--load-extension`, `developerPrivate`, Preferences files, `install_extension`, or `reload_extension` for managed-extension lifecycle changes.
 
 ## Concurrency
 
