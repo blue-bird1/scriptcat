@@ -6,3 +6,4 @@
 0006-fix-retain-profile-lock-across-abrupt-owner-death.patch
 0007-fix-protect-managed-scriptcat-extension-tools.patch
 0008-fix-reject-mixed-managed-release-startup.patch
+0009-test-enable-unsafe-extension-debugging.patch
