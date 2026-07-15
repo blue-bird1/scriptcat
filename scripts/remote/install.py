@@ -10,13 +10,9 @@ if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
     from remote._activation import activate_archive
     from remote._common import (
-        WorkflowError,
         cli_main,
         extension_root,
-        git_output,
         local_data_root,
-        repository_root,
-        require_clean_main,
         require_commands,
         validate_build_id,
     )
@@ -24,31 +20,24 @@ if __package__ in (None, ""):
 else:
     from ._activation import activate_archive
     from ._common import (
-        WorkflowError,
         cli_main,
         extension_root,
-        git_output,
         local_data_root,
-        repository_root,
-        require_clean_main,
         require_commands,
         validate_build_id,
     )
     from ._lock import load_lock
 
 
-REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
-LOCK_PATH = Path("browser/upstreams.lock.json")
-
-
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Validate and atomically activate a local ScriptCat MCP archive.",
         epilog=(
-            "Requires a clean, pushed local main checkout. The archive is verified "
-            "against the selected upstream lock and current project commit before it "
-            "is installed under the managed ScriptCat MCP data and extension roots. "
-            "This command does not access the remote build host or the network."
+            "Requires the exact upstream lock used for the release. The archive, "
+            "selected lock, and explicit release build ID are cross-checked before "
+            "atomic activation under the managed ScriptCat MCP data and extension "
+            "roots. This command does not access Git, the remote build host, or the "
+            "network, and can run outside a project checkout."
         ),
     )
     result.add_argument(
@@ -59,8 +48,12 @@ def parser() -> argparse.ArgumentParser:
     result.add_argument(
         "--lock",
         type=Path,
-        default=LOCK_PATH,
-        help="upstream lock relative to the repository root (default: %(default)s)",
+        required=True,
+        metavar="LOCK_PATH",
+        help=(
+            "exact upstream lock used to create the archive; relative paths resolve "
+            "from the current working directory"
+        ),
     )
     result.add_argument(
         "--build-id",
@@ -74,15 +67,8 @@ def parser() -> argparse.ArgumentParser:
 def run(argv: Sequence[str]) -> int:
     arguments = parser().parse_args(argv)
     validate_build_id(arguments.build_id, "--build-id")
-    require_commands("git", "tar", "zstd")
-    root = repository_root()
-    project_commit = require_clean_main(root)
-    if git_output(root, "rev-parse", "@{upstream}") != project_commit:
-        raise WorkflowError(
-            "local HEAD is not the pushed main upstream; "
-            "package the current build first"
-        )
-    lock = load_lock(REPOSITORY_ROOT / arguments.lock)
+    require_commands("tar", "zstd")
+    lock = load_lock(arguments.lock.expanduser())
     build_id = activate_archive(
         arguments.archive,
         local_data_root(),
@@ -93,7 +79,6 @@ def run(argv: Sequence[str]) -> int:
         lock.depot_tools.version,
         lock.scriptcat.version,
         lock.digest,
-        project_commit,
     )
     print(f"activated ScriptCat MCP portable release {build_id}")
     return 0

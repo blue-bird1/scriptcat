@@ -92,6 +92,35 @@ class ReleaseProvenanceTest(unittest.TestCase):
 
             self.assertEqual(activated, release_id)
 
+    def test_activation_binds_selected_lock_without_local_project_commit(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
+            root = Path(temporary_name)
+            lock_digest = hashlib.sha256(b"selected lock").hexdigest()
+            component_id = self._component_build_id(lock_digest, PROJECT_COMMIT)
+            release_id = release_build_id(component_id, PROJECT_COMMIT)
+            release = create_release(root, build_id=release_id)
+            self._write_release_provenance(
+                release,
+                component_build_id=component_id,
+                project_commit=PROJECT_COMMIT,
+                lock_digest=lock_digest,
+            )
+            archive = create_archive(root, release)
+
+            activated = activate_archive(
+                archive,
+                root / "data",
+                root / "extensions" / SCRIPTCAT_VERSION,
+                release_id,
+                CHROMIUM_VERSION,
+                MCP_VERSION,
+                DEPOT_TOOLS_VERSION,
+                SCRIPTCAT_VERSION,
+                lock_digest,
+            )
+
+            self.assertEqual(activated, release_id)
+
     def test_activation_rejects_provenance_mismatch(self) -> None:
         cases = (
             ("lock_digest", hashlib.sha256(b"other lock").hexdigest()),

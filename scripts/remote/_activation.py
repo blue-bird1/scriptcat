@@ -262,19 +262,20 @@ def verify_expected_provenance(
 ) -> None:
     if expected_lock_digest is None and expected_project_commit is None:
         return
-    if expected_lock_digest is None or expected_project_commit is None:
-        raise WorkflowError("release provenance expectations are incomplete")
+    if expected_lock_digest is None:
+        raise WorkflowError("release provenance lock digest is required")
     validate_lock_digest(expected_lock_digest, "expected lock digest")
-    validate_project_commit(expected_project_commit, "expected project commit")
+    selected_project_commit = expected_project_commit or provenance.project_commit
+    validate_project_commit(selected_project_commit, "expected project commit")
     expected_component_build_id = component_build_id(
-        expected_lock_digest, expected_project_commit
+        expected_lock_digest, selected_project_commit
     )
     expected_release_build_id = release_build_id(
-        expected_component_build_id, expected_project_commit
+        expected_component_build_id, selected_project_commit
     )
     expected = {
         "lock digest": (provenance.lock_digest, expected_lock_digest),
-        "project commit": (provenance.project_commit, expected_project_commit),
+        "project commit": (provenance.project_commit, selected_project_commit),
         "component build ID": (
             provenance.component_build_id,
             expected_component_build_id,
