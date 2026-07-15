@@ -52,8 +52,10 @@ __pycache__/
 !scripts/page-agent-userscript-entry.ts
 !scripts/userscripts/
 !scripts/userscripts/install-to-scriptcat.mjs
+!scripts/userscripts/install-to-scriptcat.test.mjs
 !scripts/userscripts/lint-built.cjs
 !scripts/userscripts/lint.cjs
+!scripts/userscripts/scriptcat-vscode-sync.mjs
 !scripts/userscripts/scriptcat-eslint/
 !scripts/userscripts/scriptcat-eslint/*.cjs
 !vendor/

@@ -2,3 +2,4 @@
 0002-feat-add-managed-ScriptCat-MCP-tools.patch
 0003-test-cover-managed-ScriptCat-safeguards.patch
 0004-fix-managed-scriptcat-shutdown-and-status.patch
+0005-fix-accept-legacy-scriptcat-script-ids.patch

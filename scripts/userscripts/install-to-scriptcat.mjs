@@ -1,38 +1,38 @@
 #!/usr/bin/env node
-import { accessSync, constants } from "node:fs";
-import { spawn } from "node:child_process";
+import { accessSync, constants, statSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { startVSCodeSync } from "./scriptcat-vscode-sync.mjs";
 
 const repoRoot = resolve(fileURLToPath(import.meta.url), "../../..");
-const syncServerPath = resolve(repoRoot, "scripts/mcp/scriptcat-vscode-sync-server.mjs");
-const defaultScriptPath = "greenmangaming-bundle-claim.user.js";
-const defaultPort = 8642;
-const defaultTimeoutMs = 45000;
+export const defaultScriptPath = "greenmangaming-bundle-claim.user.js";
+export const defaultPort = 8642;
+export const defaultTimeoutMs = 45_000;
 
-function printUsage() {
-  console.log(
-    [
-      "usage: node scripts/userscripts/install-to-scriptcat.mjs [options] [script.user.js]",
-      "",
-      "options:",
-      "  --port=<port>             ScriptCat VSCode sync port, default 8642",
-      "  --timeout-ms=<ms>         Wait time for browser connection, default 45000",
-      "  --watch                   Keep syncing when the script file changes",
-      "  --help                    Show this help",
-      "",
-      `default script: ${defaultScriptPath}`,
-    ].join("\n")
-  );
+export function usage() {
+  return [
+    "usage: pnpm install:scriptcat -- [options] [script.user.js]",
+    "",
+    "Push a repository userscript to the normal browser through ScriptCat VSCode sync.",
+    "",
+    "options:",
+    `  --port=<port>             ScriptCat VSCode sync port, default ${defaultPort}`,
+    `  --timeout-ms=<ms>         Browser connection timeout, default ${defaultTimeoutMs}`,
+    "  --watch                   Keep syncing when the script file changes",
+    "  --help                    Show this help",
+    "",
+    `default script: ${defaultScriptPath}`,
+  ].join("\n");
 }
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const options = {
     port: defaultPort,
     timeoutMs: defaultTimeoutMs,
     watch: false,
     scriptPath: defaultScriptPath,
   };
+  let scriptSpecified = false;
 
   for (const arg of argv) {
     if (arg === "--") {
@@ -50,31 +50,38 @@ function parseArgs(argv) {
     } else if (arg.startsWith("--")) {
       throw new Error(`unknown option: ${arg}`);
     } else {
+      if (scriptSpecified) {
+        throw new Error("only one userscript file may be specified");
+      }
       options.scriptPath = arg;
+      scriptSpecified = true;
     }
   }
 
   return options;
 }
 
-function validateOptions(options) {
+export function validateOptions(options) {
   if (!Number.isInteger(options.port) || options.port < 1 || options.port > 65535) {
     throw new Error(`invalid port: ${options.port}`);
   }
 
-  if (!Number.isFinite(options.timeoutMs) || options.timeoutMs < 0) {
+  if (!Number.isSafeInteger(options.timeoutMs) || options.timeoutMs < 0) {
     throw new Error(`invalid timeout-ms: ${options.timeoutMs}`);
   }
 }
 
 function ensureReadableFile(path) {
   accessSync(path, constants.R_OK);
+  if (!statSync(path).isFile()) {
+    throw new Error(`userscript path is not a file: ${path}`);
+  }
 }
 
-async function main() {
-  const options = parseArgs(process.argv.slice(2));
+export async function main(argv = process.argv.slice(2)) {
+  const options = parseArgs(argv);
   if (options.help) {
-    printUsage();
+    console.log(usage());
     return;
   }
 
@@ -82,43 +89,31 @@ async function main() {
 
   const scriptPath = resolve(repoRoot, options.scriptPath);
   ensureReadableFile(scriptPath);
-  ensureReadableFile(syncServerPath);
-
-  const syncArgs = [
-    syncServerPath,
-    `--port=${options.port}`,
-    `--timeout-ms=${options.timeoutMs}`,
-  ];
-
-  if (options.watch) {
-    syncArgs.push("--watch");
-  } else {
-    syncArgs.push("--once");
-  }
-
-  syncArgs.push(scriptPath);
 
   console.log(`[scriptcat-install] target script: ${basename(scriptPath)}`);
   console.log(`[scriptcat-install] waiting for ScriptCat at ws://127.0.0.1:${options.port}`);
 
-  const child = spawn(process.execPath, syncArgs, {
-    cwd: repoRoot,
-    stdio: "inherit",
+  const sync = await startVSCodeSync({
+    port: options.port,
+    scriptPath,
+    timeoutMs: options.timeoutMs,
+    watch: options.watch,
+    log: message => console.log(`[scriptcat-install] ${message}`),
   });
-
-  await new Promise((resolvePromise, rejectPromise) => {
-    child.on("error", rejectPromise);
-    child.on("exit", code => {
-      if (code === 0) {
-        resolvePromise();
-        return;
-      }
-      rejectPromise(new Error(`ScriptCat install failed with exit code ${code}`));
-    });
-  });
+  const close = () => void sync.close();
+  process.once("SIGINT", close);
+  process.once("SIGTERM", close);
+  try {
+    await sync.completion;
+  } finally {
+    process.off("SIGINT", close);
+    process.off("SIGTERM", close);
+  }
 }
 
-main().catch(error => {
-  console.error(`[scriptcat-install] ${error.message}`);
-  process.exit(1);
-});
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch(error => {
+    console.error(`[scriptcat-install] ${error.message}`);
+    process.exitCode = 1;
+  });
+}
