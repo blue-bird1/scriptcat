@@ -58,7 +58,9 @@ def _browser_test_sandbox_helpers() -> str:
         XDG_CACHE_HOME="$test_root/home/.cache" \
         XDG_CONFIG_HOME="$test_root/home/.config" \
         XDG_RUNTIME_DIR="$test_root/runtime" \
+        SANDBOX_BUILD_ROOT="$test_root/build" \
         BROWSER_BINARY="$test_root/build/src/src/out/Release/chrome" \
+        BROWSER_TESTS_BINARY="$test_root/build/src/src/out/Release/browser_tests" \
         bash -Eeuo pipefail -c "$test_command"
   ' "$test_name" "$build_root" "$test_root" "$test_uid" "$test_gid" \
     "$relative_workdir" "$test_path" "$test_command" 9>&- &
@@ -252,7 +254,7 @@ set_phase chromium-build
 autoninja -C out/Release chrome browser_tests
 run_browser_protocol_tests() {{
   run_browser_test_in_sandbox scriptcat-browser-tests \"$chromium\" /usr/bin:/bin '
-    \"$test_root/build/src/src/out/Release/browser_tests\" \\
+    \"$BROWSER_TESTS_BINARY\" \\
       --disable-setuid-sandbox \\
       --ozone-platform=headless \\
       --gtest_filter=\"DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch\" \\

@@ -107,6 +107,79 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             self.assertNotEqual(Path(sandbox_mcp_directory), mcp_directory)
             self.assertFalse(Path(sandbox_mcp_directory).exists())
 
+    def test_protocol_browser_command_uses_exposed_sandbox_binary(self) -> None:
+        sandbox_launcher = self._render_sandbox_launcher()
+        self._require_sandbox_primitives()
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            build_root = temporary / "build"
+            chromium_directory = build_root / "src/src"
+            browser_tests = chromium_directory / "out/Release/browser_tests"
+            result_directory = temporary / "result"
+            result_path = result_directory / "browser-tests.txt"
+            quoted_result_path = shlex.quote(str(result_path))
+            browser_tests.parent.mkdir(parents=True)
+            result_directory.mkdir()
+            result_directory.chmod(0o777)
+            self._write_executable(
+                browser_tests,
+                "\n".join(
+                    (
+                        "#!/usr/bin/env bash",
+                        "set -Eeuo pipefail",
+                        'test "$(id -u)" -ne 0',
+                        'test -x "${BROWSER_TESTS_BINARY:?}"',
+                        'test "$BROWSER_TESTS_BINARY" = "$0"',
+                        'test "$BROWSER_TESTS_BINARY" = '
+                        '"$SANDBOX_BUILD_ROOT/src/src/out/Release/browser_tests"',
+                        'test "$PWD" = "$SANDBOX_BUILD_ROOT/src/src"',
+                        'for argument in "$@"; do',
+                        '  test "$argument" != --no-sandbox',
+                        "done",
+                        'printf \'%s\\n%s\\n\' "$BROWSER_TESTS_BINARY" "$PWD" > '
+                        + quoted_result_path,
+                    )
+                )
+                + "\n",
+            )
+
+            protocol_command = '"$BROWSER_TESTS_BINARY" --test-launcher-bot-mode'
+            harness = "\n".join(
+                (
+                    "#!/usr/bin/env bash",
+                    "set -Eeuo pipefail",
+                    f"build_root={shlex.quote(str(build_root))}",
+                    "test_root=",
+                    "test_session_pid=",
+                    sandbox_launcher,
+                    (
+                        "run_browser_test_in_sandbox scriptcat-browser-tests "
+                        '"$build_root/src/src" '
+                        f"/usr/bin:/bin {shlex.quote(protocol_command)}"
+                    ),
+                    "",
+                )
+            )
+
+            subprocess.run(
+                ("bash", "-c", harness),
+                check=True,
+                cwd=temporary,
+                text=True,
+                capture_output=True,
+            )
+
+            sandbox_browser_tests, sandbox_chromium_directory = result_path.read_text(
+                encoding="utf-8"
+            ).splitlines()
+            self.assertNotEqual(Path(sandbox_browser_tests), browser_tests)
+            self.assertEqual(
+                Path(sandbox_chromium_directory).name,
+                chromium_directory.name,
+            )
+            self.assertFalse(Path(sandbox_browser_tests).exists())
+
     def _render_sandbox_launcher(self) -> str:
         repository = Path(__file__).resolve().parents[3]
         script = remote_build_script(
