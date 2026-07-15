@@ -276,7 +276,8 @@ pnpm install --frozen-lockfile --config.node-linker=hoisted
 set_phase mcp-build
 pnpm build
 set_phase mcp-tests
-pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
+PUPPETEER_EXECUTABLE_PATH="$chromium/out/Release/chrome" \
+  pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
 set_phase mcp-bundle
 pnpm bundle
 rsync -a --delete build/src/ \"$runtime/mcp/\"
