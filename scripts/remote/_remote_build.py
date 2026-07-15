@@ -308,7 +308,7 @@ pnpm build
 set_phase mcp-tests
 run_browser_test_in_sandbox scriptcat-mcp-tests "$mcp" "$PATH" '
   PUPPETEER_EXECUTABLE_PATH="$BROWSER_BINARY" \
-    pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
+    node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
 '
 set_phase mcp-bundle
 pnpm bundle
