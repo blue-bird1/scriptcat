@@ -276,7 +276,7 @@ pnpm install --frozen-lockfile --config.node-linker=hoisted
 set_phase mcp-build
 pnpm build
 set_phase mcp-tests
-pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts
+pnpm test:no-build -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts
 set_phase mcp-bundle
 pnpm bundle
 rsync -a --delete build/src/ \"$runtime/mcp/\"
@@ -286,6 +286,8 @@ node \"$runtime/mcp/bin/chrome-devtools-mcp.js\" --help >/dev/null
 cd \"$scriptcat\"
 set_phase scriptcat-install
 pnpm install --frozen-lockfile
+set_phase scriptcat-tests
+pnpm test:ci -- src/app/service/service_worker/regular_updatecheck.test.ts
 set_phase scriptcat-build
 pnpm build:managed-mcp
 test -f dist/ext/manifest.json

@@ -152,26 +152,39 @@ def gn_builds(arguments: Sequence[str]) -> bool:
 
 def ninja_builds(arguments: Sequence[str]) -> bool:
     index = 0
+    dry_run = False
+    tool: str | None = None
     while index < len(arguments):
         argument = arguments[index]
         if argument == "--":
-            return True
-        if argument in {"-C", "-f", "-j", "-k", "-l", "-m", "-w"}:
+            break
+        if argument in {"-C", "-d", "-f", "-j", "-k", "-l", "-m", "-w"}:
             if index + 1 >= len(arguments):
                 return True
             index += 2
             continue
         if argument in {"-n", "--dry-run"}:
-            return False
+            dry_run = True
+            index += 1
+            continue
         if argument in {"-t", "--tool"}:
             if index + 1 >= len(arguments):
                 return True
-            return arguments[index + 1] not in READ_ONLY_NINJA_TOOLS
+            tool = arguments[index + 1]
+            index += 2
+            continue
+        if argument.startswith("--tool="):
+            tool = argument.removeprefix("--tool=")
+            index += 1
+            continue
         if argument.startswith("-"):
             index += 1
             continue
-        return True
-    return True
+        index += 1
+
+    if tool is not None:
+        return tool not in READ_ONLY_NINJA_TOOLS
+    return not dry_run
 
 
 def first_subcommand(arguments: Sequence[str]) -> str | None:

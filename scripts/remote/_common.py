@@ -154,7 +154,7 @@ def extension_root(scriptcat_version: str) -> Path:
         or scriptcat_version in {".", ".."}
     ):
         raise WorkflowError("scriptcat.version is unsafe for an extension path")
-    return EXTENSION_BASE / scriptcat_version
+    return EXTENSION_BASE / f"v{scriptcat_version}"
 
 
 def validate_build_id(value: str, label: str) -> None:

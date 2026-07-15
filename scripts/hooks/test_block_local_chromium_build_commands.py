@@ -18,12 +18,18 @@ READ_ONLY_COMMANDS = (
     "gn desc out/Release //chrome",
     "gn args out/Release --list",
     "ninja -C out/Release -t targets",
+    "ninja -n -t targets",
+    "ninja -t targets --dry-run",
     "autoninja -C out/Release -n chrome",
 )
 FORBIDDEN_COMMANDS = (
     "gclient sync",
     "gn --root . gen out/Release",
     "ninja -C out/Release chrome",
+    "ninja -n -t recompact",
+    "ninja -t recompact -n",
+    "ninja --dry-run -t restat",
+    "ninja -t restat --dry-run",
     "env -C out/Release ninja chrome",
     "env --chdir=out/Release ninja chrome",
     "nice -n 10 ninja -C out/Release chrome",

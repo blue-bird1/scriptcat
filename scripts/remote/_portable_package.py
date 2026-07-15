@@ -57,6 +57,7 @@ def portable_package_script(
         command -v python3 >/dev/null
         command -v tar >/dev/null
         command -v zstd >/dev/null
+        command -v cmp >/dev/null
         mkdir -p "$build_root/out"
         exec 9>"$build_root/.package.lock"
         printf 'waiting for remote package lock: %s\\n' "$build_root/.package.lock"
@@ -72,22 +73,26 @@ def portable_package_script(
         archive="$build_root/out/$archive_name"
         archive_temporary="$build_root/out/.$archive_name-new"
 
-        test ! -e "$release_directory" || {{
-          printf 'refusing to overwrite existing remote release: %s\\n' \\
-            "$release_directory" >&2
+        release_exists=false
+        archive_exists=false
+        if test -e "$release_directory" || test -L "$release_directory"; then
+          release_exists=true
+        fi
+        if test -e "$archive" || test -L "$archive"; then
+          archive_exists=true
+        fi
+        if test "$archive_exists" = true && test "$release_exists" != true; then
+          printf 'remote archive exists without its immutable release: %s\n' \
+            "$archive" >&2
           exit 1
-        }}
-        test ! -e "$archive" || {{
-          printf 'refusing to overwrite existing remote archive: %s\\n' "$archive" >&2
-          exit 1
-        }}
+        fi
         rm -rf -- "$release_temporary_parent" "$archive_temporary"
-        mkdir "$release_temporary_parent"
 
         fail_phase=verify-and-assemble
-        source_date_epoch="$(
-          python3 - "$runtime" "$build_manifest" "$release_temporary" \\
-            "$release_build_id" "$component_build_id" "$lock_digest" \\
+        read -r source_date_epoch package_mode <<< "$(
+          python3 - "$runtime" "$build_manifest" "$release_directory" \\
+            "$release_temporary" "$release_build_id" "$component_build_id" \\
+            "$lock_digest" \\
             "$chromium_version" "$mcp_version" "$depot_tools_version" \\
             "$scriptcat_version" <<'PY'
 import hashlib
@@ -117,6 +122,15 @@ BUILD_MANIFEST_KEYS = {{
     "directories",
 }}
 RELEASE_RESERVED_FILES = {{"manifest.json", "SHA256SUMS"}}
+RELEASE_MANIFEST_KEYS = {{
+    "build_id",
+    "chromium_version",
+    "mcp_version",
+    "depot_tools_version",
+    "scriptcat_version",
+    "files",
+    "directories",
+}}
 
 
 def fail(message):
@@ -266,16 +280,88 @@ def write_release_manifest(root, release_build_id, versions):
             stream.write(digest + b"  " + relative.encode("utf-8") + b"\\0")
 
 
+def read_release_manifest(path, expected):
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        fail(f"release manifest is invalid: {{error}}")
+    if not isinstance(raw, dict) or set(raw) != RELEASE_MANIFEST_KEYS:
+        fail("release manifest has an unsupported shape")
+    for key, value in expected.items():
+        if raw[key] != value:
+            fail(f"release manifest {{key}} does not match the requested package")
+    files = raw["files"]
+    directories = raw["directories"]
+    if (
+        not isinstance(files, dict)
+        or list(files) != sorted(files)
+        or not isinstance(directories, list)
+        or directories != sorted(set(directories))
+    ):
+        fail("release manifest runtime inventory is invalid")
+    for relative, digest in files.items():
+        canonical_relative_path(relative, "release manifest file")
+        if not is_sha256(digest):
+            fail("release manifest file checksum is invalid")
+    for relative in directories:
+        canonical_relative_path(relative, "release manifest directory")
+    return raw
+
+
+def verify_release(root, release_build_id, build_manifest, runtime_files, runtime_dirs):
+    try:
+        status = root.lstat()
+    except FileNotFoundError:
+        return False
+    if not stat.S_ISDIR(status.st_mode) or root.is_symlink():
+        fail("existing release is not a real directory")
+    release_manifest = read_release_manifest(
+        root / "manifest.json",
+        {{
+            "build_id": release_build_id,
+            "chromium_version": build_manifest["chromium_version"],
+            "mcp_version": build_manifest["mcp_version"],
+            "depot_tools_version": build_manifest["depot_tools_version"],
+            "scriptcat_version": build_manifest["scriptcat_version"],
+            "files": runtime_files,
+            "directories": runtime_dirs,
+        }},
+    )
+    files, directories = inspect_tree(root)
+    if set(files) != set(runtime_files) | RELEASE_RESERVED_FILES:
+        fail("release manifest does not cover the exact release tree")
+    if directories != runtime_dirs:
+        fail("release manifest does not cover the exact release tree")
+    if {{relative: files[relative] for relative in runtime_files}} != runtime_files:
+        fail("release files do not match the verified build manifest")
+    manifest_digest = digest_file(root / "manifest.json")
+    expected_sums = b"".join(
+        digest_file(root / relative).encode("ascii")
+        + b"  "
+        + relative.encode("utf-8")
+        + b"\\0"
+        for relative in sorted([*runtime_files, "manifest.json"])
+    )
+    if (root / "SHA256SUMS").read_bytes() != expected_sums:
+        fail("SHA256SUMS is invalid or does not match the release")
+    if files["manifest.json"] != manifest_digest:
+        fail("release manifest checksum is invalid")
+    if release_manifest["files"] != runtime_files:
+        fail("release manifest files do not match the verified build manifest")
+    return True
+
+
 runtime = pathlib.Path(sys.argv[1])
 build_manifest_path = pathlib.Path(sys.argv[2])
-release_temporary = pathlib.Path(sys.argv[3])
+release_directory = pathlib.Path(sys.argv[3])
+release_temporary = pathlib.Path(sys.argv[4])
 expected = {{
-    "build_id": sys.argv[5],
-    "lock_digest": sys.argv[6],
-    "chromium_version": sys.argv[7],
-    "mcp_version": sys.argv[8],
-    "depot_tools_version": sys.argv[9],
-    "scriptcat_version": sys.argv[10],
+    "build_id": sys.argv[6],
+    "lock_digest": sys.argv[7],
+    "chromium_version": sys.argv[8],
+    "mcp_version": sys.argv[9],
+    "depot_tools_version": sys.argv[10],
+    "scriptcat_version": sys.argv[11],
 }}
 build_manifest = read_build_manifest(build_manifest_path, expected)
 files, directories = inspect_tree(runtime)
@@ -283,6 +369,9 @@ if files != build_manifest["files"] or directories != build_manifest["directorie
     fail("runtime does not match the verified build manifest inventory")
 if not RUNTIME_REQUIRED_FILES.issubset(files):
     fail("build manifest omits required portable runtime files")
+if verify_release(release_directory, sys.argv[5], build_manifest, files, directories):
+    print(build_manifest["source_date_epoch"], "reuse")
+    raise SystemExit(0)
 if release_temporary.exists() or release_temporary.is_symlink():
     fail(f"temporary release path already exists: {{release_temporary}}")
 try:
@@ -290,22 +379,47 @@ try:
     copied_files, copied_directories = inspect_tree(release_temporary)
     if copied_files != files or copied_directories != directories:
         fail("copied runtime differs from the verified runtime")
-    write_release_manifest(release_temporary, sys.argv[4], build_manifest)
+    write_release_manifest(release_temporary, sys.argv[5], build_manifest)
 except BaseException:
     shutil.rmtree(release_temporary, ignore_errors=True)
     raise
-print(build_manifest["source_date_epoch"])
+print(build_manifest["source_date_epoch"], "create")
 PY
         )"
         test "$source_date_epoch" -gt 0
 
+        if test -e "$archive" || test -L "$archive"; then
+          test "$package_mode" = reuse
+          test -f "$archive"
+          test ! -L "$archive"
+          fail_phase=verify-existing-archive
+          tar --sort=name --format=gnu --mtime="@$source_date_epoch" \\
+            --owner=0 --group=0 --numeric-owner -C "$(dirname "$release_directory")" \\
+            -cf - "$(basename "$release_directory")" | \\
+            zstd --threads=1 --quiet --force -o "$archive_temporary"
+          cmp --silent "$archive_temporary" "$archive"
+          rm -f -- "$archive_temporary"
+          printf 'remote package completed: release=%s archive=%s\\n' \\
+            "$release_build_id" "$archive"
+          exit 0
+        fi
+
         fail_phase=archive
+        if test "$package_mode" = create; then
+          archive_parent="$release_temporary_parent"
+          archive_release="$(basename "$release_temporary")"
+        else
+          archive_parent="$(dirname "$release_directory")"
+          archive_release="$(basename "$release_directory")"
+        fi
         tar --sort=name --format=gnu --mtime="@$source_date_epoch" \\
-          --owner=0 --group=0 --numeric-owner -C "$release_temporary_parent" \\
-          -cf - "$(basename "$release_temporary")" | \\
+          --owner=0 --group=0 --numeric-owner -C "$archive_parent" \\
+          -cf - "$archive_release" | \\
           zstd --threads=1 --quiet --force -o "$archive_temporary"
-        mv -- "$release_temporary" "$release_directory"
-        rmdir "$release_temporary_parent"
+        if test "$package_mode" = create; then
+          mv -- "$release_temporary" "$release_directory"
+          rmdir "$release_temporary_parent"
+        fi
         mv -- "$archive_temporary" "$archive"
         printf 'remote package completed: release=%s archive=%s\\n' \\
           "$release_build_id" "$archive"
