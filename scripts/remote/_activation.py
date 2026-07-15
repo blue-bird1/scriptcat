@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ctypes
 import fcntl
 import hashlib
 import json
@@ -15,20 +14,25 @@ from enum import StrEnum
 from pathlib import Path
 
 from ._activation_state import (
+    ActivationJournal,
     LinkState,
     capture_link,
-    extension_exists,
+    ensure_transaction_paths_available,
+    exchange_paths,
+    extension_matches_manifest,
     fsync_directory,
+    recover_activation,
+    remove_journal,
     remove_tree,
     replace_symlink,
     restore_link,
+    transaction_paths,
+    write_journal,
 )
 from ._archive import (
     ReleaseManifest,
     copy_verified_archive,
-    inspect_release_tree,
     read_manifest,
-    sha256,
     single_release_root,
     unpack_archive,
     verify_manifest,
@@ -41,13 +45,11 @@ PROFILE_LOCK_PATH = (
     / "chrome-devtools-scriptcat-chromium-profile"
     / ".scriptcat-mcp.lock"
 )
-AT_FDCWD = -100
-RENAME_EXCHANGE = 2
 
 
 class ActivationStage(StrEnum):
-    EXTENSION_REDIRECT_STAGED = "extension-redirect-staged"
-    EXTENSION_REDIRECT_PUBLISHED = "extension-redirect-published"
+    EXTENSION_DIRECTORY_STAGED = "extension-directory-staged"
+    EXTENSION_DIRECTORY_PUBLISHED = "extension-directory-published"
     PREVIOUS_UPDATED = "previous-updated"
     CURRENT_UPDATED = "current-updated"
     CLEANUP_FINISHED = "cleanup-finished"
@@ -173,6 +175,7 @@ def commit_activation(
 ) -> str:
     active_checkpoint = checkpoint or ignore_checkpoint
     data_root.mkdir(parents=True, exist_ok=True)
+    recover_activation(data_root, extension_root)
     releases = data_root / "releases"
     releases.mkdir(parents=True, exist_ok=True)
     final = materialize_release(release, manifest, releases)
@@ -180,66 +183,71 @@ def commit_activation(
     previous = data_root / "previous"
     current_state = capture_link(current)
     expected_current = LinkState(True, str(final))
-    redirect_target = data_root / "current" / "scriptcat"
-    if current_state == expected_current and extension_redirect_is_valid(
-        extension_root, redirect_target
+    if current_state == expected_current and extension_directory_is_valid(
+        extension_root, manifest
     ):
         return manifest.build_id
 
-    ensure_extension_redirect(
+    verify_existing_extension(
         data_root,
         extension_root,
         current_state,
-        active_checkpoint,
     )
+    extension_root.parent.mkdir(parents=True, exist_ok=True)
+    paths = transaction_paths(data_root, extension_root)
+    ensure_transaction_paths_available(paths)
+    write_journal(
+        paths,
+        ActivationJournal(
+            build_id=manifest.build_id,
+            extension_existed=extension_path_exists(extension_root),
+            current=current_state,
+            previous=capture_link(previous),
+        ),
+    )
+    stage_extension_directory(final, manifest, paths.extension_temporary)
+    active_checkpoint(ActivationStage.EXTENSION_DIRECTORY_STAGED)
     if current_state != expected_current:
         restore_link(previous, current_state)
         active_checkpoint(ActivationStage.PREVIOUS_UPDATED)
+    publish_extension_directory(
+        extension_root,
+        paths.extension_temporary,
+        paths.extension_rollback,
+    )
+    if current_state != expected_current:
         replace_symlink(current, str(final))
         active_checkpoint(ActivationStage.CURRENT_UPDATED)
+    active_checkpoint(ActivationStage.EXTENSION_DIRECTORY_PUBLISHED)
+    remove_journal(paths)
+    remove_tree(paths.extension_rollback)
+    fsync_directory(extension_root.parent)
     active_checkpoint(ActivationStage.CLEANUP_FINISHED)
     return manifest.build_id
 
 
-def ensure_extension_redirect(
+def verify_existing_extension(
     data_root: Path,
     extension_root: Path,
     current_state: LinkState,
-    checkpoint: ActivationCheckpoint,
 ) -> None:
-    redirect_target = data_root / "current" / "scriptcat"
-    extension_root.parent.mkdir(parents=True, exist_ok=True)
-    migration = extension_migration_path(extension_root)
-    if extension_redirect_is_valid(extension_root, redirect_target):
-        if migration.exists() or migration.is_symlink():
-            remove_tree(migration)
-            fsync_directory(extension_root.parent)
+    if not extension_path_exists(extension_root):
         return
-
+    if extension_root.is_symlink():
+        expected_target = data_root / "current" / "scriptcat"
+        if os.readlink(extension_root) != str(expected_target):
+            raise WorkflowError(
+                f"managed extension path has an unexpected target: {extension_root}"
+            )
+        verify_legacy_extension(extension_root, data_root / "current", current_state)
+        return
     try:
         extension_status = extension_root.lstat()
     except FileNotFoundError:
-        extension_status = None
-    if extension_status is not None and stat.S_ISLNK(extension_status.st_mode):
-        raise WorkflowError(
-            f"managed extension redirect has an unexpected target: {extension_root}"
-        )
-    if extension_status is not None and not stat.S_ISDIR(extension_status.st_mode):
+        return
+    if not stat.S_ISDIR(extension_status.st_mode):
         raise WorkflowError(f"managed extension path is invalid: {extension_root}")
-    if extension_status is not None:
-        verify_legacy_extension(extension_root, data_root / "current", current_state)
-
-    remove_tree(migration)
-    migration.symlink_to(redirect_target, target_is_directory=True)
-    checkpoint(ActivationStage.EXTENSION_REDIRECT_STAGED)
-    if extension_status is None:
-        os.replace(migration, extension_root)
-    else:
-        exchange_paths(migration, extension_root)
-    fsync_directory(extension_root.parent)
-    checkpoint(ActivationStage.EXTENSION_REDIRECT_PUBLISHED)
-    remove_tree(migration)
-    fsync_directory(extension_root.parent)
+    verify_legacy_extension(extension_root, data_root / "current", current_state)
 
 
 def verify_legacy_extension(
@@ -256,47 +264,56 @@ def verify_legacy_extension(
         active_release = current.parent / active_release
     active_manifest = read_manifest(active_release)
     verify_manifest(active_release, active_manifest)
+    if extension_root.is_symlink():
+        return
     if not extension_matches_manifest(extension_root, active_manifest):
         raise WorkflowError(
             "managed extension does not match the active release; refusing migration"
         )
 
 
-def extension_redirect_is_valid(extension_root: Path, target: Path) -> bool:
+def extension_directory_is_valid(
+    extension_root: Path, manifest: ReleaseManifest
+) -> bool:
+    return extension_matches_manifest(extension_root, manifest)
+
+
+def extension_path_exists(path: Path) -> bool:
+    return path.exists() or path.is_symlink()
+
+
+def stage_extension_directory(
+    release: Path,
+    manifest: ReleaseManifest,
+    temporary: Path,
+) -> None:
     try:
-        status = extension_root.lstat()
-    except FileNotFoundError:
-        return False
-    return stat.S_ISLNK(status.st_mode) and os.readlink(extension_root) == str(target)
+        shutil.copytree(release / "scriptcat", temporary)
+        if not extension_matches_manifest(temporary, manifest):
+            raise WorkflowError(
+                "staged managed extension does not match release manifest"
+            )
+        fsync_tree(temporary)
+        fsync_directory(temporary.parent)
+    except BaseException:
+        remove_tree(temporary)
+        raise
 
 
-def extension_migration_path(extension_root: Path) -> Path:
-    return extension_root.with_name(f".{extension_root.name}-activation-migration")
-
-
-def exchange_paths(first: Path, second: Path) -> None:
-    libc = ctypes.CDLL(None, use_errno=True)
-    renameat2 = getattr(libc, "renameat2", None)
-    if renameat2 is None:
-        raise WorkflowError("atomic extension migration requires renameat2")
-    renameat2.argtypes = (
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_int,
-        ctypes.c_char_p,
-        ctypes.c_uint,
-    )
-    renameat2.restype = ctypes.c_int
-    result = renameat2(
-        AT_FDCWD,
-        os.fsencode(first),
-        AT_FDCWD,
-        os.fsencode(second),
-        RENAME_EXCHANGE,
-    )
-    if result != 0:
-        error = OSError(ctypes.get_errno(), "renameat2(RENAME_EXCHANGE) failed")
-        raise WorkflowError(f"atomic extension migration failed: {error}") from error
+def publish_extension_directory(
+    extension_root: Path,
+    temporary: Path,
+    rollback: Path,
+) -> None:
+    extension_root.parent.mkdir(parents=True, exist_ok=True)
+    if extension_path_exists(extension_root):
+        exchange_paths(temporary, extension_root)
+        fsync_directory(extension_root.parent)
+        os.replace(temporary, rollback)
+        fsync_directory(extension_root.parent)
+        return
+    os.replace(temporary, extension_root)
+    fsync_directory(extension_root.parent)
 
 
 def read_release_provenance(release: Path) -> ReleaseProvenance:
@@ -420,32 +437,6 @@ def materialize_release(
     finally:
         remove_tree(temporary)
     return final
-
-
-def extension_matches_manifest(extension_root: Path, manifest: ReleaseManifest) -> bool:
-    if not extension_exists(extension_root):
-        return False
-    try:
-        files, directories = inspect_release_tree(extension_root)
-    except WorkflowError:
-        return False
-    prefix = "scriptcat/"
-    expected_files = {
-        relative.removeprefix(prefix): digest
-        for relative, digest in manifest.files.items()
-        if relative.startswith(prefix)
-    }
-    expected_directories = {
-        relative.removeprefix(prefix)
-        for relative in manifest.directories
-        if relative.startswith(prefix)
-    }
-    if files != set(expected_files) or directories != expected_directories:
-        return False
-    return all(
-        sha256(extension_root / relative) == digest
-        for relative, digest in expected_files.items()
-    )
 
 
 def fsync_tree(root: Path) -> None:

@@ -7,3 +7,4 @@
 0007-fix-protect-managed-scriptcat-extension-tools.patch
 0008-fix-reject-mixed-managed-release-startup.patch
 0009-test-enable-unsafe-extension-debugging.patch
+0010-fix-gate-managed-physical-extension-startup.patch

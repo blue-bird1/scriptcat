@@ -1,25 +1,25 @@
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import shutil
 import stat
 from dataclasses import dataclass
-from enum import StrEnum
 from pathlib import Path
 
+from ._archive import (
+    ReleaseManifest,
+    inspect_release_tree,
+    read_manifest,
+    sha256,
+    verify_manifest,
+)
 from ._common import WorkflowError
 
 JOURNAL_SCHEMA_VERSION = 1
-
-
-class ActivationStage(StrEnum):
-    JOURNAL_WRITTEN = "journal-written"
-    EXTENSION_BACKED_UP = "extension-backed-up"
-    EXTENSION_INSTALLED = "extension-installed"
-    PREVIOUS_UPDATED = "previous-updated"
-    CURRENT_UPDATED = "current-updated"
-    JOURNAL_REMOVED = "journal-removed"
+AT_FDCWD = -100
+RENAME_EXCHANGE = 2
 
 
 @dataclass(frozen=True)
@@ -50,16 +50,7 @@ def recover_activation(data_root: Path, extension_root: Path) -> None:
     if journal is None:
         cleanup_stale_transaction_paths(paths, data_root)
         return
-    if journal.extension_existed:
-        if paths.extension_rollback.exists() or paths.extension_rollback.is_symlink():
-            remove_tree(extension_root)
-            os.replace(paths.extension_rollback, extension_root)
-            fsync_directory(extension_root.parent)
-        elif not extension_exists(extension_root):
-            raise WorkflowError("activation journal cannot restore the prior extension")
-    else:
-        remove_tree(extension_root)
-        fsync_directory(extension_root.parent)
+    restore_extension_from_journal(data_root, extension_root, paths, journal)
     remove_tree(paths.extension_temporary)
     restore_link(data_root / "previous", journal.previous)
     restore_link(data_root / "current", journal.current)
@@ -84,6 +75,7 @@ def ensure_transaction_paths_available(paths: TransactionPaths) -> None:
     for path in (
         paths.journal,
         paths.journal_temporary,
+        paths.extension_temporary,
         paths.extension_rollback,
     ):
         if path.exists() or path.is_symlink():
@@ -189,6 +181,139 @@ def extension_exists(path: Path) -> bool:
     if not stat.S_ISDIR(status.st_mode):
         raise WorkflowError(f"managed extension path is not a directory: {path}")
     return True
+
+
+def extension_matches_manifest(extension_root: Path, manifest: ReleaseManifest) -> bool:
+    try:
+        if not extension_exists(extension_root):
+            return False
+        files, directories = inspect_release_tree(extension_root)
+    except WorkflowError:
+        return False
+    prefix = "scriptcat/"
+    expected_files = {
+        relative.removeprefix(prefix): digest
+        for relative, digest in manifest.files.items()
+        if relative.startswith(prefix)
+    }
+    expected_directories = {
+        relative.removeprefix(prefix)
+        for relative in manifest.directories
+        if relative.startswith(prefix)
+    }
+    if files != set(expected_files) or directories != expected_directories:
+        return False
+    return all(
+        sha256(extension_root / relative) == digest
+        for relative, digest in expected_files.items()
+    )
+
+
+def exchange_paths(first: Path, second: Path) -> None:
+    libc = ctypes.CDLL(None, use_errno=True)
+    renameat2 = getattr(libc, "renameat2", None)
+    if renameat2 is None:
+        raise WorkflowError("atomic extension directory exchange requires renameat2")
+    renameat2.argtypes = (
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    )
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        AT_FDCWD,
+        os.fsencode(first),
+        AT_FDCWD,
+        os.fsencode(second),
+        RENAME_EXCHANGE,
+    )
+    if result != 0:
+        error = OSError(ctypes.get_errno(), "renameat2(RENAME_EXCHANGE) failed")
+        raise WorkflowError(
+            f"atomic extension directory exchange failed: {error}"
+        ) from error
+
+
+def restore_extension_from_journal(
+    data_root: Path,
+    extension_root: Path,
+    paths: TransactionPaths,
+    journal: ActivationJournal,
+) -> None:
+    if not journal.extension_existed:
+        remove_tree(extension_root)
+        fsync_directory(extension_root.parent)
+        return
+    if paths.extension_rollback.exists() or paths.extension_rollback.is_symlink():
+        remove_tree(extension_root)
+        os.replace(paths.extension_rollback, extension_root)
+        fsync_directory(extension_root.parent)
+        return
+    if paths.extension_temporary.exists() or paths.extension_temporary.is_symlink():
+        restore_exchanged_or_staged_extension(
+            data_root,
+            extension_root,
+            paths.extension_temporary,
+            journal.current,
+        )
+        return
+    if not extension_matches_current(data_root, extension_root, journal.current):
+        raise WorkflowError("activation journal cannot restore the prior extension")
+
+
+def restore_exchanged_or_staged_extension(
+    data_root: Path,
+    extension_root: Path,
+    temporary: Path,
+    current: LinkState,
+) -> None:
+    if extension_root.is_symlink():
+        remove_tree(temporary)
+        fsync_directory(extension_root.parent)
+        return
+    if temporary.is_symlink():
+        exchange_paths(temporary, extension_root)
+        fsync_directory(extension_root.parent)
+        remove_tree(temporary)
+        fsync_directory(extension_root.parent)
+        return
+    temporary_is_previous = extension_matches_current(data_root, temporary, current)
+    extension_is_previous = extension_matches_current(
+        data_root, extension_root, current
+    )
+    if temporary_is_previous and not extension_is_previous:
+        exchange_paths(temporary, extension_root)
+        fsync_directory(extension_root.parent)
+        remove_tree(temporary)
+        fsync_directory(extension_root.parent)
+        return
+    if extension_is_previous:
+        remove_tree(temporary)
+        fsync_directory(extension_root.parent)
+        return
+    raise WorkflowError("activation journal cannot identify the prior extension")
+
+
+def extension_matches_current(
+    data_root: Path, extension_root: Path, current: LinkState
+) -> bool:
+    if extension_root.is_symlink():
+        return current.exists and os.readlink(extension_root) == str(
+            data_root / "current" / "scriptcat"
+        )
+    if not current.exists or current.target is None:
+        return False
+    active_release = Path(current.target)
+    if not active_release.is_absolute():
+        active_release = data_root / active_release
+    try:
+        manifest = read_manifest(active_release)
+        verify_manifest(active_release, manifest)
+    except WorkflowError:
+        return False
+    return extension_matches_manifest(extension_root, manifest)
 
 
 def capture_link(path: Path) -> LinkState:

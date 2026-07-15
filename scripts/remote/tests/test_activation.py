@@ -19,6 +19,7 @@ from scripts.remote._activation import (
     activate_archive,
     commit_activation,
 )
+from scripts.remote._activation_state import recover_activation
 from scripts.remote.tests._fixtures import (
     BUILD_ID,
     CHROME_RELATIVE,
@@ -94,12 +95,12 @@ class ActivationIntegrityTest(unittest.TestCase):
                     ),
                     BUILD_ID,
                 )
-                self.assertTrue(extension_root.is_symlink())
-                self.assertEqual(
-                    os.readlink(extension_root),
-                    str(data_root / "current" / "scriptcat"),
-                )
-                extension_inode = extension_root.stat().st_ino
+                self.assertTrue(extension_root.is_dir())
+                self.assertFalse(extension_root.is_symlink())
+                extension_worker = (
+                    extension_root
+                    / EXTENSION_WORKER_RELATIVE.removeprefix("scriptcat/")
+                ).read_bytes()
                 current_target = os.readlink(data_root / "current")
                 self.assertFalse((data_root / "previous").exists())
                 self.assertEqual(
@@ -108,7 +109,15 @@ class ActivationIntegrityTest(unittest.TestCase):
                     ),
                     BUILD_ID,
                 )
-            self.assertEqual(extension_root.stat().st_ino, extension_inode)
+            self.assertEqual(
+                (
+                    extension_root
+                    / EXTENSION_WORKER_RELATIVE.removeprefix("scriptcat/")
+                ).read_bytes(),
+                extension_worker,
+            )
+            self.assertTrue(extension_root.is_dir())
+            self.assertFalse(extension_root.is_symlink())
             self.assertEqual(os.readlink(data_root / "current"), current_target)
             self.assertFalse((data_root / "previous").exists())
 
@@ -155,7 +164,7 @@ class ActivationIntegrityTest(unittest.TestCase):
                     )
             self.assertFalse(marker.exists())
 
-    def test_each_sigkill_stage_keeps_consumer_release_consistent(self) -> None:
+    def test_each_sigkill_stage_recovers_consumer_release_consistently(self) -> None:
         for stage in ActivationStage:
             with self.subTest(stage=stage):
                 self.assert_consistent_after_crash(stage)
@@ -225,42 +234,42 @@ class ActivationIntegrityTest(unittest.TestCase):
                 os.waitstatus_to_exitcode(wait_status),
                 -signal.SIGKILL,
             )
-            active_release = Path(os.readlink(data_root / "current"))
-            consumer_view = (
-                (active_release / MCP_RELATIVE).read_bytes(),
-                (
-                    extension_root
-                    / EXTENSION_WORKER_RELATIVE.removeprefix("scriptcat/")
-                ).read_bytes(),
-            )
-            self.assertIn(
-                consumer_view,
-                {
+            self.assertTrue(extension_root.is_dir())
+            self.assertFalse(extension_root.is_symlink())
+            journal = data_root / "activation-journal.json"
+            if crash_stage is not ActivationStage.CLEANUP_FINISHED:
+                self.assertTrue(journal.is_file())
+                self.assertFalse(journal.is_symlink())
+                recover_activation(data_root, extension_root)
+                self.assertEqual(
+                    read_consumer_view(data_root, extension_root),
                     (OLD_RUNTIME_PAYLOAD, OLD_EXTENSION_PAYLOAD),
+                )
+                self.assertEqual(os.readlink(data_root / "current"), str(old_release))
+                self.assertFalse((data_root / "previous").exists())
+                self.assertTrue(extension_root.is_dir())
+                self.assertFalse(extension_root.is_symlink())
+            else:
+                self.assertFalse(journal.exists())
+                recover_activation(data_root, extension_root)
+                self.assertEqual(
+                    read_consumer_view(data_root, extension_root),
                     (new_runtime, new_extension),
-                },
-            )
+                )
+                self.assertEqual(
+                    os.readlink(data_root / "current"), str(releases / BUILD_ID)
+                )
+                self.assertEqual(os.readlink(data_root / "previous"), str(old_release))
             self.assertEqual(
-                commit_activation(
-                    source,
-                    manifest,
-                    data_root,
-                    extension_root,
-                ),
+                commit_activation(source, manifest, data_root, extension_root),
                 BUILD_ID,
             )
             self.assertEqual(
-                (
-                    (
-                        Path(os.readlink(data_root / "current")) / MCP_RELATIVE
-                    ).read_bytes(),
-                    (
-                        extension_root
-                        / EXTENSION_WORKER_RELATIVE.removeprefix("scriptcat/")
-                    ).read_bytes(),
-                ),
+                read_consumer_view(data_root, extension_root),
                 (new_runtime, new_extension),
             )
+            self.assertTrue(extension_root.is_dir())
+            self.assertFalse(extension_root.is_symlink())
 
 
 def wait_at_checkpoint(
@@ -271,6 +280,16 @@ def wait_at_checkpoint(
     if stage is target:
         os.write(checkpoint_write, CHECKPOINT_READY)
         signal.pause()
+
+
+def read_consumer_view(data_root: Path, extension_root: Path) -> tuple[bytes, bytes]:
+    active_release = Path(os.readlink(data_root / "current"))
+    return (
+        (active_release / MCP_RELATIVE).read_bytes(),
+        (
+            extension_root / EXTENSION_WORKER_RELATIVE.removeprefix("scriptcat/")
+        ).read_bytes(),
+    )
 
 
 def rewrite_release_file(

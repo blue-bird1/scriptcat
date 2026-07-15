@@ -16,6 +16,7 @@ from scripts.remote.tests._fixtures import create_archive, create_release, sha25
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 INSTALL_SCRIPT = REPOSITORY_ROOT / "scripts" / "remote" / "install.py"
 PROJECT_COMMIT = "1" * 40
+NEXT_PROJECT_COMMIT = "2" * 40
 
 
 class OfflineInstallContractTest(unittest.TestCase):
@@ -75,19 +76,72 @@ class OfflineInstallContractTest(unittest.TestCase):
                 / "scriptcat"
                 / f"v{lock['scriptcat']['version']}"
             )
-            self.assertTrue(extension_path.is_symlink())
-            self.assertEqual(
-                os.readlink(extension_path),
-                str(
-                    home
-                    / ".local"
-                    / "share"
-                    / "scriptcat-mcp"
-                    / "current"
-                    / "scriptcat"
-                ),
+            self._assert_physical_extension_matches(extension_path, release_path)
+
+    def test_new_release_updates_fixed_physical_extension(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
+            root = Path(temporary_name)
+            lock_path = root / "upstreams.lock.json"
+            shutil.copyfile(
+                REPOSITORY_ROOT / "browser" / "upstreams.lock.json", lock_path
             )
-            self.assertTrue((extension_path / "worker.js").is_file())
+            lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+            first_build_id, first_release, first_archive = self._create_release_archive(
+                root / "first",
+                lock_digest=lock_digest,
+                project_commit=PROJECT_COMMIT,
+            )
+            home = root / "home"
+
+            first_install = self._install_archive(
+                first_archive,
+                lock_path=lock_path,
+                build_id=first_build_id,
+                home=home,
+            )
+
+            self.assertEqual(first_install.returncode, 0, first_install.stderr)
+            extension_path = self._extension_path(home, lock)
+            first_release_path = self._release_path(home, first_build_id)
+            self._assert_physical_extension_matches(extension_path, first_release_path)
+
+            second_build_id, second_release, _ = self._create_release_archive(
+                root / "second",
+                lock_digest=lock_digest,
+                project_commit=NEXT_PROJECT_COMMIT,
+            )
+            self._replace_release_file(
+                second_release,
+                "scriptcat/worker.js",
+                b"const managed = 'replacement release';\n",
+            )
+            self._write_release_provenance(
+                second_release,
+                component_build_id=component_build_id(lock_digest, NEXT_PROJECT_COMMIT),
+                project_commit=NEXT_PROJECT_COMMIT,
+                lock_digest=lock_digest,
+            )
+            second_archive = create_archive(root / "second", second_release)
+
+            second_install = self._install_archive(
+                second_archive,
+                lock_path=lock_path,
+                build_id=second_build_id,
+                home=home,
+            )
+
+            self.assertEqual(second_install.returncode, 0, second_install.stderr)
+            second_release_path = self._release_path(home, second_build_id)
+            self._assert_physical_extension_matches(extension_path, second_release_path)
+            self.assertEqual(
+                os.readlink(home / ".local" / "share" / "scriptcat-mcp" / "current"),
+                str(second_release_path),
+            )
+            self.assertEqual(
+                os.readlink(home / ".local" / "share" / "scriptcat-mcp" / "previous"),
+                str(first_release_path),
+            )
 
     def test_rejects_rewritten_archive_with_recomputed_internal_checksums(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
@@ -163,6 +217,103 @@ class OfflineInstallContractTest(unittest.TestCase):
             encoding="utf-8",
         )
         self._write_internal_checksums(release, manifest)
+
+    def _create_release_archive(
+        self,
+        root: Path,
+        *,
+        lock_digest: str,
+        project_commit: str,
+    ) -> tuple[str, Path, Path]:
+        root.mkdir()
+        component_id = component_build_id(lock_digest, project_commit)
+        build_id = release_build_id(component_id, project_commit)
+        release = create_release(root, build_id=build_id)
+        self._write_release_provenance(
+            release,
+            component_build_id=component_id,
+            project_commit=project_commit,
+            lock_digest=lock_digest,
+        )
+        return build_id, release, create_archive(root, release)
+
+    def _install_archive(
+        self,
+        archive: Path,
+        *,
+        lock_path: Path,
+        build_id: str,
+        home: Path,
+    ) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            (
+                sys.executable,
+                str(INSTALL_SCRIPT),
+                str(archive),
+                "--lock",
+                str(lock_path),
+                "--build-id",
+                build_id,
+                "--archive-sha256",
+                sha256(archive),
+            ),
+            check=False,
+            cwd=archive.parent,
+            env={**os.environ, "HOME": str(home)},
+            text=True,
+            capture_output=True,
+        )
+
+    def _replace_release_file(
+        self, release: Path, relative: str, contents: bytes
+    ) -> None:
+        path = release / relative
+        path.write_bytes(contents)
+        manifest_path = release / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        files = manifest["files"]
+        if not isinstance(files, dict):
+            raise AssertionError("release manifest files must be a mapping")
+        files[relative] = sha256(path)
+        manifest_path.write_text(
+            json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
+
+    def _extension_path(self, home: Path, lock: dict[str, object]) -> Path:
+        scriptcat = lock["scriptcat"]
+        if not isinstance(scriptcat, dict):
+            raise AssertionError("upstream lock ScriptCat entry must be a mapping")
+        version = scriptcat["version"]
+        if not isinstance(version, str):
+            raise AssertionError("upstream lock ScriptCat version must be a string")
+        return home / ".codex" / "chrome-extensions" / "scriptcat" / f"v{version}"
+
+    def _release_path(self, home: Path, build_id: str) -> Path:
+        return home / ".local" / "share" / "scriptcat-mcp" / "releases" / build_id
+
+    def _assert_physical_extension_matches(
+        self, extension_path: Path, release_path: Path
+    ) -> None:
+        self.assertTrue(extension_path.is_dir())
+        self.assertFalse(extension_path.is_symlink())
+        self.assertEqual(
+            self._tree_contents(extension_path),
+            self._tree_contents(release_path / "scriptcat"),
+        )
+
+    def _tree_contents(self, root: Path) -> dict[str, bytes]:
+        contents: dict[str, bytes] = {}
+        for current, directory_names, file_names in os.walk(root):
+            directory_names.sort()
+            file_names.sort()
+            current_path = Path(current)
+            for name in file_names:
+                path = current_path / name
+                self.assertTrue(path.is_file())
+                self.assertFalse(path.is_symlink())
+                contents[path.relative_to(root).as_posix()] = path.read_bytes()
+        return contents
 
     def _write_internal_checksums(
         self, release: Path, manifest: dict[str, object]
