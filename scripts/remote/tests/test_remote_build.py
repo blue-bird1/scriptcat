@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import pwd
+import re
 import shlex
 import shutil
 import subprocess
@@ -15,6 +16,17 @@ from scripts.remote._remote_build import remote_build_script
 
 
 class McpBrowserSandboxRegressionTest(unittest.TestCase):
+    def test_sandbox_helper_never_uses_bash_c(self) -> None:
+        sandbox_launcher = self._render_sandbox_launcher()
+
+        self.assertIsNone(
+            re.search(
+                r"(?:^|/)bash(?:\s+\S+)*\s+-c(?:\s|$)",
+                sandbox_launcher,
+                flags=re.MULTILINE,
+            )
+        )
+
     def test_mcp_cleanup_removes_generated_lock_before_provenance_validation(
         self,
     ) -> None:

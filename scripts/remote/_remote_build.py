@@ -39,7 +39,7 @@ terminate_browser_test_process_group() {
 }
 run_browser_test_in_sandbox() {
   local test_name=$1 test_workdir=$2 test_path=$3 test_command=$4
-  local command_file test_uid test_gid test_status relative_workdir workdir_kind
+  local command_file launcher_file test_uid test_gid test_status relative_workdir workdir_kind
   if [[ "$test_workdir" == "$build_root"/* ]]; then
     relative_workdir=${test_workdir#"$build_root"/}
     workdir_kind=build
@@ -65,6 +65,79 @@ run_browser_test_in_sandbox() {
   printf '%s' "$test_command" > "$command_file"
   test -f "$command_file"
   test ! -L "$command_file"
+  launcher_file="$test_root/launcher.sh"
+  install -m 0555 /dev/null "$launcher_file"
+  cat > "$launcher_file" <<'LAUNCHER'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+test_name=${1:?}
+build_root=${SANDBOX_SOURCE_BUILD_ROOT:?}
+test_root=${SANDBOX_TEST_ROOT:?}
+test_uid=${SANDBOX_TEST_UID:?}
+test_gid=${SANDBOX_TEST_GID:?}
+workdir_kind=${SANDBOX_WORKDIR_KIND:?}
+relative_workdir=${SANDBOX_RELATIVE_WORKDIR-}
+mcp_workdir=${SANDBOX_MCP_WORKDIR-}
+test_path=${SANDBOX_TEST_PATH:?}
+command_file=${SANDBOX_COMMAND_FILE:?}
+launcher_file=${SANDBOX_LAUNCHER_FILE:?}
+case "$launcher_file" in
+  "$test_root"/launcher.sh) ;;
+  *)
+    printf 'browser test launcher file is outside the test root: %s\n' \
+      "$launcher_file" >&2
+    exit 64
+    ;;
+esac
+case "$command_file" in
+  "$test_root"/command.sh) ;;
+  *)
+    printf 'browser test command file is outside the test root: %s\n' \
+      "$command_file" >&2
+    exit 64
+    ;;
+esac
+test -f "$launcher_file"
+test ! -L "$launcher_file"
+test -f "$command_file"
+test ! -L "$command_file"
+mount --bind "$build_root" "$test_root/build"
+case "$workdir_kind" in
+  build)
+    cd "$test_root/build/$relative_workdir"
+    ;;
+  mcp)
+    mount --bind "$mcp_workdir" "$test_root/mcp"
+    mount -o remount,bind,ro "$test_root/mcp"
+    cd "$test_root/mcp"
+    ;;
+  *)
+    printf 'browser test workdir kind is invalid: %s\n' "$workdir_kind" >&2
+    exit 64
+    ;;
+esac
+exec setpriv \
+  --reuid="$test_uid" \
+  --regid="$test_gid" \
+  --clear-groups \
+  --inh-caps=-all \
+  --ambient-caps=-all \
+  --bounding-set=-all \
+  env -i \
+    PATH="$test_path" \
+    LANG=en_US.UTF-8 \
+    HOME="$test_root/home" \
+    TMPDIR="$test_root/tmp" \
+    XDG_CACHE_HOME="$test_root/home/.cache" \
+    XDG_CONFIG_HOME="$test_root/home/.config" \
+    XDG_RUNTIME_DIR="$test_root/runtime" \
+    SANDBOX_BUILD_ROOT="$test_root/build" \
+    BROWSER_BINARY="$test_root/build/src/src/out/Release/chrome" \
+    BROWSER_TESTS_BINARY="$test_root/build/src/src/out/Release/browser_tests" \
+    /bin/bash -Eeuo pipefail "$command_file"
+LAUNCHER
+  test -f "$launcher_file"
+  test ! -L "$launcher_file"
   env -i \
     PATH=/usr/bin:/bin \
     LANG=en_US.UTF-8 \
@@ -79,61 +152,9 @@ run_browser_test_in_sandbox() {
     SANDBOX_MCP_WORKDIR="${mcp:-}" \
     SANDBOX_TEST_PATH="$test_path" \
     SANDBOX_COMMAND_FILE="$command_file" \
-    setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
-    build_root=${SANDBOX_SOURCE_BUILD_ROOT:?}
-    test_root=${SANDBOX_TEST_ROOT:?}
-    test_uid=${SANDBOX_TEST_UID:?}
-    test_gid=${SANDBOX_TEST_GID:?}
-    workdir_kind=${SANDBOX_WORKDIR_KIND:?}
-    relative_workdir=${SANDBOX_RELATIVE_WORKDIR-}
-    mcp_workdir=${SANDBOX_MCP_WORKDIR-}
-    test_path=${SANDBOX_TEST_PATH:?}
-    command_file=${SANDBOX_COMMAND_FILE:?}
-    case "$command_file" in
-      "$test_root"/command.sh) ;;
-      *)
-        printf 'browser test command file is outside the test root: %s\n' \
-          "$command_file" >&2
-        exit 64
-        ;;
-    esac
-    test -f "$command_file"
-    test ! -L "$command_file"
-    mount --bind "$build_root" "$test_root/build"
-    case "$workdir_kind" in
-      build)
-        cd "$test_root/build/$relative_workdir"
-        ;;
-      mcp)
-        mount --bind "$mcp_workdir" "$test_root/mcp"
-        mount -o remount,bind,ro "$test_root/mcp"
-        cd "$test_root/mcp"
-        ;;
-      *)
-        printf 'browser test workdir kind is invalid: %s\n' "$workdir_kind" >&2
-        exit 64
-        ;;
-    esac
-    exec setpriv \
-      --reuid="$test_uid" \
-      --regid="$test_gid" \
-      --clear-groups \
-      --inh-caps=-all \
-      --ambient-caps=-all \
-      --bounding-set=-all \
-      env -i \
-        PATH="$test_path" \
-        LANG=en_US.UTF-8 \
-        HOME="$test_root/home" \
-        TMPDIR="$test_root/tmp" \
-        XDG_CACHE_HOME="$test_root/home/.cache" \
-        XDG_CONFIG_HOME="$test_root/home/.config" \
-        XDG_RUNTIME_DIR="$test_root/runtime" \
-        SANDBOX_BUILD_ROOT="$test_root/build" \
-        BROWSER_BINARY="$test_root/build/src/src/out/Release/chrome" \
-        BROWSER_TESTS_BINARY="$test_root/build/src/src/out/Release/browser_tests" \
-        bash -Eeuo pipefail "$command_file"
-  ' "$test_name" 9>&- &
+    SANDBOX_LAUNCHER_FILE="$launcher_file" \
+    setsid unshare --mount --propagation private /bin/bash "$launcher_file" \
+      "$test_name" 9>&- &
   test_session_pid=$!
   test_session_pgid=$test_session_pid
   if wait "$test_session_pid"; then
