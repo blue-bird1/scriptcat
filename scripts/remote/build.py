@@ -8,81 +8,34 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
-    from remote._common import (
-        RemoteConfig,
-        assert_local_head,
-        cli_main,
-        push_main,
-        repository_root,
-        require_clean_main,
-        require_commands,
-        require_wg0,
-        run_checked,
-        run_remote_script,
-    )
-    from remote._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
-    from remote._remote_build import remote_build_script
-    from remote._verified_build import component_build_id
+    from remote._common import WorkflowError, cli_main
 else:
-    from ._common import (
-        RemoteConfig,
-        assert_local_head,
-        cli_main,
-        push_main,
-        repository_root,
-        require_clean_main,
-        require_commands,
-        require_wg0,
-        run_checked,
-        run_remote_script,
-    )
-    from ._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
-    from ._remote_build import remote_build_script
-    from ._verified_build import component_build_id
+    from ._common import WorkflowError, cli_main
 
 
-LOCK_PATH = Path("browser/upstreams.lock.json")
+LEGACY_TARGETS = (
+    "scripts/remote/provider/*",
+    "scripts/remote/mcp/*",
+)
 
 
 def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(
-        description=(
-            "Build, focus-test, and retain a verified ScriptCat MCP component build "
-            "on the managed remote host."
-        ),
+    return argparse.ArgumentParser(
+        description="Deprecated legacy remote build entrypoint.",
         epilog=(
-            "Requires a clean local main branch, pushes origin/main, and uses wg0. "
-            "The command does not download a portable archive or activate a local "
-            "release."
+            "This command never selects, builds, tests, or contacts a remote host. "
+            "Choose an explicit stage under scripts/remote/provider/* or "
+            "scripts/remote/mcp/* instead."
         ),
     )
-    result.add_argument(
-        "--lock",
-        type=Path,
-        default=LOCK_PATH,
-        help="upstream lock relative to repository root (default: %(default)s)",
-    )
-    return result
 
 
 def run(argv: Sequence[str]) -> int:
-    arguments = parser().parse_args(argv)
-    require_commands("git", "ip", "ssh")
-    require_wg0()
-    root = repository_root()
-    commit = require_clean_main(root)
-    origin = run_checked(
-        ("git", "remote", "get-url", "origin"), cwd=root, capture=True
-    ).stdout.strip()
-    lock = load_lock(root / arguments.lock)
-    validate_patch_stacks(root, lock)
-    validate_mcp_submodule(root, lock)
-    push_main(root)
-    config = RemoteConfig()
-    run_remote_script(config, remote_build_script(config, lock, commit, origin))
-    assert_local_head(root, commit)
-    print(component_build_id(lock.digest, commit))
-    return 0
+    parser().parse_args(argv)
+    raise WorkflowError(
+        "scripts/remote/build.py is deprecated; choose an explicit command under "
+        f"{LEGACY_TARGETS[0]} or {LEGACY_TARGETS[1]}; no stage was run"
+    )
 
 
 if __name__ == "__main__":
