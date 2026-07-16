@@ -73,8 +73,8 @@
 | `.upstream/scriptcat` | ScriptCat 扩展上游源码，用于核对安装、注入、service worker 与运行时行为 |
 | `.upstream/scriptcat-vscode` | ScriptCat VSCode 插件上游源码，用于核对 VSCode sync 协议 |
 | `scripts/build-userscripts.mjs` | 将 `src/userscripts/*.user.js` bundle 到仓库根同名文件 |
-| `scripts/remote/provider/` | browser provider 的 doctor、build、package、install 三阶段入口 |
-| `scripts/remote/mcp/` | ScriptCat MCP 的 doctor、build、package、install 三阶段入口 |
+| `scripts/remote/provider/` | browser provider 的 build、package、install 三阶段入口 |
+| `scripts/remote/mcp/` | ScriptCat MCP 的 build、package、install 三阶段入口 |
 | `scripts/remote/{doctor,build,package,install,build_install}.py` | 只返回迁移错误的旧顶层 CLI |
 | `browser/provider.lock.json` | browser provider 的供应链 lock |
 | `browser/mcp.lock.json` | ScriptCat MCP 的供应链 lock |

@@ -175,11 +175,28 @@ def _download(
         expected = read_archive_digest(sidecar_temporary)
         if sha256(archive_temporary) != expected:
             raise WorkflowError("downloaded provider archive does not match SHA-256")
-        os.link(archive_temporary, output)
-        os.link(sidecar_temporary, sidecar)
+        try:
+            os.link(archive_temporary, output)
+            os.link(sidecar_temporary, sidecar)
+        except FileExistsError as error:
+            raise WorkflowError(
+                "refusing to overwrite provider download output"
+            ) from error
+    except BaseException:
+        _remove_published_output(output, archive_temporary)
+        _remove_published_output(sidecar, sidecar_temporary)
+        raise
     finally:
         archive_temporary.unlink(missing_ok=True)
         sidecar_temporary.unlink(missing_ok=True)
+
+
+def _remove_published_output(output: Path, temporary: Path) -> None:
+    try:
+        if output.samefile(temporary):
+            output.unlink()
+    except FileNotFoundError:
+        pass
 
 
 if __name__ == "__main__":

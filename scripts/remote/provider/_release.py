@@ -242,7 +242,11 @@ def activation_lock(data_root: Path) -> Iterator[None]:
 
 def recover_interrupted_activation(data_root: Path) -> None:
     journal = data_root / "activation-journal.json"
+    releases = data_root / "releases"
+    _remove_journal_temporary(data_root)
     if not journal.exists():
+        _remove_link_temporary(data_root, "current", releases)
+        _remove_link_temporary(data_root, "previous", releases)
         return
     try:
         raw = json.loads(journal.read_text(encoding="utf-8"))
@@ -250,15 +254,18 @@ def recover_interrupted_activation(data_root: Path) -> None:
         raise WorkflowError("browser provider activation journal is invalid") from error
     if not isinstance(raw, dict) or set(raw) != {"schema", "current", "previous"}:
         raise WorkflowError("browser provider activation journal is invalid")
-    releases = data_root / "releases"
+    targets = {
+        name: _journal_link_target(raw[name], releases)
+        for name in ("current", "previous")
+    }
+    for name in targets:
+        _remove_link_temporary(data_root, name, releases)
     for name in ("current", "previous"):
-        target = raw[name]
+        target = targets[name]
         if target is None:
             (data_root / name).unlink(missing_ok=True)
-        elif isinstance(target, str) and Path(target).parent == releases:
-            replace_link(data_root / name, Path(target))
         else:
-            raise WorkflowError("browser provider activation journal is invalid")
+            replace_link(data_root / name, target)
     journal.unlink()
 
 
@@ -287,6 +294,38 @@ def replace_link(link: Path, target: Path) -> None:
         raise WorkflowError(f"browser provider link temporary path exists: {temporary}")
     temporary.symlink_to(target)
     os.replace(temporary, link)
+
+
+def _remove_journal_temporary(data_root: Path) -> None:
+    temporary = data_root / ".activation-journal.new"
+    if not temporary.exists() and not temporary.is_symlink():
+        return
+    if temporary.is_symlink() or not temporary.is_file():
+        raise WorkflowError("browser provider journal temporary path is invalid")
+    temporary.unlink()
+
+
+def _remove_link_temporary(data_root: Path, name: str, releases: Path) -> None:
+    temporary = data_root / f".{name}.new"
+    if not temporary.exists() and not temporary.is_symlink():
+        return
+    if not temporary.is_symlink():
+        raise WorkflowError("browser provider link temporary path is invalid")
+    target = Path(os.readlink(temporary))
+    if not target.is_absolute() or target.parent != releases:
+        raise WorkflowError("browser provider link temporary path is unmanaged")
+    temporary.unlink()
+
+
+def _journal_link_target(value: object, releases: Path) -> Path | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise WorkflowError("browser provider activation journal is invalid")
+    target = Path(value)
+    if not target.is_absolute() or target.parent != releases:
+        raise WorkflowError("browser provider activation journal is invalid")
+    return target
 
 
 def _parse_files(value: object) -> dict[str, str]:

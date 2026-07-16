@@ -133,10 +133,23 @@ if (destination / "chrome-linux" / "chrome_sandbox").exists():
     raise SystemExit("setuid sandbox must not be packaged")
 PY
 test -x "$runtime/chrome-linux/chrome"
-stage="$build_root/builds/.$build_id.new"
 final="$build_root/builds/$build_id"
-rm -rf "$stage"
-mkdir "$stage"
+find "$build_root/builds" -mindepth 1 -maxdepth 1 -type d \
+  -name ".$build_id.*" -exec rm -rf -- {{}} +
+find "$build_root" -mindepth 1 -maxdepth 1 -type d \
+  -name ".links-$build_id.*" -exec rm -rf -- {{}} +
+rm -f "$build_root/.current.new" "$build_root/.previous.new"
+stage=$(mktemp -d "$build_root/builds/.$build_id.XXXXXX")
+link_stage=
+cleanup_build_transaction() {{
+  if [ -n "${{stage:-}}" ]; then
+    rm -rf -- "$stage" || true
+  fi
+  if [ -n "${{link_stage:-}}" ]; then
+    rm -rf -- "$link_stage" || true
+  fi
+}}
+trap cleanup_build_transaction EXIT
 mv "$runtime" "$stage/runtime"
 python3 - "$stage" "$build_id" "$project_commit" {shell_quote(lock.digest)} \\
   "$SOURCE_DATE_EPOCH" {shell_quote(lock.chromium.version)} \\
@@ -193,12 +206,17 @@ if [ -e "$final" ]; then
 else
   mv "$stage" "$final"
 fi
-if [ -L "$build_root/current" ]; then
-  ln -s "$(readlink "$build_root/current")" "$build_root/.previous.new"
-  mv -Tf "$build_root/.previous.new" "$build_root/previous"
+stage=
+link_stage=$(mktemp -d "$build_root/.links-$build_id.XXXXXX")
+target="$final/runtime"
+if [ ! -L "$build_root/current" ] || [ "$(readlink "$build_root/current")" != "$target" ]; then
+  if [ -L "$build_root/current" ]; then
+    ln -s "$(readlink "$build_root/current")" "$link_stage/previous"
+    mv -Tf "$link_stage/previous" "$build_root/previous"
+  fi
+  ln -s "$target" "$link_stage/current"
+  mv -Tf "$link_stage/current" "$build_root/current"
 fi
-ln -s "$final/runtime" "$build_root/.current.new"
-mv -Tf "$build_root/.current.new" "$build_root/current"
 test -x "$build_root/current/chrome-linux/chrome"
 """
 
@@ -223,10 +241,53 @@ build="$build_root/builds/$component_id"
 runtime="$build/runtime"
 manifest="$build/build-manifest.json"
 out="$build_root/out"
-release="$out/release-$release_id"
 archive="$out/$archive_name"
 digest="$archive.sha256"
 mkdir -p "$out"
+exec 9>"$build_root/.package.lock"
+flock -x 9
+verify_archive_pair() {{
+  local candidate_archive="$1" candidate_digest="$2" expected actual
+  test -f "$candidate_archive"
+  test -f "$candidate_digest"
+  expected=$(awk 'NR == 1 {{ print $1; exit }}' "$candidate_digest")
+  test "$expected" = "$(tr -d '\\n' < "$candidate_digest")"
+  test "${{#expected}}" -eq 64
+  case "$expected" in
+    *[!0123456789abcdef]*) return 1 ;;
+  esac
+  actual=$(sha256sum "$candidate_archive" | awk '{{print $1}}')
+  test "$actual" = "$expected"
+  zstd -q --test "$candidate_archive"
+}}
+recover_package_outputs() {{
+  local archive_exists=0 digest_exists=0
+  find "$out" -mindepth 1 -maxdepth 1 -type d \
+    -name ".package-$release_id.*" -exec rm -rf -- {{}} +
+  [ -e "$archive" ] && archive_exists=1
+  [ -e "$digest" ] && digest_exists=1
+  if [ "$archive_exists" -eq 1 ] && [ "$digest_exists" -eq 1 ]; then
+    if verify_archive_pair "$archive" "$digest"; then
+      exit 0
+    fi
+  fi
+  rm -f -- "$archive" "$digest"
+  find "$out" -mindepth 1 -maxdepth 1 -type d \
+    -name ".package-$release_id.*" -exec rm -rf -- {{}} +
+}}
+recover_package_outputs
+transaction=$(mktemp -d "$out/.package-$release_id.XXXXXX")
+release="$transaction/release-$release_id"
+archive_temporary="$transaction/$archive_name"
+digest_temporary="$archive_temporary.sha256"
+published=0
+cleanup_package_transaction() {{
+  if [ "$published" -ne 1 ]; then
+    rm -f -- "$archive" "$digest"
+  fi
+  rm -rf -- "$transaction" || true
+}}
+trap cleanup_package_transaction EXIT
 test -f "$manifest"
 python3 - "$manifest" "$runtime" "$component_id" "$project_commit" {shell_quote(lock.digest)} \\
   {shell_quote(lock.chromium.version)} {shell_quote(lock.depot_tools.version)} \\
@@ -278,7 +339,6 @@ if raw.get("files") != dict(sorted(files.items())) or raw.get("directories") != 
 if not files or any(not name.startswith("chrome-linux/") for name in files):
     raise SystemExit("provider runtime contains non-browser content")
 PY
-rm -rf "$release"
 mkdir "$release"
 cp -a "$runtime/." "$release/"
 python3 - "$release" "$release_id" "$component_id" "$project_commit" {shell_quote(lock.digest)} \\
@@ -330,10 +390,6 @@ with (root / "SHA256SUMS").open("wb") as stream:
         digest = hashlib.sha256((root / relative).read_bytes()).hexdigest()
         stream.write(digest.encode("ascii") + b"  " + relative.encode("utf-8") + b"\\0")
 PY
-if [ -e "$archive" ] || [ -e "$digest" ]; then
-  printf '%s\\n' 'refusing to overwrite existing provider archive output' >&2
-  exit 73
-fi
 SOURCE_DATE_EPOCH=$(python3 - "$manifest" <<'PY'
 import json
 import pathlib
@@ -348,6 +404,11 @@ print(epoch)
 PY
 )
 tar --sort=name --mtime="@$SOURCE_DATE_EPOCH" --owner=0 --group=0 --numeric-owner \\
-  -C "$out" -cf - "release-$release_id" | zstd -q -T0 -o "$archive"
-printf '%s\\n' "$(sha256sum "$archive" | awk '{{print $1}}')" > "$digest"
+  -C "$transaction" -cf - "release-$release_id" | zstd -q -T0 -o "$archive_temporary"
+printf '%s\\n' "$(sha256sum "$archive_temporary" | awk '{{print $1}}')" > "$digest_temporary"
+verify_archive_pair "$archive_temporary" "$digest_temporary"
+mv -f "$archive_temporary" "$archive"
+mv -f "$digest_temporary" "$digest"
+verify_archive_pair "$archive" "$digest"
+published=1
 """

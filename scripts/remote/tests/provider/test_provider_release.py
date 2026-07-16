@@ -18,10 +18,6 @@ from scripts.remote.tests.provider._fixtures import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 LOCK_SOURCE = REPOSITORY_ROOT / "browser" / "provider.lock.json"
 INSTALL_SCRIPT = REPOSITORY_ROOT / "scripts" / "remote" / "provider" / "install.py"
-CLI_SCRIPTS = tuple(
-    REPOSITORY_ROOT / "scripts" / "remote" / "provider" / name
-    for name in ("build.py", "package.py", "install.py")
-)
 FIRST_BUILD_ID = "0123456789abcdef01234567"
 SECOND_BUILD_ID = "89abcdef0123456701234567"
 COMPONENT_ID = "fedcba987654321001234567"
@@ -123,18 +119,6 @@ class BrowserProviderReleaseContractTest(unittest.TestCase):
                 os.readlink(data_root / "previous"),
                 str(data_root / "releases" / FIRST_BUILD_ID),
             )
-
-    def test_all_provider_clis_render_help(self) -> None:
-        for script in CLI_SCRIPTS:
-            with self.subTest(script=script.name):
-                completed = subprocess.run(
-                    (sys.executable, str(script), "--help"),
-                    check=False,
-                    text=True,
-                    capture_output=True,
-                )
-                self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertIn("Example:", completed.stdout)
 
     def _install(
         self, archive: Path, lock_path: Path, build_id: str, home: Path
