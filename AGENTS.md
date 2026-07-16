@@ -26,11 +26,11 @@
 - **用户正常浏览器安装**：用户日常浏览器使用 ScriptCat 的默认 VSCode sync 端口 `8642`。需要把当前仓库脚本推送到用户正常浏览器时，使用 `pnpm install:scriptcat -- <script.user.js>`；不传脚本时默认安装 `greenmangaming-bundle-claim.user.js`。该安装路径用于用户浏览器，不替代专用 MCP 的可复现调试验收。
 - **故障处理**：`PROFILE_BUSY`、`BROWSER_UNSUPPORTED`、`EXTENSION_NOT_READY`、`INVALID_USERSCRIPT`、`SCRIPT_NOT_FOUND`、`MANAGED_EXTENSION_PROTECTED` 与 `TIMEOUT` 是 MCP 的可处理状态。遇到 `MANAGED_EXTENSION_PROTECTED` 时保留 managed extension，不重试被拒绝的通用变更；需要恢复授权时，对固定扩展调用 `set_extension_user_scripts_access` 并传入 `enabled=true`，再运行 `scriptcat_status`。provider 不可用时修复 provider 制品；扩展缺失、版本不符或 worker 未就绪时修复 MCP 制品，然后重新启动 MCP；不得改用普通 `chrome-devtools` MCP 作为 ScriptCat 验收替代。
 
-## 浏览器 provider 与 MCP 的远程发布
+## 浏览器 provider 与 MCP 的发布
 
-- **执行主机与入口**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，制品由 remote wrapper 拉回本机激活。主机经本地 WireGuard `wg0` 访问；连接可用后通过 `scripts/remote/provider/` 或 `scripts/remote/mcp/` 执行对应产品的 build、package 和 install。不得手写 SSH、SCP、rsync、远端 checkout/reset 或 Chromium 构建命令。远端使用自身透明代理，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
-- **本地门禁**：远程 build 前，本地 `main` 必须干净；build 命令推送提交后的 `HEAD` 到 `origin/main`，并在返回后确认本地 `HEAD` 未变化。`gclient`、`gn`、`autoninja`、`ninja` 与其他 Chromium 构建命令不得在本机或裸 SSH 中执行；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
-- **provider 三阶段**：provider 使用 `browser/provider.lock.json`，依次执行 `scripts/remote/provider/build.py`、`scripts/remote/provider/package.py --build-id <component-build-id>`、`scripts/remote/provider/install.py <archive> --lock browser/provider.lock.json --build-id <release-build-id> --archive-sha256 <digest>`。build 编译 Chromium 并运行协议测试；package 只校验该 provider build 并生成归档；install 只校验归档、lock 与 manifest 后原子激活到 `~/.local/share/scriptcat-browser/releases/<release-build-id>`，维护 `current`/`previous`。
+- **provider 运行时来源**：完整 Chromium 的源码 checkout、补丁应用、编译和协议测试属于仓库外的 producer。`scripts/remote/provider/` 不包含 Chromium 源码 checkout，也不执行 `gclient`、`gn`、`ninja` 或 `autoninja`；它导入 producer 提供的预构建 runtime 候选，按 `browser/provider-contract.json` 的可执行文件与能力要求校验，并以内容地址创建可发布组件。
+- **构建门禁**：本机与裸 SSH 均不得执行 `gclient`、`gn`、`autoninja`、`ninja` 或其他 Chromium 构建命令；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
+- **provider 三阶段**：依次执行 `scripts/remote/provider/import_runtime.py --candidate <runtime-candidate> --contract browser/provider-contract.json`、`scripts/remote/provider/package.py --component-id <component-id> --contract browser/provider-contract.json --output <archive>`、`scripts/remote/provider/install.py <archive> --contract browser/provider-contract.json --build-id <release-id> --archive-sha256 <digest>`。import 仅接受满足 contract 的候选并输出组件 ID；package 仅校验已导入组件并生成归档；install 校验归档和 contract 后原子激活到 `~/.local/share/scriptcat-browser/releases/<release-id>`，维护 `current`/`previous`。
 - **MCP 三阶段**：MCP 使用 `browser/mcp.lock.json`，依次执行 `scripts/remote/mcp/build.py`、`scripts/remote/mcp/package.py --build-id <component-build-id>`、`scripts/remote/mcp/install.py <archive> --lock browser/mcp.lock.json --build-id <release-build-id> --archive-sha256 <digest>`。MCP build、lock、manifest、build 目录和归档均不读取、执行或包含 browser/provider 身份；浏览器集成只在两个产品独立安装后验收。install 原子激活到 `~/.local/share/scriptcat-mcp/releases/<release-build-id>`，维护 `current`/`previous` 并部署 managed ScriptCat，同时保持既有 profile 数据。
 - **阶段边界**：每个 build、package、install 命令只完成所属阶段；package 不推送、同步、编译、测试或激活，install 不读取 Git、不访问远端或网络。归档 SHA-256 与来源校验属于各自产品的供应链完整性，MCP 运行时不以它们作为浏览器启动门禁。
 - **迁移入口**：顶层 `scripts/remote/doctor.py`、`build.py`、`package.py`、`install.py` 与 `build_install.py` 只返回迁移错误；调用方选择 provider 或 MCP 后执行该产品的显式三阶段命令。
@@ -73,10 +73,10 @@
 | `.upstream/scriptcat` | ScriptCat 扩展上游源码，用于核对安装、注入、service worker 与运行时行为 |
 | `.upstream/scriptcat-vscode` | ScriptCat VSCode 插件上游源码，用于核对 VSCode sync 协议 |
 | `scripts/build-userscripts.mjs` | 将 `src/userscripts/*.user.js` bundle 到仓库根同名文件 |
-| `scripts/remote/provider/` | browser provider 的 build、package、install 三阶段入口 |
+| `scripts/remote/provider/` | browser provider 的 import、package、install 三阶段入口 |
 | `scripts/remote/mcp/` | ScriptCat MCP 的 build、package、install 三阶段入口 |
 | `scripts/remote/{doctor,build,package,install,build_install}.py` | 只返回迁移错误的旧顶层 CLI |
-| `browser/provider.lock.json` | browser provider 的供应链 lock |
+| `browser/provider-contract.json` | browser provider runtime 的可执行文件与能力契约 |
 | `browser/mcp.lock.json` | ScriptCat MCP 的供应链 lock |
 | `.codex/config.toml` | 配置外部 browser provider、派生 `chrome-devtools-scriptcat` MCP 与本地 Chromium 构建门禁 |
 | `scripts/userscripts/install-to-scriptcat.mjs` | 推送本地 userscript 到用户正常浏览器 ScriptCat |
@@ -124,12 +124,12 @@ pnpm build                               # 仅 build
 pnpm run lint:userscripts -- foo.user.js
 pnpm install:scriptcat -- steampy-token-sync.user.js
 
-# browser provider 远程发布：fish 中显式按阶段执行
-set provider_component_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/build.py)
+# browser provider 发布：fish 中显式按阶段执行
+set provider_component_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/import_runtime.py --candidate /root/scriptcat-browser-incoming/<name> --contract browser/provider-contract.json)
 set provider_archive /tmp/scriptcat-browser-portable.tar.zst
-set provider_release_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/package.py --build-id $provider_component_build_id --output $provider_archive)
+set provider_release_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/package.py --component-id $provider_component_build_id --contract browser/provider-contract.json --output $provider_archive)
 set provider_archive_sha256 (string trim < "$provider_archive.sha256")
-uv run --project scripts --python 3.12 python scripts/remote/provider/install.py $provider_archive --lock browser/provider.lock.json --build-id $provider_release_build_id --archive-sha256 $provider_archive_sha256
+uv run --project scripts --python 3.12 python scripts/remote/provider/install.py $provider_archive --contract browser/provider-contract.json --build-id $provider_release_build_id --archive-sha256 $provider_archive_sha256
 
 # ScriptCat MCP 远程发布：fish 中显式按阶段执行
 set mcp_component_build_id (uv run --project scripts --python 3.12 python scripts/remote/mcp/build.py)

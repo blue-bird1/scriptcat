@@ -1,5 +1,5 @@
 #!/usr/bin/env -S uv run python
-"""Codex PreToolUse guard for Chromium builds outside the remote wrapper."""
+"""Codex PreToolUse guard for Chromium builds outside an external producer."""
 
 from __future__ import annotations
 
@@ -296,8 +296,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     commands = tuple(parse_payload(tuple(argv if argv is not None else sys.argv[1:])))
     if any(is_blocked(command) for command in commands):
         print(
-            "Blocked Chromium build command. Use "
-            "scripts/remote/provider/build.py; local builds and bare-SSH builds "
+            "Blocked Chromium build command. Import a prebuilt runtime through "
+            "scripts/remote/provider/import_runtime.py; local and bare-SSH builds "
             "are forbidden.",
             file=sys.stderr,
         )

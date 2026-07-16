@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "contract_version": "scriptcat-browser-provider-v1",
+  "executable": "chrome-linux/chrome",
+  "required_capabilities": [
+    "extensions.load-unpacked.expected-id",
+    "extensions.load-unpacked.user-scripts-access",
+    "extensions.persistent-unpacked",
+    "extensions.set-user-scripts-access"
+  ]
+}

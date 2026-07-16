@@ -28,4 +28,4 @@ matcher = "Bash"
 type = "command"
 command = "uv run --project scripts --python 3.12 python scripts/hooks/block-local-chromium-build-commands.py"
 timeout = 10
-statusMessage = "Guarding Chromium remote-build policy"
+statusMessage = "Guarding Chromium producer policy"
