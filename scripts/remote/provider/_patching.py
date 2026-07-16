@@ -9,7 +9,7 @@ def chromium_patch_preparation_script(lock: ProviderLock) -> tuple[str, str]:
     command = (
         'activate_chromium_patch "$build_root/src/src" '
         f"{shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)} "
-        f"'\"$checkout\"/'{shell_quote(lock.chromium_patch.path.as_posix())} "
+        f'"$checkout"/{shell_quote(lock.chromium_patch.path.as_posix())} '
         f"{shell_quote(lock.chromium_patch.sha256)}"
     )
     helpers = r"""ensure_source_checkout() {

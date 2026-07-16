@@ -41,10 +41,11 @@ def parser() -> argparse.ArgumentParser:
             "The operation is offline, preserves the fixed profile, deploys the "
             "physical managed ScriptCat extension transactionally, and does not "
             "access another product.\n\nExample:\n"
+            "  set archive_sha256 (string trim < /tmp/mcp.tar.zst.sha256)\n"
             "  uv run --project scripts --python 3.12 python "
             "scripts/remote/mcp/install.py /tmp/mcp.tar.zst "
             "--lock browser/mcp.lock.json --build-id 0123456789abcdef01234567 "
-            "--archive-sha256 <sha256>"
+            "--archive-sha256 $archive_sha256"
         ),
     )
     result.add_argument("archive", type=Path, help="local .tar.zst MCP archive")

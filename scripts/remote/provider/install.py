@@ -29,10 +29,11 @@ def parser() -> argparse.ArgumentParser:
             "Activates only under ~/.local/share/scriptcat-browser. This command does "
             "not access Git, the remote host, ScriptCat, MCP, profiles, or extensions."
             "\n\nExample:\n"
+            "  set archive_sha256 (string trim < /tmp/provider.tar.zst.sha256)\n"
             "  uv run --project scripts --python 3.12 python "
             "scripts/remote/provider/install.py /tmp/provider.tar.zst "
             "--lock browser/provider.lock.json --build-id 0123456789abcdef01234567 "
-            "--archive-sha256 <sha256>"
+            "--archive-sha256 $archive_sha256"
         ),
     )
     result.add_argument("archive", type=Path, help="local .tar.zst provider archive")
