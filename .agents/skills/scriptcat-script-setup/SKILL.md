@@ -7,6 +7,10 @@ description: Prepare ScriptCat in the dedicated portable Chromium MCP browser an
 
 Use this skill before browser-debugging this repository's userscripts. The test browser is the dedicated portable Chromium MCP browser, not the user's normal profile.
 
+## Browser Provider
+
+The custom Chromium provider owns browser patches, protocol tests, and the continuing availability of its browser interface. The MCP consumes that interface directly, so the browser may update independently while the provider continues to satisfy the protocol. Runtime MCP readiness does not negotiate the protocol or validate the browser's hash, commit, version, release root, or path; archive SHA-256 and provenance checks belong to the build, package, and install supply chain.
+
 ## Extension Readiness
 
 Use the managed ScriptCat tools through `mcp__chrome_devtools_scriptcat__`. The fixed ScriptCat extension ID is `ckchkcgpbkhleahkgkbiiikpcjdbopje`.
