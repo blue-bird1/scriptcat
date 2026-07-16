@@ -65,16 +65,25 @@ run_browser_test_in_sandbox() {
     LANG=en_US.UTF-8 \
     HOME=/root \
     TMPDIR=/tmp \
+    SANDBOX_SOURCE_BUILD_ROOT="$build_root" \
+    SANDBOX_TEST_ROOT="$test_root" \
+    SANDBOX_TEST_UID="$test_uid" \
+    SANDBOX_TEST_GID="$test_gid" \
+    SANDBOX_WORKDIR_KIND="$workdir_kind" \
+    SANDBOX_RELATIVE_WORKDIR="$relative_workdir" \
+    SANDBOX_MCP_WORKDIR="${mcp:-}" \
+    SANDBOX_TEST_PATH="$test_path" \
+    SANDBOX_TEST_COMMAND="$test_command" \
     setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
-    build_root=$1
-    test_root=$2
-    test_uid=$3
-    test_gid=$4
-    workdir_kind=$5
-    relative_workdir=$6
-    mcp_workdir=$7
-    test_path=$8
-    test_command=$9
+    build_root=${SANDBOX_SOURCE_BUILD_ROOT:?}
+    test_root=${SANDBOX_TEST_ROOT:?}
+    test_uid=${SANDBOX_TEST_UID:?}
+    test_gid=${SANDBOX_TEST_GID:?}
+    workdir_kind=${SANDBOX_WORKDIR_KIND:?}
+    relative_workdir=${SANDBOX_RELATIVE_WORKDIR-}
+    mcp_workdir=${SANDBOX_MCP_WORKDIR-}
+    test_path=${SANDBOX_TEST_PATH:?}
+    test_command=${SANDBOX_TEST_COMMAND:?}
     mount --bind "$build_root" "$test_root/build"
     case "$workdir_kind" in
       build)
@@ -109,9 +118,7 @@ run_browser_test_in_sandbox() {
         BROWSER_BINARY="$test_root/build/src/src/out/Release/chrome" \
         BROWSER_TESTS_BINARY="$test_root/build/src/src/out/Release/browser_tests" \
         bash -Eeuo pipefail -c "$test_command"
-  ' "$test_name" "$build_root" "$test_root" "$test_uid" "$test_gid" \
-    "$workdir_kind" "$relative_workdir" "${mcp:-}" "$test_path" \
-    "$test_command" 9>&- &
+  ' "$test_name" 9>&- &
   test_session_pid=$!
   test_session_pgid=$test_session_pid
   if wait "$test_session_pid"; then

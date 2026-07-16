@@ -390,6 +390,88 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             )
             self.assertFalse(Path(sandbox_browser_tests).exists())
 
+    def test_sandbox_mounts_build_and_mcp_workdirs_from_environment(self) -> None:
+        sandbox_launcher = self._render_sandbox_launcher()
+        self._require_sandbox_primitives()
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            build_root = temporary / "build"
+            chromium_directory = build_root / "src/src"
+            chrome = chromium_directory / "out/Release/chrome"
+            browser_tests = chromium_directory / "out/Release/browser_tests"
+            mcp_directory = temporary / "checkout/browser/chrome-devtools-mcp"
+            command_directory = temporary / "commands"
+            result_directory = temporary / "result"
+            build_result = result_directory / "build.txt"
+            mcp_result = result_directory / "mcp.txt"
+            for directory in (chromium_directory, mcp_directory, command_directory):
+                directory.mkdir(parents=True, exist_ok=True)
+            result_directory.mkdir()
+            result_directory.chmod(0o777)
+            self._write_executable(chrome, "#!/usr/bin/env bash\nexit 0\n")
+            self._write_executable(browser_tests, "#!/usr/bin/env bash\nexit 0\n")
+            self._write_executable(
+                command_directory / "probe-sandbox",
+                "\n".join(
+                    (
+                        "#!/usr/bin/env bash",
+                        "set -Eeuo pipefail",
+                        'test "$(id -u)" -ne 0',
+                        'test -x "${BROWSER_BINARY:?}"',
+                        'test -x "${BROWSER_TESTS_BINARY:?}"',
+                        'printf \'%s\\n%s\\n%s\\n\' "$PWD" "$BROWSER_BINARY" '
+                        '"$BROWSER_TESTS_BINARY" > "${RESULT_PATH:?}"',
+                    )
+                )
+                + "\n",
+            )
+            test_path = f"{command_directory}:{os.environ['PATH']}"
+            build_command = (
+                f"RESULT_PATH={shlex.quote(str(build_result))} probe-sandbox"
+            )
+            mcp_command = f"RESULT_PATH={shlex.quote(str(mcp_result))} probe-sandbox"
+            harness = "\n".join(
+                (
+                    "#!/usr/bin/env bash",
+                    "set -Eeuo pipefail",
+                    f"build_root={shlex.quote(str(build_root))}",
+                    f"mcp={shlex.quote(str(mcp_directory))}",
+                    "test_root=",
+                    "test_session_pid=",
+                    "test_session_pgid=",
+                    sandbox_launcher,
+                    "run_browser_test_in_sandbox chromium-workdir "
+                    f"{shlex.quote(str(chromium_directory))} "
+                    f"{shlex.quote(test_path)} {shlex.quote(build_command)}",
+                    "run_browser_test_in_sandbox mcp-workdir "
+                    f"{shlex.quote(str(mcp_directory))} "
+                    f"{shlex.quote(test_path)} {shlex.quote(mcp_command)}",
+                    "",
+                )
+            )
+
+            subprocess.run(
+                ("bash", "-c", harness),
+                check=True,
+                cwd=temporary,
+                text=True,
+                capture_output=True,
+            )
+
+            build_paths = [
+                Path(path)
+                for path in build_result.read_text(encoding="utf-8").splitlines()
+            ]
+            mcp_paths = [
+                Path(path)
+                for path in mcp_result.read_text(encoding="utf-8").splitlines()
+            ]
+            self.assertEqual(build_paths[0].name, chromium_directory.name)
+            self.assertEqual(mcp_paths[0].name, mcp_directory.name)
+            for path in (*build_paths, *mcp_paths):
+                self.assertFalse(path.exists())
+
     def test_sandbox_cleans_descendant_after_session_leader_exits(self) -> None:
         sandbox_launcher = self._render_sandbox_launcher()
 
