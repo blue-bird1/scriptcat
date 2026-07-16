@@ -1,0 +1,875 @@
+From bd0cd6f43af3ba95d3259c29a01d5a0dca3e1e9b Mon Sep 17 00:00:00 2001
+From: bluebird <linlanxi7552659@gmail.com>
+Date: Thu, 16 Jul 2026 21:57:29 +0800
+Subject: [PATCH 3/3] DevTools: make loadUnpacked userScripts access atomic
+
+Add optional expectedId and userScriptsAccess parameters to Extensions.loadUnpacked. Validate the final Chromium extension ID after manifest and policy checks, seed the persistent preference and current state before activation, and roll both back together with any newly installed registry entry unless installation completes enabled.
+
+Cover keyed and path-derived IDs, omitted and explicit access states, first-worker availability, restart persistence, permission and security gates, injected rollback, and the existing live setter.
+
+Base-Revision: 7c855c70efe3f6ade6663c1520913fa7f63a0b2b
+---
+ .../devtools_extensions_browsertest.cc        | 228 ++++++++++++++++-
+ .../devtools/protocol/extensions_handler.cc   | 237 +++++++++++++++++-
+ .../devtools/protocol/extensions_handler.h    |  18 +-
+ .../user_scripts_false/manifest.json          |   6 +
+ .../user_scripts_omit/manifest.json           |   6 +
+ .../user_scripts_rollback/manifest.json       |   6 +
+ .../user_scripts_true/manifest.json           |   9 +
+ .../user_scripts_true/service_worker.js       |  14 ++
+ .../user_scripts_with_key/manifest.json       |   7 +
+ .../without_user_scripts/manifest.json        |   5 +
+ extensions/browser/unpacked_installer.cc      |   8 +
+ extensions/browser/unpacked_installer.h       |   8 +
+ .../common/user_scripts_allowed_state.cc      |  15 ++
+ .../common/user_scripts_allowed_state.h       |   5 +
+ .../devtools_protocol/domains/Extensions.pdl  |   7 +
+ 15 files changed, 560 insertions(+), 19 deletions(-)
+ create mode 100644 chrome/test/data/devtools/extensions/user_scripts_false/manifest.json
+ create mode 100644 chrome/test/data/devtools/extensions/user_scripts_omit/manifest.json
+ create mode 100644 chrome/test/data/devtools/extensions/user_scripts_rollback/manifest.json
+ create mode 100644 chrome/test/data/devtools/extensions/user_scripts_true/manifest.json
+ create mode 100644 chrome/test/data/devtools/extensions/user_scripts_true/service_worker.js
+ create mode 100644 chrome/test/data/devtools/extensions/user_scripts_with_key/manifest.json
+ create mode 100644 chrome/test/data/devtools/extensions/without_user_scripts/manifest.json
+
+diff --git a/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc b/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc
+index e144417..54c91ef 100644
+--- a/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc
++++ b/chrome/browser/devtools/protocol/devtools_extensions_browsertest.cc
+@@ -8,6 +8,7 @@
+ #include "base/test/values_test_util.h"
+ #include "base/values.h"
+ #include "chrome/browser/devtools/protocol/devtools_protocol_test_support.h"
++#include "chrome/browser/devtools/protocol/extensions_handler.h"
+ #include "chrome/browser/extensions/browser_window_util.h"
+ #include "chrome/browser/extensions/chrome_test_extension_loader.h"
+ #include "chrome/browser/extensions/scoped_test_mv2_enabler.h"
+@@ -24,27 +25,36 @@
+ #include "chrome/common/chrome_paths.h"
+ #include "chrome/common/chrome_switches.h"
+ #include "chrome/test/base/ui_test_utils.h"
++#include "components/crx_file/id_util.h"
+ #include "components/search_engines/template_url_starter_pack_data.h"
+ #include "content/public/browser/browser_context.h"
+ #include "content/public/browser/devtools_agent_host.h"
+ #include "content/public/test/browser_test.h"
+ #include "extensions/browser/disable_reason.h"
++#include "extensions/browser/extension_prefs.h"
+ #include "extensions/browser/extension_registrar.h"
+ #include "extensions/browser/extension_registry.h"
+ #include "extensions/browser/extension_system.h"
+-#include "extensions/browser/user_script_manager.h"
+ #include "extensions/browser/extension_util.h"
++#include "extensions/browser/user_script_manager.h"
+ #include "extensions/common/extension.h"
+ #include "extensions/common/extension_builder.h"
+ #include "extensions/common/extension_features.h"
+ #include "extensions/common/extension_id.h"
+ #include "extensions/common/extension_set.h"
+ #include "extensions/common/mojom/manifest.mojom-shared.h"
++#include "extensions/common/user_scripts_allowed_state.h"
+ #include "extensions/test/extension_background_page_waiter.h"
+ #include "extensions/test/extension_test_message_listener.h"
+ #include "extensions/test/result_catcher.h"
++
+ namespace {
+ 
++constexpr char kKeyedUserScriptsExtensionId[] =
++    "pfiicpajholbcingdhcfpenjdkhoemfl";
++constexpr char kWorkerTopLevelAllowedMessage[] = "TOP_LEVEL_ALLOWED";
++constexpr char kWorkerOnInstalledAllowedMessage[] = "ON_INSTALLED_ALLOWED";
++
+ class DevToolsExtensionsProtocolTest : public DevToolsProtocolTestBase {
+  public:
+   void SetUpOnMainThread() override {
+@@ -59,20 +69,51 @@ class DevToolsExtensionsProtocolTest : public DevToolsProtocolTestBase {
+ 
+   const base::DictValue* SendLoadUnpackedCommand(
+       const std::string& path,
+-      bool enable_in_incognito = false) {
+-    base::FilePath extension_path =
+-        base::PathService::CheckedGet(chrome::DIR_TEST_DATA)
+-            .AppendASCII("devtools")
+-            .AppendASCII("extensions")
+-            .AppendASCII(path);
++      bool enable_in_incognito = false,
++      std::optional<std::string> expected_id = std::nullopt,
++      std::optional<bool> user_scripts_access = std::nullopt) {
++    base::FilePath extension_path = GetTestExtensionPath(path);
+ 
+     base::DictValue params;
+     params.Set("path", extension_path.AsUTF8Unsafe());
+     params.Set("enableInIncognito", enable_in_incognito);
++    if (expected_id.has_value()) {
++      params.Set("expectedId", *expected_id);
++    }
++    if (user_scripts_access.has_value()) {
++      params.Set("userScriptsAccess", *user_scripts_access);
++    }
+ 
+     return SendCommandSync("Extensions.loadUnpacked", std::move(params));
+   }
+ 
++  base::FilePath GetTestExtensionPath(const std::string& path) {
++    return base::PathService::CheckedGet(chrome::DIR_TEST_DATA)
++        .AppendASCII("devtools")
++        .AppendASCII("extensions")
++        .AppendASCII(path);
++  }
++
++  std::string GetPathDerivedExtensionId(const std::string& path) {
++    return crx_file::id_util::GenerateIdForPath(GetTestExtensionPath(path));
++  }
++
++  std::optional<bool> ReadUserScriptsPref(const std::string& id) {
++    bool value = false;
++    if (!extensions::ExtensionPrefs::Get(browser()->profile())
++             ->ReadPrefAsBoolean(
++                 id, extensions::UserScriptManager::kUserScriptsAllowedPref,
++                 &value)) {
++      return std::nullopt;
++    }
++    return value;
++  }
++
++  std::optional<bool> ReadCurrentUserScriptsState(const std::string& id) {
++    return extensions::GetCurrentUserScriptAllowedState(
++        extensions::util::GetBrowserContextId(browser()->profile()), id);
++  }
++
+   extensions::UserScriptManager* GetUserScriptManager() {
+     return extensions::ExtensionSystem::Get(browser()->profile())
+         ->user_script_manager();
+@@ -259,8 +300,179 @@ IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
+       extension->id()));
+ }
+ 
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       LoadUnpackedUserScriptsAccessOptions) {
++  const std::string omit_id = GetPathDerivedExtensionId("user_scripts_omit");
++  const base::DictValue* omit_result = SendLoadUnpackedCommand(
++      "user_scripts_omit", /*enable_in_incognito=*/false, omit_id);
++  ASSERT_TRUE(omit_result);
++  EXPECT_EQ(omit_id, *omit_result->FindString("id"));
++  EXPECT_EQ(std::nullopt, ReadUserScriptsPref(omit_id));
++  EXPECT_EQ(std::optional<bool>(false), ReadCurrentUserScriptsState(omit_id));
++
++  const std::string false_id =
++      GetPathDerivedExtensionId("user_scripts_false");
++  const base::DictValue* false_result = SendLoadUnpackedCommand(
++      "user_scripts_false", /*enable_in_incognito=*/false, false_id,
++      /*user_scripts_access=*/false);
++  ASSERT_TRUE(false_result);
++  EXPECT_EQ(false_id, *false_result->FindString("id"));
++  EXPECT_EQ(std::optional<bool>(false), ReadUserScriptsPref(false_id));
++  EXPECT_EQ(std::optional<bool>(false),
++            ReadCurrentUserScriptsState(false_id));
++
++  const std::string true_id = GetPathDerivedExtensionId("user_scripts_true");
++  const base::DictValue* true_result = SendLoadUnpackedCommand(
++      "user_scripts_true", /*enable_in_incognito=*/false, true_id,
++      /*user_scripts_access=*/true);
++  ASSERT_TRUE(true_result);
++  EXPECT_EQ(true_id, *true_result->FindString("id"));
++  EXPECT_EQ(std::optional<bool>(true), ReadUserScriptsPref(true_id));
++  EXPECT_EQ(std::optional<bool>(true), ReadCurrentUserScriptsState(true_id));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       LoadUnpackedUsesManifestKeyForExpectedId) {
++  const base::DictValue* result = SendLoadUnpackedCommand(
++      "user_scripts_with_key", /*enable_in_incognito=*/false,
++      kKeyedUserScriptsExtensionId, /*user_scripts_access=*/true);
++  ASSERT_TRUE(result);
++  EXPECT_EQ(kKeyedUserScriptsExtensionId, *result->FindString("id"));
++  EXPECT_EQ(std::optional<bool>(true),
++            ReadUserScriptsPref(kKeyedUserScriptsExtensionId));
++  EXPECT_EQ(std::optional<bool>(true),
++            ReadCurrentUserScriptsState(kKeyedUserScriptsExtensionId));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       LoadUnpackedRejectsExpectedIdMismatchAtomically) {
++  const std::string actual_id =
++      GetPathDerivedExtensionId("user_scripts_omit");
++  const std::string mismatched_id(actual_id.size(), 'a');
++  ASSERT_FALSE(SendLoadUnpackedCommand(
++      "user_scripts_omit", /*enable_in_incognito=*/false, mismatched_id,
++      /*user_scripts_access=*/true));
++
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(browser()->profile());
++  EXPECT_FALSE(registry->GetInstalledExtension(actual_id));
++  EXPECT_EQ(std::nullopt, ReadUserScriptsPref(actual_id));
++  EXPECT_EQ(std::nullopt, ReadCurrentUserScriptsState(actual_id));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       LoadUnpackedRequiresUserScriptsPermission) {
++  const std::string id = GetPathDerivedExtensionId("without_user_scripts");
++  ASSERT_FALSE(SendLoadUnpackedCommand(
++      "without_user_scripts", /*enable_in_incognito=*/false, id,
++      /*user_scripts_access=*/true));
++
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(browser()->profile());
++  EXPECT_FALSE(registry->GetInstalledExtension(id));
++  EXPECT_EQ(std::nullopt, ReadUserScriptsPref(id));
++  EXPECT_EQ(std::nullopt, ReadCurrentUserScriptsState(id));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       UserScriptsAccessIsAvailableToFirstWorker) {
++  ExtensionTestMessageListener top_level_listener(
++      kWorkerTopLevelAllowedMessage);
++  ExtensionTestMessageListener on_installed_listener(
++      kWorkerOnInstalledAllowedMessage);
++  const std::string id = GetPathDerivedExtensionId("user_scripts_true");
++
++  ASSERT_TRUE(SendLoadUnpackedCommand(
++      "user_scripts_true", /*enable_in_incognito=*/false, id,
++      /*user_scripts_access=*/true));
++  EXPECT_TRUE(top_level_listener.WaitUntilSatisfied());
++  EXPECT_TRUE(on_installed_listener.WaitUntilSatisfied());
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       PRE_LoadUnpackedUserScriptsAccessPersists) {
++  ASSERT_TRUE(SendLoadUnpackedCommand(
++      "user_scripts_with_key", /*enable_in_incognito=*/false,
++      kKeyedUserScriptsExtensionId, /*user_scripts_access=*/true));
++  EXPECT_EQ(std::optional<bool>(true),
++            ReadUserScriptsPref(kKeyedUserScriptsExtensionId));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       LoadUnpackedUserScriptsAccessPersists) {
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(browser()->profile());
++  EXPECT_TRUE(
++      registry->enabled_extensions().Contains(kKeyedUserScriptsExtensionId));
++  EXPECT_EQ(std::optional<bool>(true),
++            ReadUserScriptsPref(kKeyedUserScriptsExtensionId));
++  EXPECT_EQ(std::optional<bool>(true),
++            ReadCurrentUserScriptsState(kKeyedUserScriptsExtensionId));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       LoadUnpackedFailureRemovesNewExtensionAndState) {
++  const std::string id =
++      GetPathDerivedExtensionId("user_scripts_rollback");
++  ExtensionsHandler::SetFailLoadUnpackedBeforeCommitForTesting(true);
++  ASSERT_FALSE(SendLoadUnpackedCommand(
++      "user_scripts_rollback", /*enable_in_incognito=*/false, id,
++      /*user_scripts_access=*/true));
++
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(browser()->profile());
++  EXPECT_FALSE(registry->GetInstalledExtension(id));
++  EXPECT_EQ(std::nullopt, ReadUserScriptsPref(id));
++  EXPECT_EQ(std::nullopt, ReadCurrentUserScriptsState(id));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       LoadUnpackedFailureRestoresExistingState) {
++  const std::string id =
++      GetPathDerivedExtensionId("user_scripts_rollback");
++  ASSERT_TRUE(SendLoadUnpackedCommand(
++      "user_scripts_rollback", /*enable_in_incognito=*/false, id,
++      /*user_scripts_access=*/false));
++  ASSERT_EQ(std::optional<bool>(false), ReadUserScriptsPref(id));
++  ASSERT_EQ(std::optional<bool>(false), ReadCurrentUserScriptsState(id));
++
++  ExtensionsHandler::SetFailLoadUnpackedBeforeCommitForTesting(true);
++  ASSERT_FALSE(SendLoadUnpackedCommand(
++      "user_scripts_rollback", /*enable_in_incognito=*/false, id,
++      /*user_scripts_access=*/true));
++
++  extensions::ExtensionRegistry* registry =
++      extensions::ExtensionRegistry::Get(browser()->profile());
++  EXPECT_TRUE(registry->enabled_extensions().Contains(id));
++  EXPECT_EQ(std::optional<bool>(false), ReadUserScriptsPref(id));
++  EXPECT_EQ(std::optional<bool>(false), ReadCurrentUserScriptsState(id));
++}
++
+ IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest, CannotInstallExtension) {
+-  ASSERT_FALSE(SendLoadUnpackedCommand("simple_background_page"));
++  const std::string id = GetPathDerivedExtensionId("user_scripts_true");
++  ASSERT_FALSE(SendLoadUnpackedCommand(
++      "user_scripts_true", /*enable_in_incognito=*/false, id,
++      /*user_scripts_access=*/true));
++  EXPECT_FALSE(extensions::ExtensionRegistry::Get(browser()->profile())
++                   ->GetInstalledExtension(id));
++  EXPECT_EQ(std::nullopt, ReadUserScriptsPref(id));
++  EXPECT_EQ(std::nullopt, ReadCurrentUserScriptsState(id));
++}
++
++IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolWithUnsafeDebuggingTest,
++                       CannotLoadAtomicUnpackedWithoutPipeCapability) {
++  const std::string id = GetPathDerivedExtensionId("user_scripts_true");
++  DetachProtocolClient();
++  SetAllowUnsafeOperations(false);
++  AttachToBrowserTarget();
++
++  ASSERT_FALSE(SendLoadUnpackedCommand(
++      "user_scripts_true", /*enable_in_incognito=*/false, id,
++      /*user_scripts_access=*/true));
++  EXPECT_FALSE(extensions::ExtensionRegistry::Get(browser()->profile())
++                   ->GetInstalledExtension(id));
++  EXPECT_EQ(std::nullopt, ReadUserScriptsPref(id));
++  EXPECT_EQ(std::nullopt, ReadCurrentUserScriptsState(id));
+ }
+ 
+ IN_PROC_BROWSER_TEST_F(DevToolsExtensionsProtocolTest,
+diff --git a/chrome/browser/devtools/protocol/extensions_handler.cc b/chrome/browser/devtools/protocol/extensions_handler.cc
+index 73d2734..c0256fd 100644
+--- a/chrome/browser/devtools/protocol/extensions_handler.cc
++++ b/chrome/browser/devtools/protocol/extensions_handler.cc
+@@ -5,8 +5,11 @@
+ #include "chrome/browser/devtools/protocol/extensions_handler.h"
+ 
+ #include <memory>
++#include <optional>
+ #include <string>
++#include <utility>
+ 
++#include "base/check.h"
+ #include "base/files/file_path.h"
+ #include "base/functional/bind.h"
+ #include "base/strings/utf_string_conversions.h"
+@@ -23,15 +26,20 @@
+ #include "content/public/browser/web_contents.h"
+ #include "extensions/browser/api/storage/storage_area_namespace.h"
+ #include "extensions/browser/api/storage/storage_utils.h"
++#include "extensions/browser/extension_prefs.h"
+ #include "extensions/browser/extension_registry.h"
+ #include "extensions/browser/extension_registrar.h"
+ #include "extensions/browser/extension_system.h"
++#include "extensions/browser/extension_util.h"
+ #include "extensions/browser/unpacked_installer.h"
+ #include "extensions/browser/user_script_manager.h"
+ #include "extensions/common/manifest.h"
++#include "extensions/common/user_scripts_allowed_state.h"
+ 
+ namespace {
+ 
++bool g_fail_load_unpacked_before_commit_for_testing = false;
++
+ // Gets an extension with ID `id`. If no extension is found, returns a
+ // std::nullopt.
+ std::optional<const extensions::Extension*> GetExtension(
+@@ -165,6 +173,191 @@ GetExtensionAndStorageFrontendResult GetExtensionAndStorageFrontend(
+ 
+ }  // namespace
+ 
++class ExtensionsHandler::LoadUnpackedContext
++    : public base::RefCounted<ExtensionsHandler::LoadUnpackedContext> {
++ public:
++  LoadUnpackedContext(content::BrowserContext* browser_context,
++                      std::optional<protocol::String> expected_id,
++                      std::optional<bool> user_scripts_access)
++      : browser_context_(browser_context),
++        expected_id_(std::move(expected_id)),
++        user_scripts_access_(user_scripts_access) {}
++
++  std::u16string BeforeInstall(const extensions::Extension& extension) {
++    extension_id_ = extension.id();
++    if (expected_id_.has_value() && extension_id_ != *expected_id_) {
++      return u"Extension ID does not match expectedId.";
++    }
++
++    extensions::ExtensionRegistry* registry =
++        extensions::ExtensionRegistry::Get(browser_context_);
++    was_installed_before_ =
++        registry && registry->GetInstalledExtension(extension_id_) != nullptr;
++    prepared_ = true;
++
++    if (!user_scripts_access_.has_value()) {
++      return std::u16string();
++    }
++
++    if (!extensions::UserScriptManager::IsUserScriptsAPIPermissionAvailable(
++            extension)) {
++      return u"Extension does not declare the userScripts permission.";
++    }
++
++    user_scripts_access_transaction_ =
++        std::make_unique<UserScriptsAccessTransaction>(
++            browser_context_, extension_id_, *user_scripts_access_);
++    return std::u16string();
++  }
++
++  bool has_atomic_options() const {
++    return expected_id_.has_value() || user_scripts_access_.has_value();
++  }
++
++  bool CommitIfEnabled(const extensions::Extension* extension,
++                       std::u16string* error) {
++    if (!prepared_ || !extension || extension->id() != extension_id_) {
++      *error = u"Extension load did not reach installation.";
++      return false;
++    }
++
++    extensions::ExtensionRegistry* registry =
++        extensions::ExtensionRegistry::Get(browser_context_);
++    if (!registry ||
++        !registry->enabled_extensions().Contains(extension_id_)) {
++      *error = u"Extension was installed but is not enabled.";
++      return false;
++    }
++
++    if (g_fail_load_unpacked_before_commit_for_testing) {
++      g_fail_load_unpacked_before_commit_for_testing = false;
++      *error = u"Injected loadUnpacked failure before commit.";
++      return false;
++    }
++
++    if (user_scripts_access_transaction_) {
++      user_scripts_access_transaction_->Commit();
++    }
++    return true;
++  }
++
++  void RemoveNewRegistryEntry() {
++    if (!prepared_ || was_installed_before_ || extension_id_.empty()) {
++      return;
++    }
++
++    extensions::ExtensionRegistry* registry =
++        extensions::ExtensionRegistry::Get(browser_context_);
++    if (!registry || !registry->GetInstalledExtension(extension_id_)) {
++      return;
++    }
++
++    std::u16string error;
++    bool initiated =
++        extensions::ExtensionRegistrar::Get(browser_context_)
++            ->UninstallExtension(
++                extension_id_, extensions::UNINSTALL_REASON_INTERNAL_MANAGEMENT,
++                &error);
++    CHECK(initiated) << base::UTF16ToUTF8(error);
++    CHECK(!registry->GetInstalledExtension(extension_id_));
++  }
++
++ private:
++  friend class base::RefCounted<LoadUnpackedContext>;
++
++  class UserScriptsAccessTransaction {
++   public:
++    UserScriptsAccessTransaction(content::BrowserContext* browser_context,
++                                 const extensions::ExtensionId& extension_id,
++                                 bool enabled)
++        : browser_context_(browser_context),
++          prefs_(extensions::ExtensionPrefs::Get(browser_context)),
++          extension_id_(extension_id),
++          context_id_(extensions::util::GetBrowserContextId(browser_context)),
++          current_state_(extensions::GetCurrentUserScriptAllowedState(
++              context_id_, extension_id_)) {
++      pref_was_present_ = prefs_->ReadPrefAsBoolean(
++          extension_id_,
++          extensions::UserScriptManager::kUserScriptsAllowedPref,
++          &pref_value_);
++      prefs_->SetBooleanPref(
++          extension_id_,
++          extensions::UserScriptManager::kUserScriptsAllowedPref, enabled);
++      extensions::SetCurrentUserScriptAllowedState(context_id_, extension_id_,
++                                                   enabled);
++    }
++
++    UserScriptsAccessTransaction(const UserScriptsAccessTransaction&) = delete;
++    UserScriptsAccessTransaction& operator=(
++        const UserScriptsAccessTransaction&) = delete;
++
++    ~UserScriptsAccessTransaction() {
++      if (committed_) {
++        return;
++      }
++
++      extensions::ExtensionRegistry* registry =
++          extensions::ExtensionRegistry::Get(browser_context_);
++      if (registry && registry->enabled_extensions().Contains(extension_id_)) {
++        const bool runtime_state = current_state_.value_or(
++            pref_was_present_ ? pref_value_ : false);
++        extensions::ExtensionSystem::Get(browser_context_)
++            ->user_script_manager()
++            ->SetUserScriptPrefEnabled(extension_id_, runtime_state);
++      }
++
++      if (pref_was_present_) {
++        prefs_->SetBooleanPref(
++            extension_id_,
++            extensions::UserScriptManager::kUserScriptsAllowedPref,
++            pref_value_);
++      } else {
++        bool current_pref_value = false;
++        if (prefs_->ReadPrefAsBoolean(
++                extension_id_,
++                extensions::UserScriptManager::kUserScriptsAllowedPref,
++                &current_pref_value)) {
++          prefs_->UpdateExtensionPref(
++              extension_id_,
++              extensions::UserScriptManager::kUserScriptsAllowedPref.name,
++              std::nullopt);
++        }
++      }
++
++      if (current_state_.has_value()) {
++        extensions::SetCurrentUserScriptAllowedState(
++            context_id_, extension_id_, *current_state_);
++      } else {
++        extensions::ClearCurrentUserScriptAllowedState(context_id_,
++                                                       extension_id_);
++      }
++    }
++
++    void Commit() { committed_ = true; }
++
++   private:
++    const raw_ptr<content::BrowserContext> browser_context_;
++    raw_ptr<extensions::ExtensionPrefs> prefs_;
++    const extensions::ExtensionId extension_id_;
++    const int context_id_;
++    const std::optional<bool> current_state_;
++    bool pref_was_present_ = false;
++    bool pref_value_ = false;
++    bool committed_ = false;
++  };
++
++  ~LoadUnpackedContext() = default;
++
++  const raw_ptr<content::BrowserContext> browser_context_;
++  const std::optional<protocol::String> expected_id_;
++  const std::optional<bool> user_scripts_access_;
++  extensions::ExtensionId extension_id_;
++  bool prepared_ = false;
++  bool was_installed_before_ = false;
++  std::unique_ptr<UserScriptsAccessTransaction>
++      user_scripts_access_transaction_;
++};
++
+ protocol::DispatchResponse ExtensionsHandler::TriggerAction(
+     const std::string& extension_id,
+     const std::string& target_id) {
+@@ -213,9 +406,16 @@ ExtensionsHandler::ExtensionsHandler(protocol::UberDispatcher* dispatcher,
+ 
+ ExtensionsHandler::~ExtensionsHandler() = default;
+ 
++// static
++void ExtensionsHandler::SetFailLoadUnpackedBeforeCommitForTesting(bool fail) {
++  g_fail_load_unpacked_before_commit_for_testing = fail;
++}
++
+ void ExtensionsHandler::LoadUnpacked(
+     const protocol::String& path,
+     const std::optional<bool> enable_in_incognito,
++    std::optional<protocol::String> expected_id,
++    const std::optional<bool> user_scripts_access,
+     std::unique_ptr<ExtensionsHandler::LoadUnpackedCallback> callback) {
+   if (!allow_loading_extensions_) {
+     std::move(callback)->sendFailure(
+@@ -232,23 +432,46 @@ void ExtensionsHandler::LoadUnpacked(
+   if (enable_in_incognito.has_value()) {
+     installer->set_allow_incognito_access(enable_in_incognito.value());
+   }
++  scoped_refptr<LoadUnpackedContext> load_context =
++      base::MakeRefCounted<LoadUnpackedContext>(
++          context, std::move(expected_id), user_scripts_access);
++  if (load_context->has_atomic_options()) {
++    installer->set_pre_install_callback(base::BindOnce(
++        &LoadUnpackedContext::BeforeInstall, load_context));
++  }
+   installer->set_completion_callback(
+-      base::BindOnce(&ExtensionsHandler::OnLoaded, weak_factory_.GetWeakPtr(),
++      base::BindOnce(&ExtensionsHandler::OnLoaded, load_context,
+                      std::move(callback)));
+   installer->Load(base::FilePath(base::FilePath::FromUTF8Unsafe(path)));
+ }
+ 
+-void ExtensionsHandler::OnLoaded(std::unique_ptr<LoadUnpackedCallback> callback,
+-                                 const extensions::Extension* extension,
+-                                 const base::FilePath& path,
+-                                 const std::u16string& err) {
+-  if (err.empty()) {
++void ExtensionsHandler::OnLoaded(
++    scoped_refptr<LoadUnpackedContext> load_context,
++    std::unique_ptr<LoadUnpackedCallback> callback,
++    const extensions::Extension* extension,
++    const base::FilePath& path,
++    const std::u16string& err) {
++  if (!load_context->has_atomic_options()) {
++    if (err.empty()) {
++      std::move(callback)->sendSuccess(extension->id());
++      return;
++    }
++
++    std::move(callback)->sendFailure(
++        protocol::Response::InvalidRequest(base::UTF16ToUTF8(err)));
++    return;
++  }
++
++  std::u16string atomic_error = err;
++  if (atomic_error.empty() &&
++      load_context->CommitIfEnabled(extension, &atomic_error)) {
+     std::move(callback)->sendSuccess(extension->id());
+     return;
+   }
+ 
++  load_context->RemoveNewRegistryEntry();
+   std::move(callback)->sendFailure(
+-      protocol::Response::InvalidRequest(base::UTF16ToUTF8(err)));
++      protocol::Response::InvalidRequest(base::UTF16ToUTF8(atomic_error)));
+ }
+ 
+ protocol::Response ExtensionsHandler::GetExtensions(
+diff --git a/chrome/browser/devtools/protocol/extensions_handler.h b/chrome/browser/devtools/protocol/extensions_handler.h
+index 364ca23..ba1ebe0 100644
+--- a/chrome/browser/devtools/protocol/extensions_handler.h
++++ b/chrome/browser/devtools/protocol/extensions_handler.h
+@@ -5,6 +5,9 @@
+ #ifndef CHROME_BROWSER_DEVTOOLS_PROTOCOL_EXTENSIONS_HANDLER_H_
+ #define CHROME_BROWSER_DEVTOOLS_PROTOCOL_EXTENSIONS_HANDLER_H_
+ 
++#include <optional>
++
++#include "base/memory/ref_counted.h"
+ #include "chrome/browser/devtools/protocol/extensions.h"
+ #include "chrome/browser/devtools/protocol/protocol.h"
+ #include "content/public/browser/web_contents.h"
+@@ -23,17 +26,24 @@ class ExtensionsHandler : public protocol::Extensions::Backend {
+ 
+   ~ExtensionsHandler() override;
+ 
++  static void SetFailLoadUnpackedBeforeCommitForTesting(bool fail);
++
+  private:
++  class LoadUnpackedContext;
++
+   protocol::DispatchResponse TriggerAction(
+       const protocol::String& extendsion_id,
+       const protocol::String& target_id) override;
+   void LoadUnpacked(const protocol::String& path,
+                     std::optional<bool> enable_in_incognito,
++                    std::optional<protocol::String> expected_id,
++                    std::optional<bool> user_scripts_access,
+                     std::unique_ptr<LoadUnpackedCallback> callback) override;
+-  void OnLoaded(std::unique_ptr<LoadUnpackedCallback> callback,
+-                const extensions::Extension* extension,
+-                const base::FilePath&,
+-                const std::u16string& err);
++  static void OnLoaded(scoped_refptr<LoadUnpackedContext> load_context,
++                       std::unique_ptr<LoadUnpackedCallback> callback,
++                       const extensions::Extension* extension,
++                       const base::FilePath&,
++                       const std::u16string& err);
+   protocol::Response GetExtensions(
+       std::unique_ptr<protocol::Array<protocol::Extensions::ExtensionInfo>>*
+           out_result) override;
+diff --git a/chrome/test/data/devtools/extensions/user_scripts_false/manifest.json b/chrome/test/data/devtools/extensions/user_scripts_false/manifest.json
+new file mode 100644
+index 0000000..5360d8a
+--- /dev/null
++++ b/chrome/test/data/devtools/extensions/user_scripts_false/manifest.json
+@@ -0,0 +1,6 @@
++{
++  "manifest_version": 3,
++  "name": "User scripts false access",
++  "version": "1.0",
++  "permissions": ["userScripts"]
++}
+diff --git a/chrome/test/data/devtools/extensions/user_scripts_omit/manifest.json b/chrome/test/data/devtools/extensions/user_scripts_omit/manifest.json
+new file mode 100644
+index 0000000..072e555
+--- /dev/null
++++ b/chrome/test/data/devtools/extensions/user_scripts_omit/manifest.json
+@@ -0,0 +1,6 @@
++{
++  "manifest_version": 3,
++  "name": "User scripts omitted access",
++  "version": "1.0",
++  "permissions": ["userScripts"]
++}
+diff --git a/chrome/test/data/devtools/extensions/user_scripts_rollback/manifest.json b/chrome/test/data/devtools/extensions/user_scripts_rollback/manifest.json
+new file mode 100644
+index 0000000..9b5acc5
+--- /dev/null
++++ b/chrome/test/data/devtools/extensions/user_scripts_rollback/manifest.json
+@@ -0,0 +1,6 @@
++{
++  "manifest_version": 3,
++  "name": "User scripts rollback",
++  "version": "1.0",
++  "permissions": ["userScripts"]
++}
+diff --git a/chrome/test/data/devtools/extensions/user_scripts_true/manifest.json b/chrome/test/data/devtools/extensions/user_scripts_true/manifest.json
+new file mode 100644
+index 0000000..25e322d
+--- /dev/null
++++ b/chrome/test/data/devtools/extensions/user_scripts_true/manifest.json
+@@ -0,0 +1,9 @@
++{
++  "manifest_version": 3,
++  "name": "User scripts true access",
++  "version": "1.0",
++  "permissions": ["userScripts"],
++  "background": {
++    "service_worker": "service_worker.js"
++  }
++}
+diff --git a/chrome/test/data/devtools/extensions/user_scripts_true/service_worker.js b/chrome/test/data/devtools/extensions/user_scripts_true/service_worker.js
+new file mode 100644
+index 0000000..2cc659e
+--- /dev/null
++++ b/chrome/test/data/devtools/extensions/user_scripts_true/service_worker.js
+@@ -0,0 +1,14 @@
++async function reportUserScriptsAccess(message) {
++  try {
++    await chrome.userScripts.getScripts();
++    chrome.test.sendMessage(message);
++  } catch {
++    chrome.test.sendMessage(`DENIED:${message}`);
++  }
++}
++
++chrome.runtime.onInstalled.addListener(() => {
++  reportUserScriptsAccess("ON_INSTALLED_ALLOWED");
++});
++
++reportUserScriptsAccess("TOP_LEVEL_ALLOWED");
+diff --git a/chrome/test/data/devtools/extensions/user_scripts_with_key/manifest.json b/chrome/test/data/devtools/extensions/user_scripts_with_key/manifest.json
+new file mode 100644
+index 0000000..4da7509
+--- /dev/null
++++ b/chrome/test/data/devtools/extensions/user_scripts_with_key/manifest.json
+@@ -0,0 +1,7 @@
++{
++  "manifest_version": 3,
++  "name": "Keyed user scripts access",
++  "version": "1.0",
++  "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAywOy+4ncffquc9J2NAyUhIM9A/jkwW5G5i7uGqZo1PVwcs2+8CT2nlF9Y+seSDDzHyU7v0av3ATpMlhRUSyiPiw6uecvxrWDsM5NVLvB9uXuYvGKgOa9jB4ZlV70cKMX2Q9DSL4yXDLQUkzEvP+iPOghIhcKYNd2J1VbFs7vsymQtkljPrUM8ow50sSBAhINOMRpcR+X2DIbN6HBQZjO+sKOceQJdNJ/XRPQ6/E3twY88TOI1HxQGfQ1+mJUKT3mergRWv9aNBtRnELPqXg/1AVuJ6t3AcYgI8LVpxuJTryo5R/ox/o8C7hj1QnmADx7RdwgHvgTeG05OMSEXOm2gQIDAQAB",
++  "permissions": ["userScripts"]
++}
+diff --git a/chrome/test/data/devtools/extensions/without_user_scripts/manifest.json b/chrome/test/data/devtools/extensions/without_user_scripts/manifest.json
+new file mode 100644
+index 0000000..a528ba1
+--- /dev/null
++++ b/chrome/test/data/devtools/extensions/without_user_scripts/manifest.json
+@@ -0,0 +1,5 @@
++{
++  "manifest_version": 3,
++  "name": "Without user scripts permission",
++  "version": "1.0"
++}
+diff --git a/extensions/browser/unpacked_installer.cc b/extensions/browser/unpacked_installer.cc
+index 81da2ae..293face 100644
+--- a/extensions/browser/unpacked_installer.cc
++++ b/extensions/browser/unpacked_installer.cc
+@@ -434,6 +434,14 @@ void UnpackedInstaller::InstallExtension() {
+     return;
+   }
+ 
++  if (!pre_install_callback_.is_null()) {
++    std::u16string error = std::move(pre_install_callback_).Run(*extension());
++    if (!error.empty()) {
++      ReportExtensionLoadError(error);
++      return;
++    }
++  }
++
+   // Force file access and/or incognito state and set install param if
+   // requested.
+   ExtensionPrefs* prefs = ExtensionPrefs::Get(browser_context_);
+diff --git a/extensions/browser/unpacked_installer.h b/extensions/browser/unpacked_installer.h
+index 2c8c648..d7dc93b 100644
+--- a/extensions/browser/unpacked_installer.h
++++ b/extensions/browser/unpacked_installer.h
+@@ -47,6 +47,8 @@ class UnpackedInstaller : public base::RefCountedThreadSafe<
+   using CompletionCallback = base::OnceCallback<void(const Extension* extension,
+                                                      const base::FilePath&,
+                                                      const std::u16string&)>;
++  using PreInstallCallback =
++      base::OnceCallback<std::u16string(const Extension& extension)>;
+ 
+   UnpackedInstaller(const UnpackedInstaller&) = delete;
+   UnpackedInstaller& operator=(const UnpackedInstaller&) = delete;
+@@ -91,6 +93,10 @@ class UnpackedInstaller : public base::RefCountedThreadSafe<
+     callback_ = std::move(callback);
+   }
+ 
++  void set_pre_install_callback(PreInstallCallback callback) {
++    pre_install_callback_ = std::move(callback);
++  }
++
+   void set_allow_file_access(bool allow) { allow_file_access_ = allow; }
+ 
+   void set_allow_incognito_access(bool allow) {
+@@ -191,6 +197,8 @@ class UnpackedInstaller : public base::RefCountedThreadSafe<
+ 
+   CompletionCallback callback_;
+ 
++  PreInstallCallback pre_install_callback_;
++
+   // Override default file access.
+   std::optional<bool> allow_file_access_;
+ 
+diff --git a/extensions/common/user_scripts_allowed_state.cc b/extensions/common/user_scripts_allowed_state.cc
+index 1a4f986..92801f8 100644
+--- a/extensions/common/user_scripts_allowed_state.cc
++++ b/extensions/common/user_scripts_allowed_state.cc
+@@ -66,4 +66,19 @@ void SetCurrentUserScriptAllowedState(int context_id,
+   map[context_id][extension_id] = user_script_allowed_state;
+ }
+ 
++void ClearCurrentUserScriptAllowedState(int context_id,
++                                        const ExtensionId& extension_id) {
++  base::AutoLock lock(GetUserScriptAllowedMapLock());
++  CurrentUserScriptAllowedMap& map = GetUserScriptAllowedMap();
++  auto context_id_iter = map.find(context_id);
++  if (context_id_iter == map.end()) {
++    return;
++  }
++
++  context_id_iter->second.erase(extension_id);
++  if (context_id_iter->second.empty()) {
++    map.erase(context_id_iter);
++  }
++}
++
+ }  // namespace extensions
+diff --git a/extensions/common/user_scripts_allowed_state.h b/extensions/common/user_scripts_allowed_state.h
+index c257379..c4c593b 100644
+--- a/extensions/common/user_scripts_allowed_state.h
++++ b/extensions/common/user_scripts_allowed_state.h
+@@ -24,6 +24,11 @@ void SetCurrentUserScriptAllowedState(int context_id,
+                                       const ExtensionId& extension_id,
+                                       bool enabled);
+ 
++// Clears the current user script allowed state for the given extension ID in
++// the specific context.
++void ClearCurrentUserScriptAllowedState(int context_id,
++                                        const ExtensionId& extension_id);
++
+ }  // namespace extensions
+ 
+ #endif  // EXTENSIONS_COMMON_USER_SCRIPTS_ALLOWED_STATE_H_
+diff --git a/third_party/blink/public/devtools_protocol/domains/Extensions.pdl b/third_party/blink/public/devtools_protocol/domains/Extensions.pdl
+index 5aadbff..95bdacc 100644
+--- a/third_party/blink/public/devtools_protocol/domains/Extensions.pdl
++++ b/third_party/blink/public/devtools_protocol/domains/Extensions.pdl
+@@ -35,6 +35,13 @@ experimental domain Extensions
+       string path
+       # Enable the extension in incognito
+       optional boolean enableInIncognito
++      # Expected extension id. The load fails atomically if the id derived from
++      # the manifest key or extension path does not match.
++      optional string expectedId
++      # Whether the extension may use the userScripts API. The extension must
++      # declare the userScripts permission. The setting is applied before the
++      # extension is activated and persists across browser restarts.
++      optional boolean userScriptsAccess
+     returns
+       # Extension id.
+       string id
+-- 
+2.43.0
+

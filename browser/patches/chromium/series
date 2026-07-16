@@ -1,2 +1,3 @@
 0001-DevTools-add-Extensions.setUserScriptsAccess.patch
 0002-DevTools-test-setUserScriptsAccess-security-gates.patch
+0003-DevTools-make-loadUnpacked-userScripts-access-atomic.patch
