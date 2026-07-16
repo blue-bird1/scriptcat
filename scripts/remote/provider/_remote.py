@@ -3,12 +3,11 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import dataclass
-from types import SimpleNamespace
 
 from .._common import RemoteConfig, shell_quote
-from .._patching import patch_preparation_script
-from .._remote_build import _browser_test_sandbox_helpers
 from ._lock import ProviderLock
+from ._patching import chromium_patch_preparation_script
+from ._sandbox import provider_protocol_sandbox_helpers
 
 REMOTE_BUILD_ROOT = "/root/scriptcat-browser-build"
 
@@ -41,18 +40,7 @@ def remote_build_script(
 ) -> str:
     """Render the Chromium-only remote build and protocol-test workflow."""
     build_id = component_build_id(lock.digest, project_commit)
-    patch_lock = SimpleNamespace(
-        chromium=lock.chromium,
-        scriptcat=SimpleNamespace(source="", commit=""),
-        patch_stacks=(
-            SimpleNamespace(
-                target="chromium",
-                path=lock.chromium_patch.path,
-                sha256=lock.chromium_patch.sha256,
-            ),
-        ),
-    )
-    patch_helpers, patch_commands = patch_preparation_script(patch_lock)
+    patch_helpers, patch_commands = chromium_patch_preparation_script(lock)
     return f"""#!/usr/bin/env bash
 set -Eeuo pipefail
 umask 022
@@ -77,7 +65,7 @@ SOURCE_DATE_EPOCH=$(git -C "$checkout" show -s --format=%ct "$project_commit")
 test "$SOURCE_DATE_EPOCH" -gt 0
 export SOURCE_DATE_EPOCH
 {patch_helpers}
-{_browser_test_sandbox_helpers()}
+{provider_protocol_sandbox_helpers()}
 prepare_depot_tools() {{
   local destination="$build_root/depot_tools" source="$1" commit="$2"
   if [ ! -d "$destination/.git" ]; then
@@ -105,7 +93,7 @@ gclient sync -D --nohooks -j 1
 gclient runhooks
 gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
 autoninja -C out/Release chrome browser_tests
-run_browser_test_in_sandbox browser-provider-protocol "$chromium" /usr/bin:/bin '
+run_provider_protocol_test browser-provider-protocol "$chromium" /usr/bin:/bin '
   "$BROWSER_TESTS_BINARY" \\
     --disable-setuid-sandbox \\
     --ozone-platform=headless \\
