@@ -39,21 +39,25 @@ terminate_browser_test_process_group() {
 }
 run_browser_test_in_sandbox() {
   local test_name=$1 test_workdir=$2 test_path=$3 test_command=$4
-  local test_uid test_gid test_status relative_workdir
-  case "$test_workdir" in
-    "$build_root"/*) relative_workdir=${test_workdir#"$build_root"/} ;;
-    *)
-      printf 'browser test workdir is outside the build root: %s\n' "$test_workdir" >&2
-      return 64
-      ;;
-  esac
+  local test_uid test_gid test_status relative_workdir workdir_kind
+  if [[ "$test_workdir" == "$build_root"/* ]]; then
+    relative_workdir=${test_workdir#"$build_root"/}
+    workdir_kind=build
+  elif [[ -n ${mcp:-} && "$test_workdir" == "$mcp" ]]; then
+    relative_workdir=
+    workdir_kind=mcp
+  else
+    printf 'browser test workdir is outside the allowed build paths: %s\n' \
+      "$test_workdir" >&2
+    return 64
+  fi
   test_uid=$(id -u nobody)
   test_gid=$(id -g nobody)
   test "$test_uid" -ne 0
   test "$test_gid" -ne 0
   test_root=$(mktemp -d /tmp/scriptcat-browser-tests.XXXXXX)
   chmod 0755 "$test_root"
-  install -d -m 0755 "$test_root/build"
+  install -d -m 0755 "$test_root/build" "$test_root/mcp"
   install -d -m 0700 -o "$test_uid" -g "$test_gid" \
     "$test_root/home" "$test_root/tmp" "$test_root/runtime"
   env -i \
@@ -66,11 +70,26 @@ run_browser_test_in_sandbox() {
     test_root=$2
     test_uid=$3
     test_gid=$4
-    relative_workdir=$5
-    test_path=$6
-    test_command=$7
+    workdir_kind=$5
+    relative_workdir=$6
+    mcp_workdir=$7
+    test_path=$8
+    test_command=$9
     mount --bind "$build_root" "$test_root/build"
-    cd "$test_root/build/$relative_workdir"
+    case "$workdir_kind" in
+      build)
+        cd "$test_root/build/$relative_workdir"
+        ;;
+      mcp)
+        mount --bind "$mcp_workdir" "$test_root/mcp"
+        mount -o remount,bind,ro "$test_root/mcp"
+        cd "$test_root/mcp"
+        ;;
+      *)
+        printf 'browser test workdir kind is invalid: %s\n' "$workdir_kind" >&2
+        exit 64
+        ;;
+    esac
     exec setpriv \
       --reuid="$test_uid" \
       --regid="$test_gid" \
@@ -91,7 +110,8 @@ run_browser_test_in_sandbox() {
         BROWSER_TESTS_BINARY="$test_root/build/src/src/out/Release/browser_tests" \
         bash -Eeuo pipefail -c "$test_command"
   ' "$test_name" "$build_root" "$test_root" "$test_uid" "$test_gid" \
-    "$relative_workdir" "$test_path" "$test_command" 9>&- &
+    "$workdir_kind" "$relative_workdir" "${mcp:-}" "$test_path" \
+    "$test_command" 9>&- &
   test_session_pid=$!
   test_session_pgid=$test_session_pid
   if wait "$test_session_pid"; then

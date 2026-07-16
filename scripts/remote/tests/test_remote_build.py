@@ -128,7 +128,8 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary_name:
             temporary = Path(temporary_name)
             build_root = temporary / "build"
-            mcp_directory = build_root / "src/chrome-devtools-mcp"
+            checkout = temporary / "checkout"
+            mcp_directory = checkout / "browser/chrome-devtools-mcp"
             chromium = build_root / "src/src/out/Release/chrome"
             command_directory = temporary / "commands"
             result_directory = temporary / "result"
@@ -179,6 +180,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
                     "#!/usr/bin/env bash",
                     "set -Eeuo pipefail",
                     f"build_root={shlex.quote(str(build_root))}",
+                    f"mcp={shlex.quote(str(mcp_directory))}",
                     "test_root=",
                     "test_session_pid=",
                     sandbox_launcher,
@@ -210,6 +212,45 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             self.assertEqual(Path(sandbox_mcp_directory).name, mcp_directory.name)
             self.assertNotEqual(Path(sandbox_mcp_directory), mcp_directory)
             self.assertFalse(Path(sandbox_mcp_directory).exists())
+
+    def test_sandbox_rejects_unlocked_checkout_workdir(self) -> None:
+        """Only the lock-selected MCP submodule may run outside the build root."""
+        sandbox_launcher = self._render_sandbox_launcher()
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            build_root = temporary / "build"
+            checkout = temporary / "checkout"
+            mcp_directory = checkout / "browser/chrome-devtools-mcp"
+            untrusted_directory = checkout / "other"
+            for directory in (build_root, mcp_directory, untrusted_directory):
+                directory.mkdir(parents=True, exist_ok=True)
+
+            harness = "\n".join(
+                (
+                    "#!/usr/bin/env bash",
+                    "set -Eeuo pipefail",
+                    f"build_root={shlex.quote(str(build_root))}",
+                    f"mcp={shlex.quote(str(mcp_directory))}",
+                    "test_root=",
+                    "test_session_pid=",
+                    "test_session_pgid=",
+                    sandbox_launcher,
+                    "run_browser_test_in_sandbox scriptcat-mcp-tests "
+                    f"{shlex.quote(str(untrusted_directory))} /usr/bin:/bin true",
+                    "",
+                )
+            )
+
+            result = subprocess.run(
+                ("bash", "-c", harness),
+                check=False,
+                cwd=temporary,
+                text=True,
+                capture_output=True,
+            )
+
+            self.assertEqual(result.returncode, 64, result.stderr)
 
     def test_protocol_browser_command_uses_exposed_sandbox_binary(self) -> None:
         sandbox_launcher = self._render_sandbox_launcher()
