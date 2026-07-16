@@ -390,7 +390,9 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             )
             self.assertFalse(Path(sandbox_browser_tests).exists())
 
-    def test_sandbox_mounts_build_and_mcp_workdirs_from_environment(self) -> None:
+    def test_sandbox_executes_multiline_commands_for_build_and_mcp_workdirs(
+        self,
+    ) -> None:
         sandbox_launcher = self._render_sandbox_launcher()
         self._require_sandbox_primitives()
 
@@ -420,17 +422,43 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
                         'test "$(id -u)" -ne 0',
                         'test -x "${BROWSER_BINARY:?}"',
                         'test -x "${BROWSER_TESTS_BINARY:?}"',
-                        'printf \'%s\\n%s\\n%s\\n\' "$PWD" "$BROWSER_BINARY" '
-                        '"$BROWSER_TESTS_BINARY" > "${RESULT_PATH:?}"',
+                        'test -r "${COMMAND_PATH:?}"',
+                        'case "$1:$2" in',
+                        "  --kind=build:quoted-build-value)",
+                        '    test -z "${PUPPETEER_EXECUTABLE_PATH-}"',
+                        "    ;;",
+                        "  --kind=mcp:quoted-mcp-value)",
+                        '    test "$PUPPETEER_EXECUTABLE_PATH" = "$BROWSER_BINARY"',
+                        "    ;;",
+                        "  *) exit 64 ;;",
+                        "esac",
+                        'printf \'%s\\n%s\\n%s\\n%s\\n\' "$COMMAND_PATH" "$PWD" '
+                        '"$BROWSER_BINARY" "$BROWSER_TESTS_BINARY" '
+                        '> "${RESULT_PATH:?}"',
                     )
                 )
                 + "\n",
             )
             test_path = f"{command_directory}:{os.environ['PATH']}"
-            build_command = (
-                f"RESULT_PATH={shlex.quote(str(build_result))} probe-sandbox"
+            build_command = "\n".join(
+                (
+                    'COMMAND_PATH="$0" \\',
+                    f"RESULT_PATH={shlex.quote(str(build_result))} \\",
+                    "probe-sandbox \\",
+                    "  '--kind=build' \\",
+                    "  'quoted-build-value'",
+                )
             )
-            mcp_command = f"RESULT_PATH={shlex.quote(str(mcp_result))} probe-sandbox"
+            mcp_command = "\n".join(
+                (
+                    'COMMAND_PATH="$0" \\',
+                    'PUPPETEER_EXECUTABLE_PATH="$BROWSER_BINARY" \\',
+                    f"RESULT_PATH={shlex.quote(str(mcp_result))} \\",
+                    "probe-sandbox \\",
+                    "  '--kind=mcp' \\",
+                    "  'quoted-mcp-value'",
+                )
+            )
             harness = "\n".join(
                 (
                     "#!/usr/bin/env bash",
@@ -459,14 +487,8 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
                 capture_output=True,
             )
 
-            build_paths = [
-                Path(path)
-                for path in build_result.read_text(encoding="utf-8").splitlines()
-            ]
-            mcp_paths = [
-                Path(path)
-                for path in mcp_result.read_text(encoding="utf-8").splitlines()
-            ]
+            build_paths = self._read_sandbox_paths(build_result)
+            mcp_paths = self._read_sandbox_paths(mcp_result)
             self.assertEqual(build_paths[0].name, chromium_directory.name)
             self.assertEqual(mcp_paths[0].name, mcp_directory.name)
             for path in (*build_paths, *mcp_paths):
@@ -537,6 +559,11 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
         launcher_start = script.index("run_browser_test_in_sandbox() {", function_start)
         function_end = script.index("\n}", launcher_start) + 2
         return script[function_start:function_end]
+
+    def _read_sandbox_paths(self, result_path: Path) -> list[Path]:
+        return [
+            Path(path) for path in result_path.read_text(encoding="utf-8").splitlines()
+        ]
 
     def _render_mcp_checkout_helpers(self) -> str:
         repository = Path(__file__).resolve().parents[3]

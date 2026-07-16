@@ -39,7 +39,7 @@ terminate_browser_test_process_group() {
 }
 run_browser_test_in_sandbox() {
   local test_name=$1 test_workdir=$2 test_path=$3 test_command=$4
-  local test_uid test_gid test_status relative_workdir workdir_kind
+  local command_file test_uid test_gid test_status relative_workdir workdir_kind
   if [[ "$test_workdir" == "$build_root"/* ]]; then
     relative_workdir=${test_workdir#"$build_root"/}
     workdir_kind=build
@@ -60,6 +60,11 @@ run_browser_test_in_sandbox() {
   install -d -m 0755 "$test_root/build" "$test_root/mcp"
   install -d -m 0700 -o "$test_uid" -g "$test_gid" \
     "$test_root/home" "$test_root/tmp" "$test_root/runtime"
+  command_file="$test_root/command.sh"
+  install -m 0555 /dev/null "$command_file"
+  printf '%s' "$test_command" > "$command_file"
+  test -f "$command_file"
+  test ! -L "$command_file"
   env -i \
     PATH=/usr/bin:/bin \
     LANG=en_US.UTF-8 \
@@ -73,7 +78,7 @@ run_browser_test_in_sandbox() {
     SANDBOX_RELATIVE_WORKDIR="$relative_workdir" \
     SANDBOX_MCP_WORKDIR="${mcp:-}" \
     SANDBOX_TEST_PATH="$test_path" \
-    SANDBOX_TEST_COMMAND="$test_command" \
+    SANDBOX_COMMAND_FILE="$command_file" \
     setsid unshare --mount --propagation private bash -Eeuo pipefail -c '
     build_root=${SANDBOX_SOURCE_BUILD_ROOT:?}
     test_root=${SANDBOX_TEST_ROOT:?}
@@ -83,7 +88,17 @@ run_browser_test_in_sandbox() {
     relative_workdir=${SANDBOX_RELATIVE_WORKDIR-}
     mcp_workdir=${SANDBOX_MCP_WORKDIR-}
     test_path=${SANDBOX_TEST_PATH:?}
-    test_command=${SANDBOX_TEST_COMMAND:?}
+    command_file=${SANDBOX_COMMAND_FILE:?}
+    case "$command_file" in
+      "$test_root"/command.sh) ;;
+      *)
+        printf 'browser test command file is outside the test root: %s\n' \
+          "$command_file" >&2
+        exit 64
+        ;;
+    esac
+    test -f "$command_file"
+    test ! -L "$command_file"
     mount --bind "$build_root" "$test_root/build"
     case "$workdir_kind" in
       build)
@@ -117,7 +132,7 @@ run_browser_test_in_sandbox() {
         SANDBOX_BUILD_ROOT="$test_root/build" \
         BROWSER_BINARY="$test_root/build/src/src/out/Release/chrome" \
         BROWSER_TESTS_BINARY="$test_root/build/src/src/out/Release/browser_tests" \
-        bash -Eeuo pipefail -c "$test_command"
+        bash -Eeuo pipefail "$command_file"
   ' "$test_name" 9>&- &
   test_session_pid=$!
   test_session_pgid=$test_session_pid
