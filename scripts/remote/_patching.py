@@ -12,11 +12,6 @@ def patch_preparation_script(lock: UpstreamLock) -> tuple[str, str]:
             lock.chromium.source,
             lock.chromium.commit,
         ),
-        "chrome-devtools-mcp": (
-            "$build_root/src/chrome-devtools-mcp",
-            lock.mcp.source,
-            lock.mcp.commit,
-        ),
         "scriptcat": (
             "$build_root/src/scriptcat",
             lock.scriptcat.source,

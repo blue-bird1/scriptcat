@@ -185,6 +185,8 @@ git -C \"$checkout\" fetch --prune origin main
 git -C \"$checkout\" checkout main
 git -C \"$checkout\" reset --hard origin/main
 git -C \"$checkout\" clean -ffd
+git -C \"$checkout\" submodule sync --recursive
+git -C \"$checkout\" submodule update --init --force --checkout --recursive
 test \"$(git -C \"$checkout\" rev-parse HEAD)\" = \"$project_commit\"
 SOURCE_DATE_EPOCH=$(git -C \"$checkout\" show -s --format=%ct \"$project_commit\")
 test \"$SOURCE_DATE_EPOCH\" -gt 0
@@ -230,15 +232,18 @@ command -v gclient >/dev/null
 command -v gn >/dev/null
 command -v autoninja >/dev/null
 ensure_chromium_source {shell_quote(lock.chromium.source)} {shell_quote(lock.chromium.commit)}
-ensure_source_checkout \"$build_root/src/chrome-devtools-mcp\" {shell_quote(lock.mcp.source)}
 ensure_source_checkout \"$build_root/src/scriptcat\" {shell_quote(lock.scriptcat.source)}
 chromium=\"$build_root/src/src\"
-mcp=\"$build_root/src/chrome-devtools-mcp\"
+mcp=\"$checkout\"/{shell_quote(lock.mcp.submodule_path.as_posix())}
 scriptcat=\"$build_root/src/scriptcat\"
 runtime=\"$build_root/out/runtime\"
-test -z \"$(git -C \"$mcp\" ls-files -- pnpm-lock.yaml)\"
-rm -f \"$mcp/pnpm-lock.yaml\"
 {patch_commands}
+test \"$(git -C \"$mcp\" rev-parse HEAD)\" = {shell_quote(lock.mcp.commit)}
+test \"$(git -C \"$mcp\" remote get-url origin)\" = {shell_quote(lock.mcp.source)}
+git -C \"$mcp\" merge-base --is-ancestor {shell_quote(lock.mcp.upstream_commit)} HEAD
+git -C \"$mcp\" diff --quiet
+git -C \"$mcp\" diff --cached --quiet
+test -z \"$(git -C \"$mcp\" status --porcelain)\"
 if [ -d \"$build_root/src/chromium\" ]; then
   printf 'removing obsolete non-gclient Chromium checkout: %s\\n' \"$build_root/src/chromium\"
   rm -rf \"$build_root/src/chromium\"
@@ -355,6 +360,9 @@ pnpm build:managed-mcp
 test -f dist/ext/manifest.json
 rsync -a --delete --exclude .git dist/ext/ \"$runtime/scriptcat/\"
 test -f \"$runtime/scriptcat/manifest.json\"
+chromium_build_commit=$(git -C \"$chromium\" rev-parse HEAD)
+mcp_build_commit=$(git -C \"$mcp\" rev-parse HEAD)
+scriptcat_build_commit=$(git -C \"$scriptcat\" rev-parse HEAD)
 {verified_build_finalize_script(lock, project_commit)}
 printf 'remote component build completed: %s\\n' \"$build_id\"
 """

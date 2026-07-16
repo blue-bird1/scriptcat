@@ -11,12 +11,19 @@ import unittest
 from pathlib import Path
 
 from scripts.remote._activation import component_build_id, release_build_id
-from scripts.remote.tests._fixtures import create_archive, create_release, sha256
+from scripts.remote._lock import load_lock
+from scripts.remote.tests._fixtures import (
+    create_archive,
+    create_release,
+    provenance_for_lock,
+    sha256,
+)
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 INSTALL_SCRIPT = REPOSITORY_ROOT / "scripts" / "remote" / "install.py"
 PROJECT_COMMIT = "1" * 40
 NEXT_PROJECT_COMMIT = "2" * 40
+FORGED_COMMIT = "0" * 40
 
 
 class OfflineInstallContractTest(unittest.TestCase):
@@ -28,6 +35,7 @@ class OfflineInstallContractTest(unittest.TestCase):
                 REPOSITORY_ROOT / "browser" / "upstreams.lock.json", lock_path
             )
             lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock_model = load_lock(lock_path)
             lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
             component_id = component_build_id(lock_digest, PROJECT_COMMIT)
             build_id = release_build_id(component_id, PROJECT_COMMIT)
@@ -37,6 +45,7 @@ class OfflineInstallContractTest(unittest.TestCase):
                 component_build_id=component_id,
                 project_commit=PROJECT_COMMIT,
                 lock_digest=lock_digest,
+                source_provenance=provenance_for_lock(lock_model),
             )
             archive = create_archive(root, release)
             home = root / "home"
@@ -86,11 +95,13 @@ class OfflineInstallContractTest(unittest.TestCase):
                 REPOSITORY_ROOT / "browser" / "upstreams.lock.json", lock_path
             )
             lock = json.loads(lock_path.read_text(encoding="utf-8"))
+            lock_model = load_lock(lock_path)
             lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
             first_build_id, first_release, first_archive = self._create_release_archive(
                 root / "first",
                 lock_digest=lock_digest,
                 project_commit=PROJECT_COMMIT,
+                source_provenance=provenance_for_lock(lock_model),
             )
             home = root / "home"
 
@@ -110,6 +121,7 @@ class OfflineInstallContractTest(unittest.TestCase):
                 root / "second",
                 lock_digest=lock_digest,
                 project_commit=NEXT_PROJECT_COMMIT,
+                source_provenance=provenance_for_lock(lock_model),
             )
             self._replace_release_file(
                 second_release,
@@ -121,6 +133,7 @@ class OfflineInstallContractTest(unittest.TestCase):
                 component_build_id=component_build_id(lock_digest, NEXT_PROJECT_COMMIT),
                 project_commit=NEXT_PROJECT_COMMIT,
                 lock_digest=lock_digest,
+                source_provenance=provenance_for_lock(lock_model),
             )
             second_archive = create_archive(root / "second", second_release)
 
@@ -150,6 +163,7 @@ class OfflineInstallContractTest(unittest.TestCase):
             shutil.copyfile(
                 REPOSITORY_ROOT / "browser" / "upstreams.lock.json", lock_path
             )
+            lock_model = load_lock(lock_path)
             lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
             component_id = component_build_id(lock_digest, PROJECT_COMMIT)
             build_id = release_build_id(component_id, PROJECT_COMMIT)
@@ -159,6 +173,7 @@ class OfflineInstallContractTest(unittest.TestCase):
                 component_build_id=component_id,
                 project_commit=PROJECT_COMMIT,
                 lock_digest=lock_digest,
+                source_provenance=provenance_for_lock(lock_model),
             )
             archive = create_archive(root, release)
             trusted_archive_digest = sha256(archive)
@@ -197,6 +212,52 @@ class OfflineInstallContractTest(unittest.TestCase):
             self.assertNotEqual(completed.returncode, 0)
             self.assertFalse((home / ".local" / "share" / "scriptcat-mcp").exists())
 
+    def test_rejects_archive_with_forged_mcp_source_provenance(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
+            root = Path(temporary_name)
+            lock_path = root / "upstreams.lock.json"
+            shutil.copyfile(
+                REPOSITORY_ROOT / "browser" / "upstreams.lock.json", lock_path
+            )
+            lock_model = load_lock(lock_path)
+            lock_digest = hashlib.sha256(lock_path.read_bytes()).hexdigest()
+            component_id = component_build_id(lock_digest, PROJECT_COMMIT)
+            build_id = release_build_id(component_id, PROJECT_COMMIT)
+            release = create_release(root, build_id=build_id)
+            self._write_release_provenance(
+                release,
+                component_build_id=component_id,
+                project_commit=PROJECT_COMMIT,
+                lock_digest=lock_digest,
+                source_provenance=provenance_for_lock(lock_model),
+            )
+            manifest_path = release / "manifest.json"
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            provenance = manifest["provenance"]
+            if not isinstance(provenance, dict):
+                raise AssertionError("release provenance must be a mapping")
+            mcp = provenance["chrome_devtools_mcp"]
+            if not isinstance(mcp, dict):
+                raise AssertionError("MCP provenance must be a mapping")
+            mcp["build_commit"] = FORGED_COMMIT
+            manifest_path.write_text(
+                json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+                encoding="utf-8",
+            )
+            self._write_internal_checksums(release, manifest)
+            archive = create_archive(root, release)
+            home = root / "home"
+
+            completed = self._install_archive(
+                archive,
+                lock_path=lock_path,
+                build_id=build_id,
+                home=home,
+            )
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertFalse((home / ".local" / "share" / "scriptcat-mcp").exists())
+
     def _write_release_provenance(
         self,
         release: Path,
@@ -204,6 +265,7 @@ class OfflineInstallContractTest(unittest.TestCase):
         component_build_id: str,
         project_commit: str,
         lock_digest: str,
+        source_provenance: dict[str, dict[str, str]] | None = None,
     ) -> None:
         manifest_path = release / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -211,6 +273,7 @@ class OfflineInstallContractTest(unittest.TestCase):
             component_build_id=component_build_id,
             project_commit=project_commit,
             lock_digest=lock_digest,
+            provenance=source_provenance,
         )
         manifest_path.write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n",
@@ -224,6 +287,7 @@ class OfflineInstallContractTest(unittest.TestCase):
         *,
         lock_digest: str,
         project_commit: str,
+        source_provenance: dict[str, dict[str, str]],
     ) -> tuple[str, Path, Path]:
         root.mkdir()
         component_id = component_build_id(lock_digest, project_commit)
@@ -234,6 +298,7 @@ class OfflineInstallContractTest(unittest.TestCase):
             component_build_id=component_id,
             project_commit=project_commit,
             lock_digest=lock_digest,
+            source_provenance=source_provenance,
         )
         return build_id, release, create_archive(root, release)
 

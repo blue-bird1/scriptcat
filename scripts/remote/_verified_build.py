@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
 import hashlib
@@ -6,7 +7,7 @@ from ._common import shell_quote
 from ._lock import UpstreamLock
 
 MANIFEST_NAME = "build-manifest.json"
-BUILD_SCHEMA = 1
+BUILD_SCHEMA = 2
 
 
 def component_build_id(lock_digest: str, project_commit: str) -> str:
@@ -15,20 +16,19 @@ def component_build_id(lock_digest: str, project_commit: str) -> str:
 
 
 def verified_build_finalize_script(lock: UpstreamLock, project_commit: str) -> str:
-    """Render the remote, atomic runtime-to-verified-build finalization stage.
-
-    The caller must define ``build_root``, ``runtime``, ``build_id`` and
-    ``SOURCE_DATE_EPOCH`` before running this fragment.  On success it leaves a
-    verified component build at ``$build_root/builds/$build_id`` and consumes
-    ``$runtime``.
-    """
+    """Render atomic runtime finalization with exact source provenance."""
     build_id = component_build_id(lock.digest, project_commit)
     return f"""set_phase verified-build-finalize
 test \"$build_id\" = {shell_quote(build_id)}
 python3 - \"$runtime\" \"$build_root/builds\" \"$build_id\" \\
   {shell_quote(project_commit)} {shell_quote(lock.digest)} \"$SOURCE_DATE_EPOCH\" \\
   {shell_quote(lock.chromium.version)} {shell_quote(lock.mcp.version)} \\
-  {shell_quote(lock.depot_tools.version)} {shell_quote(lock.scriptcat.version)} <<'PY'
+  {shell_quote(lock.depot_tools.version)} {shell_quote(lock.scriptcat.version)} \\
+  {shell_quote(lock.chromium.commit)} {shell_quote(lock.patch_digest("chromium"))} \\
+  \"$chromium_build_commit\" {shell_quote(lock.mcp.upstream_commit)} \\
+  \"$mcp_build_commit\" {shell_quote(lock.depot_tools.commit)} \\
+  {shell_quote(lock.scriptcat.commit)} {shell_quote(lock.patch_digest("scriptcat"))} \\
+  \"$scriptcat_build_commit\" <<'PY'
 import hashlib
 import json
 import os
@@ -37,11 +37,11 @@ import shutil
 import stat
 import sys
 
-
 SCHEMA = {BUILD_SCHEMA}
 MANIFEST_NAME = {MANIFEST_NAME!r}
 COMPONENTS = frozenset({{'chromium', 'mcp', 'scriptcat'}})
 RESERVED_NAMES = frozenset({{MANIFEST_NAME}})
+COMMIT_CHARS = frozenset('0123456789abcdef')
 
 
 def fail(message):
@@ -56,11 +56,27 @@ def sha256(path):
     return digest.hexdigest()
 
 
+def is_commit(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in COMMIT_CHARS for character in value)
+    )
+
+
+def is_digest(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and all(character in COMMIT_CHARS for character in value)
+    )
+
+
 def checked_relative(root, path):
     relative = path.relative_to(root).as_posix()
     try:
         relative.encode('utf-8')
-    except UnicodeEncodeError as error:
+    except UnicodeEncodeError:
         fail(f'build tree path is not UTF-8 encodable: {{relative!r}}')
     if not relative or relative.startswith('../') or '/..' in relative:
         fail(f'build tree has an unsafe relative path: {{relative!r}}')
@@ -73,8 +89,7 @@ def inspect_runtime(root):
     status = root.lstat()
     if not stat.S_ISDIR(status.st_mode) or stat.S_ISLNK(status.st_mode):
         fail(f'build runtime is not a directory: {{root}}')
-    names = {{entry.name for entry in root.iterdir()}}
-    if names != COMPONENTS:
+    if {{entry.name for entry in root.iterdir()}} != COMPONENTS:
         fail(f'build runtime must contain exactly {{sorted(COMPONENTS)}}: {{root}}')
     files = {{}}
     directories = []
@@ -84,26 +99,46 @@ def inspect_runtime(root):
         current_path = pathlib.Path(current)
         for name in directory_names:
             path = current_path / name
-            entry_status = path.lstat()
             relative = checked_relative(root, path)
-            if not (
-                stat.S_ISDIR(entry_status.st_mode)
-                and not stat.S_ISLNK(entry_status.st_mode)
-            ):
+            status = path.lstat()
+            if not stat.S_ISDIR(status.st_mode) or stat.S_ISLNK(status.st_mode):
                 fail(f'build tree contains a link or special entry: {{relative}}')
             directories.append(relative)
         for name in file_names:
             path = current_path / name
-            entry_status = path.lstat()
             relative = checked_relative(root, path)
-            if not stat.S_ISREG(entry_status.st_mode) or entry_status.st_nlink != 1:
+            status = path.lstat()
+            if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
                 fail(f'build tree contains a link or special entry: {{relative}}')
             files[relative] = sha256(path)
     return dict(sorted(files.items())), sorted(directories)
 
 
+def validate_provenance(provenance):
+    expected = {{
+        'chromium': {{'upstream_commit', 'patch_digest', 'build_commit'}},
+        'chrome_devtools_mcp': {{'upstream_commit', 'build_commit'}},
+        'depot_tools': {{'upstream_commit', 'build_commit'}},
+        'scriptcat': {{'upstream_commit', 'patch_digest', 'build_commit'}},
+    }}
+    if not isinstance(provenance, dict) or set(provenance) != set(expected):
+        fail('component provenance has an unsupported shape')
+    for component, fields in expected.items():
+        values = provenance[component]
+        if not isinstance(values, dict) or set(values) != fields:
+            fail('component provenance has an unsupported shape')
+        for key, value in values.items():
+            if key == 'patch_digest':
+                if not is_digest(value):
+                    fail('component provenance patch digest is invalid')
+            elif not is_commit(value):
+                fail('component provenance commit is invalid')
+
+
 def manifest_for(runtime, build_id, project_commit, lock_digest, source_date_epoch,
-                 chromium_version, mcp_version, depot_tools_version, scriptcat_version):
+                 chromium_version, mcp_version, depot_tools_version, scriptcat_version,
+                 provenance):
+    validate_provenance(provenance)
     files, directories = inspect_runtime(runtime)
     return {{
         'schema': SCHEMA,
@@ -115,18 +150,19 @@ def manifest_for(runtime, build_id, project_commit, lock_digest, source_date_epo
         'mcp_version': mcp_version,
         'depot_tools_version': depot_tools_version,
         'scriptcat_version': scriptcat_version,
+        'provenance': provenance,
         'files': files,
         'directories': directories,
     }}
 
 
 def read_verified_manifest(build):
-    build_status = build.lstat()
-    if not stat.S_ISDIR(build_status.st_mode) or stat.S_ISLNK(build_status.st_mode):
+    status = build.lstat()
+    if not stat.S_ISDIR(status.st_mode) or stat.S_ISLNK(status.st_mode):
         fail(f'verified build is not a directory: {{build}}')
     manifest_path = build / MANIFEST_NAME
-    manifest_status = manifest_path.lstat()
-    if not stat.S_ISREG(manifest_status.st_mode) or manifest_status.st_nlink != 1:
+    status = manifest_path.lstat()
+    if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
         fail(f'verified build manifest is not a regular file: {{manifest_path}}')
     try:
         payload = json.loads(manifest_path.read_text(encoding='utf-8'))
@@ -134,9 +170,8 @@ def read_verified_manifest(build):
         fail(f'cannot read verified build manifest {{manifest_path}}: {{error}}')
     if not isinstance(payload, dict) or payload.get('schema') != SCHEMA:
         fail(f'invalid verified build manifest: {{manifest_path}}')
-    runtime = build / 'runtime'
     actual = manifest_for(
-        runtime,
+        build / 'runtime',
         payload.get('build_id'),
         payload.get('project_commit'),
         payload.get('lock_digest'),
@@ -145,6 +180,7 @@ def read_verified_manifest(build):
         payload.get('mcp_version'),
         payload.get('depot_tools_version'),
         payload.get('scriptcat_version'),
+        payload.get('provenance'),
     )
     if actual != payload:
         fail(f'verified build contents do not match its manifest: {{build}}')
@@ -154,9 +190,7 @@ def read_verified_manifest(build):
 def write_manifest(path, manifest):
     temporary = path.with_name(f'.{{path.name}}.{{os.getpid()}}.new')
     try:
-        temporary.write_text(
-            json.dumps(manifest, indent=2, sort_keys=True) + '\\n', encoding='utf-8'
-        )
+        temporary.write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\\n', encoding='utf-8')
         with temporary.open('rb') as stream:
             os.fsync(stream.fileno())
         os.replace(temporary, path)
@@ -169,23 +203,43 @@ builds = pathlib.Path(sys.argv[2])
 build_id, project_commit, lock_digest = sys.argv[3:6]
 source_date_epoch = int(sys.argv[6])
 versions = sys.argv[7:11]
+provenance_values = sys.argv[11:20]
 if source_date_epoch <= 0:
     fail('SOURCE_DATE_EPOCH must be positive')
-if len(build_id) != 24 or any(
-    character not in '0123456789abcdef' for character in build_id
-):
+if not is_commit(project_commit) or not is_digest(lock_digest):
+    fail('build provenance is invalid')
+if len(build_id) != 24 or any(character not in COMMIT_CHARS for character in build_id):
     fail(f'unsafe component build ID: {{build_id}}')
 if not all(versions):
     fail('component versions must be non-empty')
-
-manifest = manifest_for(
-    runtime,
-    build_id,
-    project_commit,
-    lock_digest,
-    source_date_epoch,
-    *versions,
-)
+if len(provenance_values) != 9:
+    fail('component provenance is incomplete')
+(
+    chromium_upstream_commit,
+    chromium_patch_digest,
+    chromium_build_commit,
+    mcp_upstream_commit,
+    mcp_build_commit,
+    depot_tools_upstream_commit,
+    scriptcat_upstream_commit,
+    scriptcat_patch_digest,
+    scriptcat_build_commit,
+) = provenance_values
+if not all(is_commit(value) for value in (
+    chromium_upstream_commit, chromium_build_commit, mcp_upstream_commit,
+    mcp_build_commit, depot_tools_upstream_commit, scriptcat_upstream_commit,
+    scriptcat_build_commit,
+)):
+    fail('component provenance commit is invalid')
+if not all(is_digest(value) for value in (chromium_patch_digest, scriptcat_patch_digest)):
+    fail('component provenance patch digest is invalid')
+provenance = {{
+    'chromium': {{'upstream_commit': chromium_upstream_commit, 'patch_digest': chromium_patch_digest, 'build_commit': chromium_build_commit}},
+    'chrome_devtools_mcp': {{'upstream_commit': mcp_upstream_commit, 'build_commit': mcp_build_commit}},
+    'depot_tools': {{'upstream_commit': depot_tools_upstream_commit, 'build_commit': depot_tools_upstream_commit}},
+    'scriptcat': {{'upstream_commit': scriptcat_upstream_commit, 'patch_digest': scriptcat_patch_digest, 'build_commit': scriptcat_build_commit}},
+}}
+manifest = manifest_for(runtime, build_id, project_commit, lock_digest, source_date_epoch, *versions, provenance)
 builds.mkdir(mode=0o755, parents=True, exist_ok=True)
 temporary = builds / f'.{{build_id}}.{{os.getpid()}}.new'
 target = builds / build_id
@@ -201,10 +255,7 @@ try:
             shutil.rmtree(temporary)
             print(f'reusing verified component build: {{build_id}}')
         else:
-            fail(
-                f'verified component build conflict for {{build_id}}: existing '
-                'manifest differs; refusing to replace it'
-            )
+            fail(f'verified component build conflict for {{build_id}}: existing manifest differs; refusing to replace it')
     else:
         os.replace(temporary, target)
         print(f'created verified component build: {{build_id}}')

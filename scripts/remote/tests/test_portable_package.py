@@ -11,6 +11,7 @@ from scripts.remote._archive import archive_digest_path
 from scripts.remote._lock import load_lock
 from scripts.remote._portable_package import portable_package_script
 from scripts.remote.package import ARCHIVE_PREFIX
+from scripts.remote.tests._fixtures import provenance_for_lock
 
 COMPONENT_BUILD_ID = "0123456789abcdef01234567"
 RELEASE_BUILD_ID = "89abcdef0123456701234567"
@@ -111,7 +112,7 @@ class PortablePackageScriptTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
         manifest = {
-            "schema": 1,
+            "schema": 2,
             "build_id": COMPONENT_BUILD_ID,
             "project_commit": PROJECT_COMMIT,
             "lock_digest": lock.digest,
@@ -120,6 +121,7 @@ class PortablePackageScriptTest(unittest.TestCase):
             "mcp_version": lock.mcp.version,
             "depot_tools_version": lock.depot_tools.version,
             "scriptcat_version": lock.scriptcat.version,
+            "provenance": provenance_for_lock(lock),
             "files": {
                 relative: hashlib.sha256(payload).hexdigest()
                 for relative, payload in sorted(runtime_files.items())

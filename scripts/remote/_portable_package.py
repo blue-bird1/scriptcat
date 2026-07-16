@@ -1,3 +1,4 @@
+# ruff: noqa: E501
 from __future__ import annotations
 
 import re
@@ -49,6 +50,13 @@ def portable_package_script(
         mcp_version={shell_quote(lock.mcp.version)}
         depot_tools_version={shell_quote(lock.depot_tools.version)}
         scriptcat_version={shell_quote(lock.scriptcat.version)}
+        chromium_upstream_commit={shell_quote(lock.chromium.commit)}
+        chromium_patch_digest={shell_quote(lock.patch_digest("chromium"))}
+        mcp_upstream_commit={shell_quote(lock.mcp.upstream_commit)}
+        mcp_build_commit={shell_quote(lock.mcp.commit)}
+        depot_tools_commit={shell_quote(lock.depot_tools.commit)}
+        scriptcat_upstream_commit={shell_quote(lock.scriptcat.commit)}
+        scriptcat_patch_digest={shell_quote(lock.patch_digest("scriptcat"))}
 
         fail_phase=initialize
         report_failure() {{
@@ -113,7 +121,10 @@ def portable_package_script(
             "$release_temporary" "$release_build_id" "$component_build_id" \\
             "$lock_digest" "$project_commit" \\
             "$chromium_version" "$mcp_version" "$depot_tools_version" \\
-            "$scriptcat_version" <<'PY'
+            "$scriptcat_version" "$chromium_upstream_commit" \\
+            "$chromium_patch_digest" "$mcp_upstream_commit" "$mcp_build_commit" \\
+            "$depot_tools_commit" "$scriptcat_upstream_commit" \\
+            "$scriptcat_patch_digest" <<'PY'
 import hashlib
 import json
 import os
@@ -137,6 +148,7 @@ BUILD_MANIFEST_KEYS = {{
     "mcp_version",
     "depot_tools_version",
     "scriptcat_version",
+    "provenance",
     "files",
     "directories",
 }}
@@ -150,6 +162,7 @@ RELEASE_MANIFEST_KEYS = {{
     "mcp_version",
     "depot_tools_version",
     "scriptcat_version",
+    "provenance",
     "files",
     "directories",
 }}
@@ -193,6 +206,47 @@ def is_sha256(value):
     )
 
 
+def is_commit(value):
+    return (
+        isinstance(value, str)
+        and len(value) == 40
+        and all(character in "0123456789abcdef" for character in value)
+    )
+
+
+def validate_provenance(value, expected):
+    if not isinstance(value, dict) or set(value) != {{
+        "chromium", "chrome_devtools_mcp", "depot_tools", "scriptcat"
+    }}:
+        fail("build manifest provenance has an unsupported shape")
+    chromium = value.get("chromium")
+    mcp = value.get("chrome_devtools_mcp")
+    depot_tools = value.get("depot_tools")
+    scriptcat = value.get("scriptcat")
+    if chromium != {{
+        "upstream_commit": expected["chromium_upstream_commit"],
+        "patch_digest": expected["chromium_patch_digest"],
+        "build_commit": chromium.get("build_commit") if isinstance(chromium, dict) else None,
+    }} or not is_commit(chromium.get("build_commit") if isinstance(chromium, dict) else None):
+        fail("build manifest Chromium provenance is invalid")
+    if mcp != {{
+        "upstream_commit": expected["mcp_upstream_commit"],
+        "build_commit": expected["mcp_build_commit"],
+    }}:
+        fail("build manifest MCP provenance is invalid")
+    if depot_tools != {{
+        "upstream_commit": expected["depot_tools_commit"],
+        "build_commit": expected["depot_tools_commit"],
+    }}:
+        fail("build manifest depot_tools provenance is invalid")
+    if scriptcat != {{
+        "upstream_commit": expected["scriptcat_upstream_commit"],
+        "patch_digest": expected["scriptcat_patch_digest"],
+        "build_commit": scriptcat.get("build_commit") if isinstance(scriptcat, dict) else None,
+    }} or not is_commit(scriptcat.get("build_commit") if isinstance(scriptcat, dict) else None):
+        fail("build manifest ScriptCat provenance is invalid")
+
+
 def inspect_tree(root):
     try:
         root_status = root.lstat()
@@ -232,8 +286,8 @@ def read_build_manifest(path, expected):
         fail(f"build manifest is invalid: {{error}}")
     if not isinstance(raw, dict) or set(raw) != BUILD_MANIFEST_KEYS:
         fail("build manifest has an unsupported shape")
-    if raw["schema"] != 1:
-        fail("build manifest schema must be 1")
+    if raw["schema"] != 2:
+        fail("build manifest schema must be 2")
     for key in (
         "build_id",
         "project_commit",
@@ -257,9 +311,19 @@ def read_build_manifest(path, expected):
         raw["source_date_epoch"], bool
     ) or raw["source_date_epoch"] <= 0:
         fail("build manifest source_date_epoch is invalid")
-    for key, value in expected.items():
+    for key in (
+        "build_id",
+        "lock_digest",
+        "project_commit",
+        "chromium_version",
+        "mcp_version",
+        "depot_tools_version",
+        "scriptcat_version",
+    ):
+        value = expected[key]
         if raw[key] != value:
             fail(f"build manifest {{key}} does not match the requested package")
+    validate_provenance(raw["provenance"], expected)
     files = raw["files"]
     directories = raw["directories"]
     if (
@@ -291,6 +355,7 @@ def write_release_manifest(root, release_build_id, versions):
         "mcp_version": versions["mcp_version"],
         "depot_tools_version": versions["depot_tools_version"],
         "scriptcat_version": versions["scriptcat_version"],
+        "provenance": versions["provenance"],
         "files": files,
         "directories": directories,
     }}
@@ -351,6 +416,7 @@ def verify_release(root, release_build_id, build_manifest, runtime_files, runtim
             "mcp_version": build_manifest["mcp_version"],
             "depot_tools_version": build_manifest["depot_tools_version"],
             "scriptcat_version": build_manifest["scriptcat_version"],
+            "provenance": build_manifest["provenance"],
             "files": runtime_files,
             "directories": runtime_dirs,
         }},
@@ -391,6 +457,13 @@ expected = {{
     "mcp_version": sys.argv[10],
     "depot_tools_version": sys.argv[11],
     "scriptcat_version": sys.argv[12],
+    "chromium_upstream_commit": sys.argv[13],
+    "chromium_patch_digest": sys.argv[14],
+    "mcp_upstream_commit": sys.argv[15],
+    "mcp_build_commit": sys.argv[16],
+    "depot_tools_commit": sys.argv[17],
+    "scriptcat_upstream_commit": sys.argv[18],
+    "scriptcat_patch_digest": sys.argv[19],
 }}
 build_manifest = read_build_manifest(build_manifest_path, expected)
 files, directories = inspect_tree(runtime)

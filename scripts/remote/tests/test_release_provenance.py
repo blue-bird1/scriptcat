@@ -9,7 +9,7 @@ import unittest
 from pathlib import Path
 
 from scripts.remote._activation import activate_archive
-from scripts.remote._lock import load_lock
+from scripts.remote._lock import UpstreamLock, load_lock
 from scripts.remote._portable_package import portable_package_script
 from scripts.remote.package import ARCHIVE_PREFIX, release_build_id
 from scripts.remote.tests._fixtures import (
@@ -19,6 +19,7 @@ from scripts.remote.tests._fixtures import (
     SCRIPTCAT_VERSION,
     create_archive,
     create_release,
+    provenance_for_lock,
     release_tree,
     sha256,
 )
@@ -36,7 +37,7 @@ class ReleaseProvenanceTest(unittest.TestCase):
             lock = load_lock(repository / "browser/upstreams.lock.json")
             runtime = root / "builds" / COMPONENT_BUILD_ID / "runtime"
             self._write_runtime(runtime)
-            self._write_build_manifest(runtime, lock.digest, OTHER_PROJECT_COMMIT)
+            self._write_build_manifest(runtime, lock, OTHER_PROJECT_COMMIT)
             script = root / "package.sh"
             script.write_text(
                 portable_package_script(
@@ -215,19 +216,20 @@ class ReleaseProvenanceTest(unittest.TestCase):
             path.write_bytes(payload)
 
     def _write_build_manifest(
-        self, runtime: Path, lock_digest: str, project_commit: str
+        self, runtime: Path, lock: UpstreamLock, project_commit: str
     ) -> None:
         files, directories = release_tree(runtime)
         manifest = {
-            "schema": 1,
+            "schema": 2,
             "build_id": COMPONENT_BUILD_ID,
             "project_commit": project_commit,
-            "lock_digest": lock_digest,
+            "lock_digest": lock.digest,
             "source_date_epoch": 1,
             "chromium_version": "chromium",
             "mcp_version": "mcp",
             "depot_tools_version": "depot-tools",
             "scriptcat_version": "scriptcat",
+            "provenance": provenance_for_lock(lock),
             "files": files,
             "directories": directories,
         }

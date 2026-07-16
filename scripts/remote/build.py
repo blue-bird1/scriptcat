@@ -20,7 +20,7 @@ if __package__ in (None, ""):
         run_checked,
         run_remote_script,
     )
-    from remote._lock import load_lock, validate_patch_stacks
+    from remote._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
     from remote._remote_build import remote_build_script
     from remote._verified_build import component_build_id
 else:
@@ -36,7 +36,7 @@ else:
         run_checked,
         run_remote_script,
     )
-    from ._lock import load_lock, validate_patch_stacks
+    from ._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
     from ._remote_build import remote_build_script
     from ._verified_build import component_build_id
 
@@ -76,6 +76,7 @@ def run(argv: Sequence[str]) -> int:
     ).stdout.strip()
     lock = load_lock(root / arguments.lock)
     validate_patch_stacks(root, lock)
+    validate_mcp_submodule(root, lock)
     push_main(root)
     config = RemoteConfig()
     run_remote_script(config, remote_build_script(config, lock, commit, origin))

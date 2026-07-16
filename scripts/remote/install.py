@@ -17,7 +17,7 @@ if __package__ in (None, ""):
         require_commands,
         validate_build_id,
     )
-    from remote._lock import load_lock
+    from remote._lock import UpstreamLock, load_lock
 else:
     from ._activation import activate_archive
     from ._archive import validate_sha256_digest
@@ -28,7 +28,7 @@ else:
         require_commands,
         validate_build_id,
     )
-    from ._lock import load_lock
+    from ._lock import UpstreamLock, load_lock
 
 
 def parser() -> argparse.ArgumentParser:
@@ -90,9 +90,31 @@ def run(argv: Sequence[str]) -> int:
         lock.scriptcat.version,
         lock.digest,
         expected_archive_sha256=arguments.archive_sha256,
+        expected_source_provenance=lock_provenance(lock),
     )
     print(f"activated ScriptCat MCP portable release {build_id}")
     return 0
+
+
+def lock_provenance(lock: UpstreamLock) -> dict[str, dict[str, str]]:
+    return {
+        "chromium": {
+            "upstream_commit": lock.chromium.commit,
+            "patch_digest": lock.patch_digest("chromium"),
+        },
+        "chrome_devtools_mcp": {
+            "upstream_commit": lock.mcp.upstream_commit,
+            "build_commit": lock.mcp.commit,
+        },
+        "depot_tools": {
+            "upstream_commit": lock.depot_tools.commit,
+            "build_commit": lock.depot_tools.commit,
+        },
+        "scriptcat": {
+            "upstream_commit": lock.scriptcat.commit,
+            "patch_digest": lock.patch_digest("scriptcat"),
+        },
+    }
 
 
 if __name__ == "__main__":

@@ -25,6 +25,7 @@ class ReleaseManifest:
     mcp_version: str
     depot_tools_version: str
     scriptcat_version: str
+    provenance: dict[str, dict[str, str]]
     files: dict[str, str]
     directories: tuple[str, ...]
 
@@ -186,6 +187,7 @@ def read_manifest(release: Path) -> ReleaseManifest:
     )
     files = raw.get("files")
     directories = raw.get("directories")
+    provenance = require_provenance(raw)
     if (
         not isinstance(files, dict)
         or not all(
@@ -227,6 +229,7 @@ def read_manifest(release: Path) -> ReleaseManifest:
         mcp_version=mcp_version,
         depot_tools_version=depot_tools_version,
         scriptcat_version=scriptcat_version,
+        provenance=provenance,
         files=canonical_files,
         directories=canonical_directories,
     )
@@ -237,6 +240,37 @@ def require_manifest_string(raw: dict[object, object], key: str) -> str:
     if not isinstance(value, str) or not value:
         raise WorkflowError("release manifest has an unsupported shape")
     return value
+
+
+def require_provenance(raw: dict[object, object]) -> dict[str, dict[str, str]]:
+    provenance = raw.get("provenance")
+    required = {
+        "chromium": {"upstream_commit", "patch_digest", "build_commit"},
+        "chrome_devtools_mcp": {"upstream_commit", "build_commit"},
+        "depot_tools": {"upstream_commit", "build_commit"},
+        "scriptcat": {"upstream_commit", "patch_digest", "build_commit"},
+    }
+    if not isinstance(provenance, dict) or set(provenance) != set(required):
+        raise WorkflowError("release manifest has an unsupported provenance shape")
+    parsed: dict[str, dict[str, str]] = {}
+    for component, keys in required.items():
+        values = provenance[component]
+        if not isinstance(values, dict) or set(values) != keys:
+            raise WorkflowError("release manifest has an unsupported provenance shape")
+        parsed_values: dict[str, str] = {}
+        for key, value in values.items():
+            expected_length = 64 if key == "patch_digest" else 40
+            if (
+                not isinstance(value, str)
+                or len(value) != expected_length
+                or any(character not in "0123456789abcdef" for character in value)
+            ):
+                raise WorkflowError(
+                    "release manifest has an unsupported provenance shape"
+                )
+            parsed_values[key] = value
+        parsed[component] = parsed_values
+    return parsed
 
 
 def manifest_relative_path(relative: str, kind: str) -> PurePosixPath:

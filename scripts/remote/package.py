@@ -27,7 +27,7 @@ if __package__ in (None, ""):
         run_remote_script,
         validate_build_id,
     )
-    from remote._lock import load_lock, validate_patch_stacks
+    from remote._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
     from remote._portable_package import portable_package_script
 else:
     from ._archive import archive_digest_path, read_archive_digest, sha256
@@ -44,7 +44,7 @@ else:
         run_remote_script,
         validate_build_id,
     )
-    from ._lock import load_lock, validate_patch_stacks
+    from ._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
     from ._portable_package import portable_package_script
 
 
@@ -104,6 +104,7 @@ def run(argv: Sequence[str]) -> int:
     root = repository_root()
     lock = load_lock(root / arguments.lock)
     validate_patch_stacks(root, lock)
+    validate_mcp_submodule(root, lock)
     package_commit = require_clean_main(root)
     require_pushed_head(root, package_commit)
     release_id = release_build_id(arguments.build_id, package_commit)

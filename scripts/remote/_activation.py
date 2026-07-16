@@ -78,6 +78,7 @@ def activate_archive(
     expected_project_commit: str | None = None,
     *,
     expected_archive_sha256: str,
+    expected_source_provenance: dict[str, dict[str, str]] | None = None,
 ) -> str:
     validate_build_id(expected_build_id, "expected build_id")
     temporary_root = Path("/tmp") / f"scriptcat-mcp-stage-{os.getpid()}"
@@ -107,6 +108,7 @@ def activate_archive(
                 expected_lock_digest,
                 expected_project_commit,
             )
+        verify_source_provenance(manifest, expected_source_provenance)
         verify_manifest(release, manifest)
         verify_chromium_binary(release, manifest.chromium_version)
         with profile_lock():
@@ -378,6 +380,21 @@ def verify_expected_provenance(
         if actual != wanted:
             raise WorkflowError(
                 f"release {component} does not match the requested provenance"
+            )
+
+
+def verify_source_provenance(
+    manifest: ReleaseManifest, expected: dict[str, dict[str, str]] | None
+) -> None:
+    if expected is None:
+        return
+    for component, fields in expected.items():
+        actual = manifest.provenance.get(component)
+        if actual is None or any(
+            actual.get(key) != value for key, value in fields.items()
+        ):
+            raise WorkflowError(
+                "release source provenance does not match the selected lock"
             )
 
 

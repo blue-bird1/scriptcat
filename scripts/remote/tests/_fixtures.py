@@ -10,6 +10,7 @@ import tarfile
 from pathlib import Path
 
 from scripts.remote._archive import ReleaseManifest, read_manifest
+from scripts.remote._lock import UpstreamLock
 
 BUILD_ID = "0123456789abcdef01234567"
 CHROMIUM_VERSION = "148.0.7778.215"
@@ -23,6 +24,49 @@ EXTENSION_WORKER_RELATIVE = "scriptcat/worker.js"
 EXTRA_RELATIVE = "scriptcat/unlisted.js"
 SPECIAL_RELATIVE = "scriptcat/unsupported"
 ESCAPING_RELATIVE = "../outside"
+SOURCE_PROVENANCE = {
+    "chromium": {
+        "upstream_commit": "1" * 40,
+        "patch_digest": "2" * 64,
+        "build_commit": "3" * 40,
+    },
+    "chrome_devtools_mcp": {
+        "upstream_commit": "4" * 40,
+        "build_commit": "5" * 40,
+    },
+    "depot_tools": {
+        "upstream_commit": "6" * 40,
+        "build_commit": "6" * 40,
+    },
+    "scriptcat": {
+        "upstream_commit": "7" * 40,
+        "patch_digest": "8" * 64,
+        "build_commit": "9" * 40,
+    },
+}
+
+
+def provenance_for_lock(lock: UpstreamLock) -> dict[str, dict[str, str]]:
+    return {
+        "chromium": {
+            "upstream_commit": lock.chromium.commit,
+            "patch_digest": lock.patch_digest("chromium"),
+            "build_commit": "a" * 40,
+        },
+        "chrome_devtools_mcp": {
+            "upstream_commit": lock.mcp.upstream_commit,
+            "build_commit": lock.mcp.commit,
+        },
+        "depot_tools": {
+            "upstream_commit": lock.depot_tools.commit,
+            "build_commit": lock.depot_tools.commit,
+        },
+        "scriptcat": {
+            "upstream_commit": lock.scriptcat.commit,
+            "patch_digest": lock.patch_digest("scriptcat"),
+            "build_commit": "b" * 40,
+        },
+    }
 
 
 def create_release(parent: Path, *, build_id: str = BUILD_ID) -> Path:
@@ -42,6 +86,7 @@ def create_release(parent: Path, *, build_id: str = BUILD_ID) -> Path:
         "mcp_version": MCP_VERSION,
         "depot_tools_version": DEPOT_TOOLS_VERSION,
         "scriptcat_version": SCRIPTCAT_VERSION,
+        "provenance": SOURCE_PROVENANCE,
         "files": files,
         "directories": directories,
     }
