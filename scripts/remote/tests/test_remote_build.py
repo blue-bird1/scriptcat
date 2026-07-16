@@ -92,7 +92,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             self.assertIn(changed_file.name, result.stderr)
 
-    def test_mcp_gate_executes_managed_extension_protection_test(self) -> None:
+    def test_mcp_gate_executes_managed_extension_consistency_test(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         script = remote_build_script(
             RemoteConfig(),
@@ -100,7 +100,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
             "0" * 40,
             "https://example.invalid/scriptcat.git",
         )
-        gate_start = script.index("set_phase mcp-managed-extension-protection-tests")
+        gate_start = script.index("set_phase mcp-managed-extension-consistency-tests")
         gate_end = script.index("set_phase mcp-bundle", gate_start)
         gate = script[gate_start:gate_end]
 
@@ -162,7 +162,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
 
             self.assertEqual(
                 phase_path.read_text(encoding="utf-8"),
-                "mcp-managed-extension-protection-tests\n",
+                "mcp-managed-extension-consistency-tests\n",
             )
             self.assertEqual(
                 invocation_path.read_bytes().split(b"\0")[:-1],
@@ -173,7 +173,7 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
                     b"tests/ScriptCatManager.test.ts",
                     b"tests/cli.test.ts",
                     b"tests/ManagedBrowserShutdown.test.ts",
-                    b"tests/ManagedReleaseConsistency.test.ts",
+                    b"tests/ManagedExtensionConsistency.test.ts",
                     b"tests/tools/extensions.test.ts",
                 ],
             )
@@ -194,6 +194,35 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
         self.assertIn(focused_tests, script)
         self.assertLess(
             script.index(focused_tests), script.index("pnpm build:managed-mcp")
+        )
+
+    def test_browser_provider_gate_covers_atomic_load_protocol_contract(self) -> None:
+        repository = Path(__file__).resolve().parents[3]
+        script = remote_build_script(
+            RemoteConfig(),
+            load_lock(repository / "browser/upstreams.lock.json"),
+            "0" * 40,
+            "https://example.invalid/scriptcat.git",
+        )
+
+        provider_gate = (
+            "set_phase chromium-provider-protocol-tests\n"
+            "run_browser_provider_protocol_tests"
+        )
+        protocol_filter = (
+            "DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:"
+            "DevToolsExtensionsProtocolWithUnsafeDebuggingTest."
+            "LoadUnpackedUsesManifestKeyForExpectedId:"
+            "DevToolsExtensionsProtocolWithUnsafeDebuggingTest."
+            "LoadUnpackedRejectsExpectedIdMismatchAtomically:"
+            "DevToolsExtensionsProtocolWithUnsafeDebuggingTest."
+            "LoadUnpackedFailureRemovesNewExtensionAndState"
+        )
+        self.assertIn(provider_gate, script)
+        self.assertIn(protocol_filter, script)
+        self.assertLess(
+            script.index(provider_gate),
+            script.index("set_phase chromium-runtime"),
         )
 
     def test_mcp_browser_command_runs_non_root_in_private_namespace(self) -> None:

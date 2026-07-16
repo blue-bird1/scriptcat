@@ -405,17 +405,17 @@ set_phase gn-generate
 gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
 set_phase chromium-build
 autoninja -C out/Release chrome browser_tests
-run_browser_protocol_tests() {{
+run_browser_provider_protocol_tests() {{
   run_browser_test_in_sandbox scriptcat-browser-tests \"$chromium\" /usr/bin:/bin '
     \"$BROWSER_TESTS_BINARY\" \\
       --disable-setuid-sandbox \\
       --ozone-platform=headless \\
-      --gtest_filter=\"DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch\" \\
+      --gtest_filter=\"DevToolsExtensionsProtocolWithUnsafeDebuggingTest.*UserScriptsAccess*:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.LoadUnpackedUsesManifestKeyForExpectedId:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.LoadUnpackedRejectsExpectedIdMismatchAtomically:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.LoadUnpackedFailureRemovesNewExtensionAndState:DevToolsExtensionsProtocolWithUnsafeDebuggingTest.RejectsExtensionAbsentFromCurrentProfile:DevToolsExtensionsProtocolTest.CannotSetUserScriptsAccessWithoutUnsafeSwitch\" \\
       --test-launcher-bot-mode
   '
 }}
-set_phase chromium-protocol-tests
-run_browser_protocol_tests
+set_phase chromium-provider-protocol-tests
+run_browser_provider_protocol_tests
 set_phase chromium-runtime
 python3 - infra/archive_config/linux-archive-rel.json out/Release \"$runtime/chromium\" <<'PY'
 import json
@@ -458,10 +458,10 @@ set_phase mcp-install
 pnpm install --frozen-lockfile --config.node-linker=hoisted
 set_phase mcp-build
 pnpm build
-set_phase mcp-managed-extension-protection-tests
+set_phase mcp-managed-extension-consistency-tests
 run_browser_test_in_sandbox scriptcat-mcp-tests "$mcp" "$PATH" '
   PUPPETEER_EXECUTABLE_PATH="$BROWSER_BINARY" \
-    node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts tests/ManagedReleaseConsistency.test.ts tests/tools/extensions.test.ts
+    node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts tests/ManagedExtensionConsistency.test.ts tests/tools/extensions.test.ts
 '
 set_phase mcp-bundle
 pnpm bundle
