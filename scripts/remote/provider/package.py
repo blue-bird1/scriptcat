@@ -53,11 +53,15 @@ ARCHIVE_PREFIX = "scriptcat-browser-provider"
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Package one verified standalone Chromium provider build.",
         epilog=(
             "Requires a clean, pushed local main branch, wg0, SSH, and rsync. "
             "It neither synchronizes source nor builds Chromium, and downloads a "
-            "new archive plus trusted SHA-256 sidecar to /tmp by default."
+            "new archive plus trusted SHA-256 sidecar to /tmp by default.\n\n"
+            "Example:\n"
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/remote/provider/package.py --build-id 0123456789abcdef01234567"
         ),
     )
     result.add_argument(

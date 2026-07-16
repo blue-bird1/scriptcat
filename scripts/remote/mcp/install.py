@@ -33,13 +33,18 @@ else:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Validate and atomically activate an MCP/ScriptCat archive.",
         epilog=(
             "Verifies the trusted archive digest, selected MCP lock, manifest, and "
             "runtime inventory before activating under ~/.local/share/scriptcat-mcp. "
             "The operation is offline, preserves the fixed profile, deploys the "
             "physical managed ScriptCat extension transactionally, and does not "
-            "access another product."
+            "access another product.\n\nExample:\n"
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/remote/mcp/install.py /tmp/mcp.tar.zst "
+            "--lock browser/mcp.lock.json --build-id 0123456789abcdef01234567 "
+            "--archive-sha256 <sha256>"
         ),
     )
     result.add_argument("archive", type=Path, help="local .tar.zst MCP archive")

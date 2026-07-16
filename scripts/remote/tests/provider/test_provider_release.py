@@ -134,7 +134,7 @@ class BrowserProviderReleaseContractTest(unittest.TestCase):
                     capture_output=True,
                 )
                 self.assertEqual(completed.returncode, 0, completed.stderr)
-                self.assertTrue(completed.stdout.strip())
+                self.assertIn("Example:", completed.stdout)
 
     def _install(
         self, archive: Path, lock_path: Path, build_id: str, home: Path

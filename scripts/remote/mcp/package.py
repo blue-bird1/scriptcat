@@ -53,11 +53,14 @@ LOGGER = logging.getLogger("scriptcat.remote")
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Package one verified remote MCP/ScriptCat component build.",
         epilog=(
             "Requires a clean pushed main checkout, wg0, SSH, and rsync. It reads "
             "only the selected verified MCP build and does not access another product. "
-            "Outputs are non-overwriting."
+            "Outputs are non-overwriting.\n\nExample:\n"
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/remote/mcp/package.py --build-id 0123456789abcdef01234567"
         ),
     )
     result.add_argument(

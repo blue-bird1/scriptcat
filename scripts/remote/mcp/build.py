@@ -45,6 +45,7 @@ LOCK_PATH = Path("browser/mcp.lock.json")
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Build and focus-test an MCP/ScriptCat component on the managed remote "
             "host."
@@ -53,7 +54,10 @@ def parser() -> argparse.ArgumentParser:
             "Requires a clean local main branch, pushes origin/main, and uses wg0. "
             "This product build only compiles and tests MCP/ScriptCat sources. "
             "Cross-product integration is validated after independent installation. "
-            "This command does not package, download, or activate a release."
+            "This command does not package, download, or activate a release.\n\n"
+            "Example:\n"
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/remote/mcp/build.py"
         ),
     )
     result.add_argument(

@@ -46,11 +46,15 @@ LOCK_PATH = Path("browser/provider.lock.json")
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Build and protocol-test a standalone portable Chromium provider.",
         epilog=(
             "Requires a clean local main branch, pushes origin/main, and uses wg0. "
             "It only builds Chromium under /root/scriptcat-browser-build and updates "
-            "that root's current/chrome-linux/chrome test-consumption path."
+            "that root's current/chrome-linux/chrome test-consumption path.\n\n"
+            "Example:\n"
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/remote/provider/build.py"
         ),
     )
     result.add_argument(

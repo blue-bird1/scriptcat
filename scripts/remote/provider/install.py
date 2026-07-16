@@ -21,12 +21,18 @@ else:
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
+        formatter_class=argparse.RawDescriptionHelpFormatter,
         description=(
             "Validate and atomically activate a standalone Chromium provider archive."
         ),
         epilog=(
             "Activates only under ~/.local/share/scriptcat-browser. This command does "
             "not access Git, the remote host, ScriptCat, MCP, profiles, or extensions."
+            "\n\nExample:\n"
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/remote/provider/install.py /tmp/provider.tar.zst "
+            "--lock browser/provider.lock.json --build-id 0123456789abcdef01234567 "
+            "--archive-sha256 <sha256>"
         ),
     )
     result.add_argument("archive", type=Path, help="local .tar.zst provider archive")

@@ -30,6 +30,7 @@ class McpRemoteBuildContractTest(unittest.TestCase):
             "chrome-linux",
             "provider_release",
             "tests/tools/extensions.test.ts",
+            "tests/ManagedBrowserShutdown.test.ts",
         ):
             self.assertNotIn(forbidden, self.script)
 
