@@ -6,7 +6,7 @@ command = "node"
 env = { CHROME_DEVTOOLS_MCP_NO_UPDATE_CHECKS = "1" }
 args = [
   "/home/bluebird/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js",
-  "--executable-path=/home/bluebird/.local/share/scriptcat-mcp/current/chromium/chrome-linux/chrome",
+  "--executable-path=/home/bluebird/.local/share/scriptcat-browser/current/chrome-linux/chrome",
   "--user-data-dir=/home/bluebird/.codex/chrome-devtools-scriptcat-chromium-profile",
   "--proxy-server=http://127.0.0.1:7891",
   "--managed-scriptcat-path=/home/bluebird/.codex/chrome-extensions/scriptcat/v1.3.2",

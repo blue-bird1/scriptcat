@@ -18,25 +18,23 @@
 ## ScriptCat 浏览器验证与安装
 
 - **上游源码位置**：ScriptCat 扩展源码已在 `.upstream/scriptcat`，VSCode 插件源码已在 `.upstream/scriptcat-vscode`。调查 ScriptCat 安装、同步、权限、注入、service worker 或 VSCode sync 行为时，先读这两个本地 checkout，不要先外部搜索或猜测实现。`.upstream` 被仓库 ignore 规则隐藏，搜索时使用 `rg -u`。
-- **专用 MCP**：调试或验收本仓库 `*.user.js` 时，默认使用 `chrome-devtools-scriptcat`（工具命名空间通常为 `mcp__chrome_devtools_scriptcat__`）。它运行 `~/.local/share/scriptcat-mcp/current/` 中的便携定制 Chromium 和完整派生 MCP，固定使用 `~/.codex/chrome-devtools-scriptcat-chromium-profile`。Chromium 通过 CDP pipe 以 headless 模式运行，页面流量使用本机 `http://127.0.0.1:7891` 代理；普通 `chrome-devtools` MCP 不用于 userscript 注入验收。
-- **运行时职责**：浏览器提供者负责定制 Chromium 的补丁、协议测试以及持续可用的浏览器接口；派生 MCP 直接消费该接口。浏览器可独立更新，只要提供者继续满足该协议。MCP 运行时只管理固定 profile 的锁、managed ScriptCat 的 ID、路径、版本、启用状态、调用错误，以及 `~/.local/share/scriptcat-mcp` 中的 activation journal 与当前 managed ScriptCat 树。该数据根不参与浏览器或 MCP release 绑定；MCP 也不协商协议或校验浏览器的 hash、commit、版本、release root、路径。
+- **专用 MCP**：调试或验收本仓库 `*.user.js` 时，默认使用 `chrome-devtools-scriptcat`（工具命名空间通常为 `mcp__chrome_devtools_scriptcat__`）。MCP 可执行文件位于 `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js`，并启动浏览器 provider 提供的 `~/.local/share/scriptcat-browser/current/chrome-linux/chrome`。它固定使用 `~/.codex/chrome-devtools-scriptcat-chromium-profile`；Chromium 通过 CDP pipe 以 headless 模式运行，页面流量使用本机 `http://127.0.0.1:7891` 代理；普通 `chrome-devtools` MCP 不用于 userscript 注入验收。
+- **产品边界**：浏览器 provider 负责 Chromium 补丁、协议测试和外部浏览器接口；ScriptCat MCP 负责其可执行文件、固定 profile 锁、managed ScriptCat 的 ID、路径、版本、启用状态与调用错误。MCP 的 `--managed-scriptcat-data-root` 为 `~/.local/share/scriptcat-mcp`，保存 activation journal 与当前 managed ScriptCat 树。MCP 运行时直接使用 provider 的外部 executable，不协商协议，也不校验浏览器 hash、commit、版本、release root 或路径。更新 provider 保留 MCP 安装和 profile；更新 MCP 保留 provider 安装。
 - **扩展状态与授权**：MCP 将固定 profile 与 managed ScriptCat 扩展作为持久安装。首次启动只以预期扩展 ID 和 `userScripts` 授权完成一次加载，并发出一次 `install_complete`；已恢复的 profile 启动不重新加载扩展。运行中的 `userScriptsAccessEnabled` 为 `false` 时才调用 `setUserScriptsAccess` 修复授权；`true` 无额外操作，`null` 表示当前无法查询。`scriptcat_status` 返回扩展 ID、版本、启用状态、`userScriptsAccessEnabled`、worker 就绪状态，以及 `startupAction`、`installCount` 和 `accessRepairCount` 诊断字段。对固定 managed extension，`set_extension_user_scripts_access` 只接受 `enabled=true`，重复调用保持幂等；传入 `enabled=false`，或通过通用 `install_extension`、`reload_extension`、`uninstall_extension` 改变该扩展，均返回 `MANAGED_EXTENSION_PROTECTED`，且不会执行底层操作。扩展目录、profile 和权限状态由 MCP 与便携制品管理，不通过浏览器 UI、`chrome://extensions/`、X11、`--load-extension`、`developerPrivate` 或 Preferences 文件管理。
 - **Profile 独占**：MCP 为固定 profile 持有锁。同一时间只允许一个 owner；第二个 owner 返回 `PROFILE_BUSY`。涉及脚本写入或页面验收的任务必须等待前一个 owner 结束。
 - **MCP 脚本管理与验收**：先运行 `scriptcat_status`，再以 `scriptcat_upsert_script` 写入仓库内规范化的目标 `*.user.js` 路径；按需使用 `scriptcat_list_scripts`、`scriptcat_get_script`、`scriptcat_set_enabled` 和 `scriptcat_delete_script`。随后打开真实 `@match` 页面，确认注入、UI、控制台、网络请求和核心交互。静态 DOM、普通浏览器打开页面或仅执行 lint/build 不构成运行验收。
 - **用户正常浏览器安装**：用户日常浏览器使用 ScriptCat 的默认 VSCode sync 端口 `8642`。需要把当前仓库脚本推送到用户正常浏览器时，使用 `pnpm install:scriptcat -- <script.user.js>`；不传脚本时默认安装 `greenmangaming-bundle-claim.user.js`。该安装路径用于用户浏览器，不替代专用 MCP 的可复现调试验收。
-- **故障处理**：`PROFILE_BUSY`、`BROWSER_UNSUPPORTED`、`EXTENSION_NOT_READY`、`INVALID_USERSCRIPT`、`SCRIPT_NOT_FOUND`、`MANAGED_EXTENSION_PROTECTED` 与 `TIMEOUT` 是 MCP 的可处理状态。遇到 `MANAGED_EXTENSION_PROTECTED` 时保留 managed extension，不重试被拒绝的通用变更；需要恢复授权时，对固定扩展调用 `set_extension_user_scripts_access` 并传入 `enabled=true`，再运行 `scriptcat_status`。扩展缺失、版本不符或 worker 未就绪时，修复或重建 `scripts/remote/` 管理的便携制品后重新启动 MCP；不得改用普通 `chrome-devtools` MCP 作为 ScriptCat 验收替代。
+- **故障处理**：`PROFILE_BUSY`、`BROWSER_UNSUPPORTED`、`EXTENSION_NOT_READY`、`INVALID_USERSCRIPT`、`SCRIPT_NOT_FOUND`、`MANAGED_EXTENSION_PROTECTED` 与 `TIMEOUT` 是 MCP 的可处理状态。遇到 `MANAGED_EXTENSION_PROTECTED` 时保留 managed extension，不重试被拒绝的通用变更；需要恢复授权时，对固定扩展调用 `set_extension_user_scripts_access` 并传入 `enabled=true`，再运行 `scriptcat_status`。provider 不可用时修复 provider 制品；扩展缺失、版本不符或 worker 未就绪时修复 MCP 制品，然后重新启动 MCP；不得改用普通 `chrome-devtools` MCP 作为 ScriptCat 验收替代。
 
-## Chromium 远程构建与便携安装
+## 浏览器 provider 与 MCP 的远程发布
 
-- **执行主机**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，便携制品由 remote wrapper 拉回本机激活。该主机经本地 WireGuard 连接 `wg0` 访问；连接失败时先检查并恢复 `wg0`，再执行 `scripts/remote/` wrapper。
-- **唯一入口与远端布局**：本机源码是唯一真源。所有 doctor、构建、制品传输和本机激活都经 `scripts/remote/` wrapper；不得手写 SSH、SCP、rsync、远端 checkout/reset 或 Chromium 构建命令绕过 wrapper。wrapper 使用受管的 `/root/scriptcat` checkout 和 `/root/scriptcat-mcp-build` 构建根；`/root/chromium` 是非受管旧 checkout，不得读取、修改或清理。远端使用自身透明代理，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
-- **本地门禁**：执行远程构建前，本地 `main` 必须干净；`build.py` 会把提交后的 `HEAD` 推送到 `origin/main`，并在返回后确认本地 `HEAD` 未变化。`gclient`、`gn`、`autoninja`、`ninja` 与其他 Chromium 构建命令不得在本机或裸 SSH 中执行；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
-- **显式三阶段**：发布流程依次运行 `build.py`、`package.py --build-id <component-build-id>` 和 `install.py <archive> --lock <browser/upstreams.lock.json> --build-id <release-build-id> --archive-sha256 <digest>`。每个命令只执行自己的阶段，不使用自动指纹缓存，也不隐式调用前置阶段。
-  1. `build.py` 检查 `wg0`、干净的 `main` 和上游锁，推送 `origin/main`，在远端同步补丁、编译 Chromium、直接从 MCP fork 子模块源码构建派生 MCP 与 ScriptCat，并运行聚焦测试。成功后把完整 runtime 和 `build-manifest.json` 保存在 `/root/scriptcat-mcp-build/builds/<component-build-id>`，标准输出只返回 24 字符 component build ID。
-  2. `package.py --build-id <component-build-id>` 核对指定的 `build-manifest.json` 与 runtime 树，生成 release manifest、NUL 分隔 `SHA256SUMS`、不可覆盖的便携归档和归档外 `<archive>.sha256` 摘要，再下载到显式本地路径。它不推送源码、不同步 checkout、不编译、不测试，也不激活；标准输出只返回 24 字符 release build ID。
-  3. `install.py <archive> --lock <browser/upstreams.lock.json> --build-id <release-build-id> --archive-sha256 <digest>` 先以显式可信摘要校验完整归档字节，再交叉校验归档、锁中的组件版本、入口、release build ID 和内部清单，随后原子激活到 `~/.local/share/scriptcat-mcp/releases/<release-build-id>`，维护 `current`/`previous`。这些归档摘要与来源校验属于 build、package、install 的供应链完整性；MCP 运行时不以它们作为浏览器启动门禁。managed ScriptCat 同步部署到 `~/.codex/chrome-extensions/scriptcat/v1.3.2`，保持扩展 ID 和现有 profile 数据。该阶段不读取 Git，不访问远端主机或网络。
-- **废弃入口**：`build_install.py` 只返回迁移错误，不执行构建、打包、下载或激活。调用方必须显式选择并依次运行三个阶段。
-- **验收范围**：远端 build 阶段完成补丁应用、Chromium protocol tests 和三方构建测试；package 阶段验证已构建 runtime 并形成便携归档；本机 install 后通过完整 MCP 验收 ScriptCat CRUD、真实注入、并发锁和进程清理。仅在共享改动或明确要求时扩大测试范围，不以无关的全量 Chromium suite 代替聚焦验证。
+- **执行主机与入口**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，制品由 remote wrapper 拉回本机激活。主机经本地 WireGuard `wg0` 访问；连接可用后通过 `scripts/remote/provider/` 或 `scripts/remote/mcp/` 执行对应产品的 doctor、build、package 和 install。不得手写 SSH、SCP、rsync、远端 checkout/reset 或 Chromium 构建命令。远端使用自身透明代理，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
+- **本地门禁**：远程 build 前，本地 `main` 必须干净；build 命令推送提交后的 `HEAD` 到 `origin/main`，并在返回后确认本地 `HEAD` 未变化。`gclient`、`gn`、`autoninja`、`ninja` 与其他 Chromium 构建命令不得在本机或裸 SSH 中执行；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
+- **provider 三阶段**：provider 使用 `browser/provider.lock.json`，依次执行 `scripts/remote/provider/build.py`、`scripts/remote/provider/package.py --build-id <component-build-id>`、`scripts/remote/provider/install.py <archive> --lock browser/provider.lock.json --build-id <release-build-id> --archive-sha256 <digest>`。build 编译 Chromium 并运行协议测试；package 只校验该 provider build 并生成归档；install 只校验归档、lock 与 manifest 后原子激活到 `~/.local/share/scriptcat-browser/releases/<release-build-id>`，维护 `current`/`previous`。
+- **MCP 三阶段**：MCP 使用 `browser/mcp.lock.json`，依次执行 `scripts/remote/mcp/build.py`、`scripts/remote/mcp/package.py --build-id <component-build-id>`、`scripts/remote/mcp/install.py <archive> --lock browser/mcp.lock.json --build-id <release-build-id> --archive-sha256 <digest>`。MCP build 只使用远端稳定外部浏览器路径进行测试；其 lock、manifest、build 目录和归档不读取或包含 browser/provider 身份。install 原子激活到 `~/.local/share/scriptcat-mcp/releases/<release-build-id>`，维护 `current`/`previous` 并部署 managed ScriptCat，同时保持既有 profile 数据。
+- **阶段边界**：每个 build、package、install 命令只完成所属阶段；package 不推送、同步、编译、测试或激活，install 不读取 Git、不访问远端或网络。归档 SHA-256 与来源校验属于各自产品的供应链完整性，MCP 运行时不以它们作为浏览器启动门禁。
+- **迁移入口**：顶层 `scripts/remote/doctor.py`、`build.py`、`package.py`、`install.py` 与 `build_install.py` 只返回迁移错误；调用方选择 provider 或 MCP 后执行该产品的显式三阶段命令。
+- **验收范围**：provider build 覆盖补丁与 Chromium protocol tests；MCP build 覆盖 MCP、managed ScriptCat 与外部浏览器接口；两者的 package 校验各自 runtime 与归档。MCP install 后通过完整 MCP 验收 ScriptCat CRUD、真实注入、并发锁和进程清理。仅在共享改动或明确要求时扩大测试范围。
 
 ## 项目
 
@@ -75,12 +73,12 @@
 | `.upstream/scriptcat` | ScriptCat 扩展上游源码，用于核对安装、注入、service worker 与运行时行为 |
 | `.upstream/scriptcat-vscode` | ScriptCat VSCode 插件上游源码，用于核对 VSCode sync 协议 |
 | `scripts/build-userscripts.mjs` | 将 `src/userscripts/*.user.js` bundle 到仓库根同名文件 |
-| `scripts/remote/doctor.py` | 检查 `wg0`、远端主机和受管构建环境 |
-| `scripts/remote/build.py` | 显式构建并验证远端组件，输出 `component build ID` |
-| `scripts/remote/package.py` | 按 `component build ID` 生成并下载便携归档 |
-| `scripts/remote/install.py` | 使用指定上游锁在本机校验并原子激活便携归档 |
-| `scripts/remote/build_install.py` | 只返回迁移错误的废弃入口 |
-| `.codex/config.toml` | 配置便携 Chromium 与派生 `chrome-devtools-scriptcat` MCP，并启用本地 Chromium 构建门禁 |
+| `scripts/remote/provider/` | browser provider 的 doctor、build、package、install 三阶段入口 |
+| `scripts/remote/mcp/` | ScriptCat MCP 的 doctor、build、package、install 三阶段入口 |
+| `scripts/remote/{doctor,build,package,install,build_install}.py` | 只返回迁移错误的旧顶层 CLI |
+| `browser/provider.lock.json` | browser provider 的供应链 lock |
+| `browser/mcp.lock.json` | ScriptCat MCP 的供应链 lock |
+| `.codex/config.toml` | 配置外部 browser provider、派生 `chrome-devtools-scriptcat` MCP 与本地 Chromium 构建门禁 |
 | `scripts/userscripts/install-to-scriptcat.mjs` | 推送本地 userscript 到用户正常浏览器 ScriptCat |
 | `scripts/userscripts/lint.cjs` | 对根目录 `*.user.js` 跑 eslint-plugin-userscripts |
 | `scripts/userscripts/lint-built.cjs` | 仅 lint build 产物（`src/userscripts` 对应根目录文件） |
@@ -126,14 +124,21 @@ pnpm build                               # 仅 build
 pnpm run lint:userscripts -- foo.user.js
 pnpm install:scriptcat -- steampy-token-sync.user.js
 
-# Chromium 远程发布：fish 中显式按阶段执行
-uv run --project scripts --python 3.12 python scripts/remote/doctor.py
-set component_build_id (uv run --project scripts --python 3.12 python scripts/remote/build.py)
-set archive /tmp/scriptcat-mcp-portable.tar.zst
-set release_build_id (uv run --project scripts --python 3.12 python scripts/remote/package.py --build-id $component_build_id --output $archive)
-set lock browser/upstreams.lock.json
-set archive_sha256 (string trim < "$archive.sha256")
-uv run --project scripts --python 3.12 python scripts/remote/install.py $archive --lock $lock --build-id $release_build_id --archive-sha256 $archive_sha256
+# browser provider 远程发布：fish 中显式按阶段执行
+uv run --project scripts --python 3.12 python scripts/remote/provider/doctor.py
+set provider_component_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/build.py)
+set provider_archive /tmp/scriptcat-browser-portable.tar.zst
+set provider_release_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/package.py --build-id $provider_component_build_id --output $provider_archive)
+set provider_archive_sha256 (string trim < "$provider_archive.sha256")
+uv run --project scripts --python 3.12 python scripts/remote/provider/install.py $provider_archive --lock browser/provider.lock.json --build-id $provider_release_build_id --archive-sha256 $provider_archive_sha256
+
+# ScriptCat MCP 远程发布：fish 中显式按阶段执行
+uv run --project scripts --python 3.12 python scripts/remote/mcp/doctor.py
+set mcp_component_build_id (uv run --project scripts --python 3.12 python scripts/remote/mcp/build.py)
+set mcp_archive /tmp/scriptcat-mcp-portable.tar.zst
+set mcp_release_build_id (uv run --project scripts --python 3.12 python scripts/remote/mcp/package.py --build-id $mcp_component_build_id --output $mcp_archive)
+set mcp_archive_sha256 (string trim < "$mcp_archive.sha256")
+uv run --project scripts --python 3.12 python scripts/remote/mcp/install.py $mcp_archive --lock browser/mcp.lock.json --build-id $mcp_release_build_id --archive-sha256 $mcp_archive_sha256
 ```
 
 ## 参考

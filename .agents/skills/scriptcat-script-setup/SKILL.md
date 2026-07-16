@@ -9,7 +9,11 @@ Use this skill before browser-debugging this repository's userscripts. The test 
 
 ## Browser Provider
 
-The custom Chromium provider owns browser patches, protocol tests, and the continuing availability of its browser interface. The MCP consumes that interface directly, so the browser may update independently while the provider continues to satisfy the protocol. Runtime MCP readiness does not negotiate the protocol or validate the browser's hash, commit, version, release root, or path; archive SHA-256 and provenance checks belong to the build, package, and install supply chain. `~/.local/share/scriptcat-mcp` is the MCP data root for the activation journal and current managed ScriptCat tree, not a browser or MCP release-binding mechanism.
+The Chromium provider and the ScriptCat MCP are independent products. The provider owns browser patches, protocol tests, and the executable at `~/.local/share/scriptcat-browser/current/chrome-linux/chrome`. The MCP at `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js` launches that external executable.
+
+Provider releases use `browser/provider.lock.json` and the explicit `scripts/remote/provider/` build, package, and install commands. MCP releases use `browser/mcp.lock.json` and the corresponding `scripts/remote/mcp/` commands. An MCP lock, manifest, build directory, or archive contains no provider identity. MCP build tests use the stable external browser path on the remote host. Updating the provider leaves MCP files and the ScriptCat profile intact; updating the MCP leaves the provider installation intact.
+
+`~/.local/share/scriptcat-mcp` is the MCP data root for the activation journal and current managed ScriptCat tree. Runtime MCP readiness does not negotiate the browser protocol or validate the external browser's hash, commit, version, release root, or path. Archive SHA-256 and provenance checks remain part of each product's build, package, and install supply chain.
 
 ## Extension Readiness
 
