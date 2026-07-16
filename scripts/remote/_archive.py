@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import shutil
@@ -10,66 +9,49 @@ import tarfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from ._archive_digest import (
+    ARCHIVE_DIGEST_SUFFIX,
+    archive_digest_path,
+    copy_verified_archive,
+    is_sha256,
+    read_archive_digest,
+    sha256,
+    validate_sha256_digest,
+)
 from ._common import WorkflowError
+
+__all__ = (
+    "ARCHIVE_DIGEST_SUFFIX",
+    "archive_digest_path",
+    "copy_verified_archive",
+    "read_archive_digest",
+    "sha256",
+    "validate_sha256_digest",
+)
 
 MANIFEST_NAME = "manifest.json"
 CHECKSUMS_NAME = "SHA256SUMS"
-ARCHIVE_DIGEST_SUFFIX = ".sha256"
 RESERVED_FILES = frozenset({MANIFEST_NAME, CHECKSUMS_NAME})
 
 
 @dataclass(frozen=True)
 class ReleaseManifest:
     build_id: str
-    chromium_version: str
-    mcp_version: str
-    depot_tools_version: str
-    scriptcat_version: str
+    component_build_id: str
+    project_commit: str
+    lock_digest: str
+    versions: dict[str, str]
     provenance: dict[str, dict[str, str]]
     files: dict[str, str]
     directories: tuple[str, ...]
 
+    @property
+    def mcp_version(self) -> str:
+        return self.versions["chrome_devtools_mcp"]
 
-def archive_digest_path(archive: Path) -> Path:
-    return Path(f"{archive}{ARCHIVE_DIGEST_SUFFIX}")
-
-
-def validate_sha256_digest(value: str, label: str) -> None:
-    if not is_sha256(value.encode("ascii", errors="ignore")):
-        raise WorkflowError(f"{label} must be a lowercase SHA-256 digest")
-
-
-def read_archive_digest(path: Path) -> str:
-    try:
-        payload = path.read_bytes()
-    except OSError as error:
-        raise WorkflowError(f"cannot read archive SHA-256 sidecar: {error}") from error
-    if len(payload) != 65 or not payload.endswith(b"\n") or not is_sha256(payload[:-1]):
-        raise WorkflowError("archive SHA-256 sidecar is invalid")
-    return payload[:-1].decode("ascii")
-
-
-def copy_verified_archive(
-    archive: Path, destination: Path, expected_sha256: str
-) -> None:
-    validate_sha256_digest(expected_sha256, "expected archive SHA-256")
-    digest = hashlib.sha256()
-    try:
-        with archive.open("rb") as source, destination.open("xb") as output:
-            for chunk in iter(lambda: source.read(1024 * 1024), b""):
-                digest.update(chunk)
-                output.write(chunk)
-    except FileNotFoundError as error:
-        destination.unlink(missing_ok=True)
-        raise WorkflowError(f"release archive is missing: {archive}") from error
-    except OSError as error:
-        destination.unlink(missing_ok=True)
-        raise WorkflowError(f"cannot stage release archive: {error}") from error
-    if digest.hexdigest() != expected_sha256:
-        destination.unlink()
-        raise WorkflowError(
-            "release archive SHA-256 does not match the expected digest"
-        )
+    @property
+    def scriptcat_version(self) -> str:
+        return self.versions["scriptcat"]
 
 
 def unpack_archive(archive: Path, staging: Path) -> None:
@@ -171,36 +153,52 @@ def single_release_root(staging: Path) -> Path:
 
 
 def read_manifest(release: Path) -> ReleaseManifest:
-    return _read_manifest(release, allow_missing_provenance=False)
+    return _read_manifest(release)
 
 
 def read_installed_manifest(release: Path) -> ReleaseManifest:
-    """Read an activated release, including schema-1 predecessors."""
-    return _read_manifest(release, allow_missing_provenance=True)
+    """Read an activated release without traversing a legacy browser subtree."""
+    path = release / MANIFEST_NAME
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        raise WorkflowError(f"release manifest is invalid: {error}") from error
+    if isinstance(raw, dict) and raw.get("schema") == 3:
+        return _parse_manifest(raw)
+    return _read_legacy_installed_manifest(raw)
 
 
-def _read_manifest(release: Path, *, allow_missing_provenance: bool) -> ReleaseManifest:
+def _read_manifest(release: Path) -> ReleaseManifest:
     path = release / MANIFEST_NAME
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as error:
         raise WorkflowError(f"release manifest is invalid: {error}") from error
-    if not isinstance(raw, dict):
+    return _parse_manifest(raw)
+
+
+def _parse_manifest(raw: object) -> ReleaseManifest:
+    expected_keys = {
+        "schema",
+        "build_id",
+        "component_build_id",
+        "project_commit",
+        "lock_digest",
+        "versions",
+        "provenance",
+        "files",
+        "directories",
+    }
+    if not isinstance(raw, dict) or set(raw) != expected_keys or raw.get("schema") != 3:
         raise WorkflowError("release manifest has an unsupported shape")
-    fields = (
-        require_manifest_string(raw, "build_id"),
-        require_manifest_string(raw, "chromium_version"),
-        require_manifest_string(raw, "mcp_version"),
-        require_manifest_string(raw, "depot_tools_version"),
-        require_manifest_string(raw, "scriptcat_version"),
-    )
+    build_id = require_manifest_string(raw, "build_id")
+    component_build_id = require_manifest_string(raw, "component_build_id")
+    project_commit = require_manifest_string(raw, "project_commit")
+    lock_digest = require_manifest_string(raw, "lock_digest")
+    versions = require_versions(raw)
     files = raw.get("files")
     directories = raw.get("directories")
-    provenance = (
-        {}
-        if allow_missing_provenance and "provenance" not in raw
-        else require_provenance(raw)
-    )
+    provenance = require_provenance(raw)
     if (
         not isinstance(files, dict)
         or not all(
@@ -231,20 +229,74 @@ def _read_manifest(release: Path, *, allow_missing_provenance: bool) -> ReleaseM
         )
     ):
         raise WorkflowError("release manifest has an unsupported shape")
-    build_id, chromium_version, mcp_version, depot_tools_version, scriptcat_version = (
-        fields
-    )
-    if "/" in build_id:
+    if (
+        "/" in build_id
+        or len(component_build_id) != 24
+        or not all(character in "0123456789abcdef" for character in component_build_id)
+        or len(project_commit) != 40
+        or not all(character in "0123456789abcdef" for character in project_commit)
+        or not is_sha256(lock_digest.encode("ascii", errors="ignore"))
+    ):
         raise WorkflowError("release manifest has an unsupported shape")
     return ReleaseManifest(
         build_id=build_id,
-        chromium_version=chromium_version,
-        mcp_version=mcp_version,
-        depot_tools_version=depot_tools_version,
-        scriptcat_version=scriptcat_version,
+        component_build_id=component_build_id,
+        project_commit=project_commit,
+        lock_digest=lock_digest,
+        versions=versions,
         provenance=provenance,
         files=canonical_files,
         directories=canonical_directories,
+    )
+
+
+def _read_legacy_installed_manifest(raw: object) -> ReleaseManifest:
+    if not isinstance(raw, dict):
+        raise WorkflowError("legacy release manifest has an unsupported shape")
+    build_id = require_manifest_string(raw, "build_id")
+    raw_files = raw.get("files")
+    raw_directories = raw.get("directories")
+    if not isinstance(raw_files, dict) or not isinstance(raw_directories, list):
+        raise WorkflowError("legacy release manifest has an unsupported shape")
+    files: dict[str, str] = {}
+    for relative, digest in raw_files.items():
+        if not isinstance(relative, str) or not relative.startswith("scriptcat/"):
+            continue
+        canonical = manifest_relative_path(relative, "file").as_posix()
+        if not isinstance(digest, str) or not is_sha256(
+            digest.encode("ascii", errors="ignore")
+        ):
+            raise WorkflowError("legacy ScriptCat inventory is invalid")
+        files[canonical] = digest
+    directories = tuple(
+        manifest_relative_path(relative, "directory").as_posix()
+        for relative in raw_directories
+        if isinstance(relative, str) and relative.startswith("scriptcat/")
+    )
+    if not files or directories != tuple(sorted(set(directories))):
+        raise WorkflowError("legacy ScriptCat inventory is invalid")
+    mcp_version = raw.get("mcp_version")
+    scriptcat_version = raw.get("scriptcat_version")
+    return ReleaseManifest(
+        build_id=build_id,
+        component_build_id="0" * 24,
+        project_commit="0" * 40,
+        lock_digest="0" * 64,
+        versions={
+            "chrome_devtools_mcp": (
+                mcp_version
+                if isinstance(mcp_version, str) and mcp_version
+                else "legacy"
+            ),
+            "scriptcat": (
+                scriptcat_version
+                if isinstance(scriptcat_version, str) and scriptcat_version
+                else "legacy"
+            ),
+        },
+        provenance={},
+        files=dict(sorted(files.items())),
+        directories=directories,
     )
 
 
@@ -255,12 +307,22 @@ def require_manifest_string(raw: dict[object, object], key: str) -> str:
     return value
 
 
+def require_versions(raw: dict[object, object]) -> dict[str, str]:
+    versions = raw.get("versions")
+    expected = {"chrome_devtools_mcp", "scriptcat"}
+    if (
+        not isinstance(versions, dict)
+        or set(versions) != expected
+        or not all(isinstance(value, str) and value for value in versions.values())
+    ):
+        raise WorkflowError("release manifest has an unsupported versions shape")
+    return {key: versions[key] for key in sorted(expected)}
+
+
 def require_provenance(raw: dict[object, object]) -> dict[str, dict[str, str]]:
     provenance = raw.get("provenance")
     required = {
-        "chromium": {"upstream_commit", "patch_digest", "build_commit"},
         "chrome_devtools_mcp": {"upstream_commit", "build_commit"},
-        "depot_tools": {"upstream_commit", "build_commit"},
         "scriptcat": {"upstream_commit", "patch_digest", "build_commit"},
     }
     if not isinstance(provenance, dict) or set(provenance) != set(required):
@@ -305,12 +367,17 @@ def canonical_relative_path(relative: str, context: str) -> PurePosixPath:
 
 def verify_manifest(release: Path, manifest: ReleaseManifest) -> None:
     required = {
-        "chromium/chrome-linux/chrome",
         "mcp/bin/chrome-devtools-mcp.js",
         "scriptcat/manifest.json",
     }
     if not required.issubset(manifest.files):
         raise WorkflowError("release manifest omits required portable runtime files")
+    roots = {
+        PurePosixPath(relative).parts[0]
+        for relative in (*manifest.files, *manifest.directories)
+    }
+    if roots != {"mcp", "scriptcat"}:
+        raise WorkflowError("release manifest must contain only MCP and ScriptCat")
     actual_files, actual_directories = inspect_release_tree(release)
     expected_files = set(manifest.files) | RESERVED_FILES
     if actual_files != expected_files or actual_directories != set(
@@ -395,17 +462,3 @@ def verify_checksum_file(release: Path, sums: Path) -> set[str]:
             raise WorkflowError("SHA256SUMS is invalid or does not match the release")
         covered.add(canonical)
     return covered
-
-
-def is_sha256(value: bytes) -> bool:
-    return len(value) == 64 and all(
-        character in b"0123456789abcdef" for character in value
-    )
-
-
-def sha256(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-            digest.update(chunk)
-    return digest.hexdigest()

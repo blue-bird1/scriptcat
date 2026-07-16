@@ -91,22 +91,14 @@ class McpSubmoduleProvenanceTest(unittest.TestCase):
             "source": MCP_SOURCE,
         }
         return {
-            "schema_version": 2,
-            "chromium": {**upstream, "commit": "1" * 40},
+            "schema_version": 1,
             "chrome_devtools_mcp": {
                 **upstream,
                 "upstream_source": "https://example.invalid/upstream.git",
                 "upstream_commit": baseline,
-                "submodule_path": MCP_PATH,
             },
-            "depot_tools": {**upstream, "commit": "2" * 40},
             "scriptcat": {**upstream, "commit": "3" * 40},
             "patch_stacks": [
-                {
-                    "target": "chromium",
-                    "path": "browser/patches/chromium",
-                    "sha256": PATCH_DIGEST,
-                },
                 {
                     "target": "scriptcat",
                     "path": "browser/patches/scriptcat",

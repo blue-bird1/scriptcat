@@ -4,12 +4,7 @@ from __future__ import annotations
 import re
 import textwrap
 
-from ._common import (
-    REMOTE_BUILD_ROOT,
-    WorkflowError,
-    shell_quote,
-    validate_build_id,
-)
+from ._common import REMOTE_BUILD_ROOT, WorkflowError, shell_quote, validate_build_id
 from ._lock import UpstreamLock
 
 _ARCHIVE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.zst")
@@ -24,7 +19,7 @@ def portable_package_script(
     project_commit: str,
     build_root: str = REMOTE_BUILD_ROOT,
 ) -> str:
-    """Generate the self-contained remote packaging program for a verified build."""
+    """Generate the self-contained MCP packaging program for a verified build."""
     validate_build_id(component_build_id, "component build ID")
     validate_build_id(release_build_id, "release build ID")
     if len(project_commit) != 40 or any(
@@ -46,85 +41,48 @@ def portable_package_script(
         archive_name={shell_quote(archive_name)}
         lock_digest={shell_quote(lock.digest)}
         project_commit={shell_quote(project_commit)}
-        chromium_version={shell_quote(lock.chromium.version)}
         mcp_version={shell_quote(lock.mcp.version)}
-        depot_tools_version={shell_quote(lock.depot_tools.version)}
         scriptcat_version={shell_quote(lock.scriptcat.version)}
-        chromium_upstream_commit={shell_quote(lock.chromium.commit)}
-        chromium_patch_digest={shell_quote(lock.patch_digest("chromium"))}
         mcp_upstream_commit={shell_quote(lock.mcp.upstream_commit)}
         mcp_build_commit={shell_quote(lock.mcp.commit)}
-        depot_tools_commit={shell_quote(lock.depot_tools.commit)}
         scriptcat_upstream_commit={shell_quote(lock.scriptcat.commit)}
         scriptcat_patch_digest={shell_quote(lock.patch_digest("scriptcat"))}
 
-        fail_phase=initialize
+        phase=initialize
         report_failure() {{
           local status=$?
           trap - ERR
-          printf 'remote package phase failed: %s\\n' "$fail_phase" >&2
+          printf 'remote MCP package phase failed: %s\n' "$phase" >&2
           exit "$status"
         }}
         trap report_failure ERR
 
-        command -v flock >/dev/null
-        command -v python3 >/dev/null
-        command -v tar >/dev/null
-        command -v zstd >/dev/null
-        command -v cmp >/dev/null
-        command -v sha256sum >/dev/null
+        for command in flock python3 tar zstd cmp sha256sum; do
+          command -v "$command" >/dev/null
+        done
         mkdir -p "$build_root/out"
         exec 9>"$build_root/.package.lock"
-        printf 'waiting for remote package lock: %s\\n' "$build_root/.package.lock"
         flock -x 9
-        printf 'acquired remote package lock: %s\\n' "$build_root/.package.lock"
 
         build_directory="$build_root/builds/$component_build_id"
         runtime="$build_directory/runtime"
         build_manifest="$build_directory/build-manifest.json"
         release_directory="$build_root/out/release-$release_build_id"
-        release_temporary_parent="$build_root/out/.release-$release_build_id-new"
-        release_temporary="$release_temporary_parent/release-$release_build_id"
+        temporary_parent="$build_root/out/.release-$release_build_id-new"
+        temporary_release="$temporary_parent/release-$release_build_id"
         archive="$build_root/out/$archive_name"
-        archive_temporary="$build_root/out/.$archive_name-new"
+        temporary_archive="$build_root/out/.$archive_name-new"
         archive_digest="$archive.sha256"
-        archive_digest_temporary="$build_root/out/.$archive_name.sha256-new"
+        temporary_digest="$build_root/out/.$archive_name.sha256-new"
+        rm -rf -- "$temporary_parent" "$temporary_archive" "$temporary_digest"
 
-        release_exists=false
-        archive_exists=false
-        archive_digest_exists=false
-        if test -e "$release_directory" || test -L "$release_directory"; then
-          release_exists=true
-        fi
-        if test -e "$archive" || test -L "$archive"; then
-          archive_exists=true
-        fi
-        if test -e "$archive_digest" || test -L "$archive_digest"; then
-          archive_digest_exists=true
-        fi
-        if test "$archive_exists" = true && test "$release_exists" != true; then
-          printf 'remote archive exists without its immutable release: %s\n' \
-            "$archive" >&2
-          exit 1
-        fi
-        if test "$archive_digest_exists" = true && test "$archive_exists" != true; then
-          printf 'remote archive digest exists without its archive: %s\n' \
-            "$archive_digest" >&2
-          exit 1
-        fi
-        rm -rf -- "$release_temporary_parent" "$archive_temporary" \
-          "$archive_digest_temporary"
-
-        fail_phase=verify-and-assemble
+        phase=verify-and-assemble
         read -r source_date_epoch package_mode <<< "$(
-          python3 - "$runtime" "$build_manifest" "$release_directory" \\
-            "$release_temporary" "$release_build_id" "$component_build_id" \\
-            "$lock_digest" "$project_commit" \\
-            "$chromium_version" "$mcp_version" "$depot_tools_version" \\
-            "$scriptcat_version" "$chromium_upstream_commit" \\
-            "$chromium_patch_digest" "$mcp_upstream_commit" "$mcp_build_commit" \\
-            "$depot_tools_commit" "$scriptcat_upstream_commit" \\
-            "$scriptcat_patch_digest" <<'PY'
+          python3 - "$runtime" "$build_manifest" "$release_directory" \
+            "$temporary_release" "$release_build_id" "$component_build_id" \
+            "$lock_digest" "$project_commit" "$mcp_version" \
+            "$scriptcat_version" "$mcp_upstream_commit" "$mcp_build_commit" \
+            "$scriptcat_upstream_commit" "$scriptcat_patch_digest" <<'PY'
 import hashlib
 import json
 import os
@@ -133,127 +91,56 @@ import shutil
 import stat
 import sys
 
-RUNTIME_REQUIRED_FILES = {{
-    "chromium/chrome-linux/chrome",
-    "mcp/bin/chrome-devtools-mcp.js",
-    "scriptcat/manifest.json",
+BUILD_KEYS = {{
+    'schema', 'build_id', 'project_commit', 'lock_digest', 'source_date_epoch',
+    'versions', 'provenance', 'files', 'directories',
 }}
-BUILD_MANIFEST_KEYS = {{
-    "schema",
-    "build_id",
-    "project_commit",
-    "lock_digest",
-    "source_date_epoch",
-    "chromium_version",
-    "mcp_version",
-    "depot_tools_version",
-    "scriptcat_version",
-    "provenance",
-    "files",
-    "directories",
+RELEASE_KEYS = {{
+    'schema', 'build_id', 'component_build_id', 'project_commit', 'lock_digest',
+    'versions', 'provenance', 'files', 'directories',
 }}
-RELEASE_RESERVED_FILES = {{"manifest.json", "SHA256SUMS"}}
-RELEASE_MANIFEST_KEYS = {{
-    "build_id",
-    "component_build_id",
-    "project_commit",
-    "lock_digest",
-    "chromium_version",
-    "mcp_version",
-    "depot_tools_version",
-    "scriptcat_version",
-    "provenance",
-    "files",
-    "directories",
-}}
+RUNTIME_ROOTS = frozenset({{'mcp', 'scriptcat'}})
+REQUIRED_FILES = frozenset({{'mcp/bin/chrome-devtools-mcp.js', 'scriptcat/manifest.json'}})
+RESERVED = frozenset({{'manifest.json', 'SHA256SUMS'}})
+HEX = frozenset('0123456789abcdef')
 
 
 def fail(message):
-    raise SystemExit(f"remote package verification failed: {{message}}")
+    raise SystemExit(f'remote MCP package verification failed: {{message}}')
 
 
 def digest_file(path):
     digest = hashlib.sha256()
-    with path.open("rb") as stream:
-        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+    with path.open('rb') as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b''):
             digest.update(chunk)
     return digest.hexdigest()
 
 
-def canonical_relative_path(value, context):
+def is_hex(value, length):
+    return isinstance(value, str) and len(value) == length and all(character in HEX for character in value)
+
+
+def canonical(value, context):
     if not isinstance(value, str) or not value:
-        fail(f"{{context}} is not a non-empty string")
+        fail(f'{{context}} is invalid')
     try:
-        value.encode("utf-8")
+        value.encode('utf-8')
     except UnicodeEncodeError:
-        fail(f"{{context}} is not UTF-8 encodable")
+        fail(f'{{context}} is not UTF-8 encodable')
     path = pathlib.PurePosixPath(value)
-    if (
-        path.is_absolute()
-        or path == pathlib.PurePosixPath(".")
-        or ".." in path.parts
-        or path.as_posix() != value
-    ):
-        fail(f"{{context}} is unsafe or non-canonical")
+    if path.is_absolute() or path == pathlib.PurePosixPath('.') or '..' in path.parts or path.as_posix() != value:
+        fail(f'{{context}} is unsafe or non-canonical')
     return path
 
 
-def is_sha256(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 64
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-def is_commit(value):
-    return (
-        isinstance(value, str)
-        and len(value) == 40
-        and all(character in "0123456789abcdef" for character in value)
-    )
-
-
-def validate_provenance(value, expected):
-    if not isinstance(value, dict) or set(value) != {{
-        "chromium", "chrome_devtools_mcp", "depot_tools", "scriptcat"
-    }}:
-        fail("build manifest provenance has an unsupported shape")
-    chromium = value.get("chromium")
-    mcp = value.get("chrome_devtools_mcp")
-    depot_tools = value.get("depot_tools")
-    scriptcat = value.get("scriptcat")
-    if chromium != {{
-        "upstream_commit": expected["chromium_upstream_commit"],
-        "patch_digest": expected["chromium_patch_digest"],
-        "build_commit": chromium.get("build_commit") if isinstance(chromium, dict) else None,
-    }} or not is_commit(chromium.get("build_commit") if isinstance(chromium, dict) else None):
-        fail("build manifest Chromium provenance is invalid")
-    if mcp != {{
-        "upstream_commit": expected["mcp_upstream_commit"],
-        "build_commit": expected["mcp_build_commit"],
-    }}:
-        fail("build manifest MCP provenance is invalid")
-    if depot_tools != {{
-        "upstream_commit": expected["depot_tools_commit"],
-        "build_commit": expected["depot_tools_commit"],
-    }}:
-        fail("build manifest depot_tools provenance is invalid")
-    if scriptcat != {{
-        "upstream_commit": expected["scriptcat_upstream_commit"],
-        "patch_digest": expected["scriptcat_patch_digest"],
-        "build_commit": scriptcat.get("build_commit") if isinstance(scriptcat, dict) else None,
-    }} or not is_commit(scriptcat.get("build_commit") if isinstance(scriptcat, dict) else None):
-        fail("build manifest ScriptCat provenance is invalid")
-
-
-def inspect_tree(root):
+def inspect_tree(root, *, release=False):
     try:
-        root_status = root.lstat()
+        status = root.lstat()
     except FileNotFoundError:
-        fail(f"runtime is missing: {{root}}")
-    if not stat.S_ISDIR(root_status.st_mode) or root.is_symlink():
-        fail("runtime is not a real directory")
+        fail(f'tree is missing: {{root}}')
+    if not stat.S_ISDIR(status.st_mode) or root.is_symlink():
+        fail(f'tree is not a real directory: {{root}}')
     files = {{}}
     directories = []
     for current, directory_names, file_names in os.walk(root, followlinks=False):
@@ -262,283 +149,199 @@ def inspect_tree(root):
         current_path = pathlib.Path(current)
         for name in directory_names:
             path = current_path / name
-            status = path.lstat()
             relative = path.relative_to(root).as_posix()
-            canonical_relative_path(relative, "runtime directory")
-            if not stat.S_ISDIR(status.st_mode):
-                fail(f"runtime contains an unsupported entry: {{relative}}")
+            canonical(relative, 'directory')
+            status = path.lstat()
+            if not stat.S_ISDIR(status.st_mode) or path.is_symlink():
+                fail(f'tree contains an unsupported directory: {{relative}}')
             directories.append(relative)
         for name in file_names:
             path = current_path / name
-            status = path.lstat()
             relative = path.relative_to(root).as_posix()
-            canonical_relative_path(relative, "runtime file")
+            canonical(relative, 'file')
+            status = path.lstat()
             if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
-                fail(f"runtime contains an unsupported entry: {{relative}}")
+                fail(f'tree contains an unsupported file: {{relative}}')
             files[relative] = digest_file(path)
+    runtime_files = set(files) - RESERVED if release else set(files)
+    roots = {{pathlib.PurePosixPath(relative).parts[0] for relative in (*runtime_files, *directories)}}
+    if roots != RUNTIME_ROOTS:
+        fail(f'runtime roots must be exactly {{sorted(RUNTIME_ROOTS)}}')
+    if not REQUIRED_FILES <= runtime_files:
+        fail('runtime omits required MCP or ScriptCat files')
     return dict(sorted(files.items())), sorted(directories)
 
 
-def read_build_manifest(path, expected):
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        fail(f"build manifest is invalid: {{error}}")
-    if not isinstance(raw, dict) or set(raw) != BUILD_MANIFEST_KEYS:
-        fail("build manifest has an unsupported shape")
-    if raw["schema"] != 2:
-        fail("build manifest schema must be 2")
-    for key in (
-        "build_id",
-        "project_commit",
-        "lock_digest",
-        "chromium_version",
-        "mcp_version",
-        "depot_tools_version",
-        "scriptcat_version",
-    ):
-        if not isinstance(raw[key], str) or not raw[key]:
-            fail(f"build manifest {{key}} is invalid")
-    if (
-        len(raw["project_commit"]) != 40
-        or not all(
-            character in "0123456789abcdef"
-            for character in raw["project_commit"]
-        )
-    ):
-        fail("build manifest project_commit is invalid")
-    if not isinstance(raw["source_date_epoch"], int) or isinstance(
-        raw["source_date_epoch"], bool
-    ) or raw["source_date_epoch"] <= 0:
-        fail("build manifest source_date_epoch is invalid")
-    for key in (
-        "build_id",
-        "lock_digest",
-        "project_commit",
-        "chromium_version",
-        "mcp_version",
-        "depot_tools_version",
-        "scriptcat_version",
-    ):
-        value = expected[key]
-        if raw[key] != value:
-            fail(f"build manifest {{key}} does not match the requested package")
-    validate_provenance(raw["provenance"], expected)
-    files = raw["files"]
-    directories = raw["directories"]
-    if (
-        not isinstance(files, dict)
-        or list(files) != sorted(files)
-        or not isinstance(directories, list)
-        or directories != sorted(set(directories))
-    ):
-        fail("build manifest runtime inventory is invalid")
+def parse_inventory(raw):
+    files = raw.get('files')
+    directories = raw.get('directories')
+    if not isinstance(files, dict) or list(files) != sorted(files) or not isinstance(directories, list) or directories != sorted(set(directories)):
+        fail('manifest inventory has an unsupported shape')
     for relative, digest in files.items():
-        canonical_relative_path(relative, "build manifest file")
-        if not is_sha256(digest):
-            fail("build manifest file checksum is invalid")
+        canonical(relative, 'manifest file')
+        if not is_hex(digest, 64):
+            fail('manifest file digest is invalid')
     for relative in directories:
-        canonical_relative_path(relative, "build manifest directory")
-    return raw
+        canonical(relative, 'manifest directory')
+    return files, directories
 
 
-def write_release_manifest(root, release_build_id, versions):
-    files, directories = inspect_tree(root)
-    if RELEASE_RESERVED_FILES & set(files):
-        fail("runtime reserves a release metadata filename")
-    release_manifest = {{
-        "build_id": release_build_id,
-        "component_build_id": versions["build_id"],
-        "project_commit": versions["project_commit"],
-        "lock_digest": versions["lock_digest"],
-        "chromium_version": versions["chromium_version"],
-        "mcp_version": versions["mcp_version"],
-        "depot_tools_version": versions["depot_tools_version"],
-        "scriptcat_version": versions["scriptcat_version"],
-        "provenance": versions["provenance"],
-        "files": files,
-        "directories": directories,
+def expected_provenance(arguments, raw):
+    value = raw.get('provenance')
+    if not isinstance(value, dict) or set(value) != {{'chrome_devtools_mcp', 'scriptcat'}}:
+        fail('build provenance has an unsupported shape')
+    mcp = value['chrome_devtools_mcp']
+    scriptcat = value['scriptcat']
+    if mcp != {{'upstream_commit': arguments['mcp_upstream_commit'], 'build_commit': arguments['mcp_build_commit']}}:
+        fail('MCP build provenance does not match the lock')
+    if not isinstance(scriptcat, dict) or scriptcat.get('upstream_commit') != arguments['scriptcat_upstream_commit'] or scriptcat.get('patch_digest') != arguments['scriptcat_patch_digest'] or set(scriptcat) != {{'upstream_commit', 'patch_digest', 'build_commit'}} or not is_hex(scriptcat.get('build_commit'), 40):
+        fail('ScriptCat build provenance does not match the lock')
+    return value
+
+
+def read_build(path, arguments):
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        fail(f'build manifest is invalid: {{error}}')
+    if not isinstance(raw, dict) or set(raw) != BUILD_KEYS or raw.get('schema') != 3:
+        fail('build manifest has an unsupported shape')
+    expected = {{
+        'build_id': arguments['component_build_id'],
+        'project_commit': arguments['project_commit'],
+        'lock_digest': arguments['lock_digest'],
+        'versions': {{'chrome_devtools_mcp': arguments['mcp_version'], 'scriptcat': arguments['scriptcat_version']}},
     }}
-    manifest_path = root / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(release_manifest, indent=2, sort_keys=True) + "\\n",
-        encoding="utf-8",
-    )
-    with (root / "SHA256SUMS").open("wb") as stream:
-        for relative in sorted([*files, "manifest.json"]):
-            digest = digest_file(root / relative).encode("ascii")
-            stream.write(digest + b"  " + relative.encode("utf-8") + b"\\0")
-
-
-def read_release_manifest(path, expected):
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (FileNotFoundError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        fail(f"release manifest is invalid: {{error}}")
-    if not isinstance(raw, dict) or set(raw) != RELEASE_MANIFEST_KEYS:
-        fail("release manifest has an unsupported shape")
     for key, value in expected.items():
-        if raw[key] != value:
-            fail(f"release manifest {{key}} does not match the requested package")
-    files = raw["files"]
-    directories = raw["directories"]
-    if (
-        not isinstance(files, dict)
-        or list(files) != sorted(files)
-        or not isinstance(directories, list)
-        or directories != sorted(set(directories))
-    ):
-        fail("release manifest runtime inventory is invalid")
-    for relative, digest in files.items():
-        canonical_relative_path(relative, "release manifest file")
-        if not is_sha256(digest):
-            fail("release manifest file checksum is invalid")
-    for relative in directories:
-        canonical_relative_path(relative, "release manifest directory")
+        if raw.get(key) != value:
+            fail(f'build manifest {{key}} does not match the requested package')
+    if not isinstance(raw.get('source_date_epoch'), int) or isinstance(raw['source_date_epoch'], bool) or raw['source_date_epoch'] <= 0:
+        fail('build manifest source_date_epoch is invalid')
+    expected_provenance(arguments, raw)
+    parse_inventory(raw)
     return raw
 
 
-def verify_release(root, release_build_id, build_manifest, runtime_files, runtime_dirs):
-    try:
-        status = root.lstat()
-    except FileNotFoundError:
+def release_manifest(release_id, build):
+    return {{
+        'schema': 3,
+        'build_id': release_id,
+        'component_build_id': build['build_id'],
+        'project_commit': build['project_commit'],
+        'lock_digest': build['lock_digest'],
+        'versions': build['versions'],
+        'provenance': build['provenance'],
+        'files': build['files'],
+        'directories': build['directories'],
+    }}
+
+
+def write_metadata(root, manifest):
+    (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, sort_keys=True) + '\\n', encoding='utf-8')
+    with (root / 'SHA256SUMS').open('wb') as stream:
+        for relative in sorted([*manifest['files'], 'manifest.json']):
+            stream.write(digest_file(root / relative).encode('ascii') + b'  ' + relative.encode('utf-8') + b'\\0')
+
+
+def verify_release(root, expected_manifest):
+    if not root.exists():
         return False
-    if not stat.S_ISDIR(status.st_mode) or root.is_symlink():
-        fail("existing release is not a real directory")
-    release_manifest = read_release_manifest(
-        root / "manifest.json",
-        {{
-            "build_id": release_build_id,
-            "component_build_id": build_manifest["build_id"],
-            "project_commit": build_manifest["project_commit"],
-            "lock_digest": build_manifest["lock_digest"],
-            "chromium_version": build_manifest["chromium_version"],
-            "mcp_version": build_manifest["mcp_version"],
-            "depot_tools_version": build_manifest["depot_tools_version"],
-            "scriptcat_version": build_manifest["scriptcat_version"],
-            "provenance": build_manifest["provenance"],
-            "files": runtime_files,
-            "directories": runtime_dirs,
-        }},
+    files, directories = inspect_tree(root, release=True)
+    try:
+        raw = json.loads((root / 'manifest.json').read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
+        fail(f'existing release manifest is invalid: {{error}}')
+    if not isinstance(raw, dict) or set(raw) != RELEASE_KEYS or raw != expected_manifest:
+        fail('existing release manifest differs from the requested release')
+    if directories != expected_manifest['directories']:
+        fail('existing release directory inventory differs from the build')
+    runtime_files = {{key: value for key, value in files.items() if key not in RESERVED}}
+    if runtime_files != expected_manifest['files']:
+        fail('existing release file inventory differs from the build')
+    expected_sums = b''.join(
+        digest_file(root / relative).encode('ascii') + b'  ' + relative.encode('utf-8') + b'\\0'
+        for relative in sorted([*expected_manifest['files'], 'manifest.json'])
     )
-    files, directories = inspect_tree(root)
-    if set(files) != set(runtime_files) | RELEASE_RESERVED_FILES:
-        fail("release manifest does not cover the exact release tree")
-    if directories != runtime_dirs:
-        fail("release manifest does not cover the exact release tree")
-    if {{relative: files[relative] for relative in runtime_files}} != runtime_files:
-        fail("release files do not match the verified build manifest")
-    manifest_digest = digest_file(root / "manifest.json")
-    expected_sums = b"".join(
-        digest_file(root / relative).encode("ascii")
-        + b"  "
-        + relative.encode("utf-8")
-        + b"\\0"
-        for relative in sorted([*runtime_files, "manifest.json"])
-    )
-    if (root / "SHA256SUMS").read_bytes() != expected_sums:
-        fail("SHA256SUMS is invalid or does not match the release")
-    if files["manifest.json"] != manifest_digest:
-        fail("release manifest checksum is invalid")
-    if release_manifest["files"] != runtime_files:
-        fail("release manifest files do not match the verified build manifest")
+    if (root / 'SHA256SUMS').read_bytes() != expected_sums:
+        fail('existing release checksum list is invalid')
     return True
 
 
 runtime = pathlib.Path(sys.argv[1])
 build_manifest_path = pathlib.Path(sys.argv[2])
 release_directory = pathlib.Path(sys.argv[3])
-release_temporary = pathlib.Path(sys.argv[4])
-expected = {{
-    "build_id": sys.argv[6],
-    "lock_digest": sys.argv[7],
-    "project_commit": sys.argv[8],
-    "chromium_version": sys.argv[9],
-    "mcp_version": sys.argv[10],
-    "depot_tools_version": sys.argv[11],
-    "scriptcat_version": sys.argv[12],
-    "chromium_upstream_commit": sys.argv[13],
-    "chromium_patch_digest": sys.argv[14],
-    "mcp_upstream_commit": sys.argv[15],
-    "mcp_build_commit": sys.argv[16],
-    "depot_tools_commit": sys.argv[17],
-    "scriptcat_upstream_commit": sys.argv[18],
-    "scriptcat_patch_digest": sys.argv[19],
+temporary_release = pathlib.Path(sys.argv[4])
+release_id = sys.argv[5]
+arguments = {{
+    'component_build_id': sys.argv[6], 'lock_digest': sys.argv[7],
+    'project_commit': sys.argv[8], 'mcp_version': sys.argv[9],
+    'scriptcat_version': sys.argv[10], 'mcp_upstream_commit': sys.argv[11],
+    'mcp_build_commit': sys.argv[12], 'scriptcat_upstream_commit': sys.argv[13],
+    'scriptcat_patch_digest': sys.argv[14],
 }}
-build_manifest = read_build_manifest(build_manifest_path, expected)
+build = read_build(build_manifest_path, arguments)
 files, directories = inspect_tree(runtime)
-if files != build_manifest["files"] or directories != build_manifest["directories"]:
-    fail("runtime does not match the verified build manifest inventory")
-if not RUNTIME_REQUIRED_FILES.issubset(files):
-    fail("build manifest omits required portable runtime files")
-if verify_release(release_directory, sys.argv[5], build_manifest, files, directories):
-    print(build_manifest["source_date_epoch"], "reuse")
+if files != build['files'] or directories != build['directories']:
+    fail('runtime does not match the verified build inventory')
+manifest = release_manifest(release_id, build)
+if verify_release(release_directory, manifest):
+    print(build['source_date_epoch'], 'reuse')
     raise SystemExit(0)
-if release_temporary.exists() or release_temporary.is_symlink():
-    fail(f"temporary release path already exists: {{release_temporary}}")
+if temporary_release.exists() or temporary_release.is_symlink():
+    fail(f'temporary release path already exists: {{temporary_release}}')
 try:
-    shutil.copytree(runtime, release_temporary, copy_function=shutil.copy2)
-    copied_files, copied_directories = inspect_tree(release_temporary)
+    shutil.copytree(runtime, temporary_release, copy_function=shutil.copy2)
+    copied_files, copied_directories = inspect_tree(temporary_release)
     if copied_files != files or copied_directories != directories:
-        fail("copied runtime differs from the verified runtime")
-    write_release_manifest(release_temporary, sys.argv[5], build_manifest)
+        fail('copied runtime differs from the verified runtime')
+    write_metadata(temporary_release, manifest)
 except BaseException:
-    shutil.rmtree(release_temporary, ignore_errors=True)
+    shutil.rmtree(temporary_release, ignore_errors=True)
     raise
-print(build_manifest["source_date_epoch"], "create")
+print(build['source_date_epoch'], 'create')
 PY
         )"
-        test "$source_date_epoch" -gt 0
 
+        test "$source_date_epoch" -gt 0
         if test -e "$archive" || test -L "$archive"; then
           test "$package_mode" = reuse
-          test -f "$archive"
-          test ! -L "$archive"
-          fail_phase=verify-existing-archive
-          tar --sort=name --format=gnu --mtime="@$source_date_epoch" \\
-            --owner=0 --group=0 --numeric-owner -C "$(dirname "$release_directory")" \\
-            -cf - "$(basename "$release_directory")" | \\
-            zstd --threads=1 --quiet --force -o "$archive_temporary"
-          cmp --silent "$archive_temporary" "$archive"
-          rm -f -- "$archive_temporary"
-          sha256sum -- "$archive" | \\
-            {{ read -r digest _; printf '%s\\n' "$digest"; }} \\
-            > "$archive_digest_temporary"
-          if test "$archive_digest_exists" = true; then
-            test -f "$archive_digest"
-            test ! -L "$archive_digest"
-            cmp --silent "$archive_digest_temporary" "$archive_digest"
-            rm -f -- "$archive_digest_temporary"
+          test -f "$archive" && test ! -L "$archive"
+          phase=verify-existing-archive
+          tar --sort=name --format=gnu --mtime="@$source_date_epoch" \
+            --owner=0 --group=0 --numeric-owner -C "$(dirname "$release_directory")" \
+            -cf - "$(basename "$release_directory")" | \
+            zstd --threads=1 --quiet --force -o "$temporary_archive"
+          cmp --silent "$temporary_archive" "$archive"
+          rm -f -- "$temporary_archive"
+        else
+          phase=archive
+          if test "$package_mode" = create; then
+            archive_parent="$temporary_parent"
+            archive_release="$(basename "$temporary_release")"
           else
-            mv -- "$archive_digest_temporary" "$archive_digest"
+            archive_parent="$(dirname "$release_directory")"
+            archive_release="$(basename "$release_directory")"
           fi
-          printf 'remote package completed: release=%s archive=%s sha256=%s\\n' \\
-            "$release_build_id" "$archive" "$archive_digest"
-          exit 0
+          tar --sort=name --format=gnu --mtime="@$source_date_epoch" \
+            --owner=0 --group=0 --numeric-owner -C "$archive_parent" \
+            -cf - "$archive_release" | \
+            zstd --threads=1 --quiet --force -o "$temporary_archive"
+          if test "$package_mode" = create; then
+            mv -- "$temporary_release" "$release_directory"
+            rmdir "$temporary_parent"
+          fi
+          mv -- "$temporary_archive" "$archive"
         fi
 
-        fail_phase=archive
-        if test "$package_mode" = create; then
-          archive_parent="$release_temporary_parent"
-          archive_release="$(basename "$release_temporary")"
+        phase=archive-digest
+        sha256sum -- "$archive" | {{ read -r digest _; printf '%s\n' "$digest"; }} > "$temporary_digest"
+        if test -e "$archive_digest" || test -L "$archive_digest"; then
+          test -f "$archive_digest" && test ! -L "$archive_digest"
+          cmp --silent "$temporary_digest" "$archive_digest"
+          rm -f -- "$temporary_digest"
         else
-          archive_parent="$(dirname "$release_directory")"
-          archive_release="$(basename "$release_directory")"
+          mv -- "$temporary_digest" "$archive_digest"
         fi
-        tar --sort=name --format=gnu --mtime="@$source_date_epoch" \\
-          --owner=0 --group=0 --numeric-owner -C "$archive_parent" \\
-          -cf - "$archive_release" | \\
-          zstd --threads=1 --quiet --force -o "$archive_temporary"
-        sha256sum -- "$archive_temporary" | \\
-          {{ read -r digest _; printf '%s\\n' "$digest"; }} \\
-          > "$archive_digest_temporary"
-        if test "$package_mode" = create; then
-          mv -- "$release_temporary" "$release_directory"
-          rmdir "$release_temporary_parent"
-        fi
-        mv -- "$archive_temporary" "$archive"
-        mv -- "$archive_digest_temporary" "$archive_digest"
-        printf 'remote package completed: release=%s archive=%s sha256=%s\\n' \\
-          "$release_build_id" "$archive" "$archive_digest"
+        printf 'remote MCP package completed: release=%s archive=%s\n' "$release_build_id" "$archive"
         """
     )

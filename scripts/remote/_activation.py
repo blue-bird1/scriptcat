@@ -2,11 +2,9 @@ from __future__ import annotations
 
 import fcntl
 import hashlib
-import json
 import os
 import shutil
 import stat
-import subprocess
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -71,9 +69,7 @@ def activate_archive(
     data_root: Path,
     extension_root: Path,
     expected_build_id: str,
-    expected_chromium_version: str,
     expected_mcp_version: str,
-    expected_depot_tools_version: str,
     expected_scriptcat_version: str,
     expected_lock_digest: str | None = None,
     expected_project_commit: str | None = None,
@@ -97,9 +93,7 @@ def activate_archive(
         verify_expected_manifest(
             manifest,
             expected_build_id,
-            expected_chromium_version,
             expected_mcp_version,
-            expected_depot_tools_version,
             expected_scriptcat_version,
         )
         if expected_lock_digest is not None or expected_project_commit is not None:
@@ -111,7 +105,6 @@ def activate_archive(
             )
         verify_source_provenance(manifest, expected_source_provenance)
         verify_manifest(release, manifest)
-        verify_chromium_binary(release, manifest.chromium_version)
         with profile_lock():
             return commit_activation(
                 release,
@@ -126,19 +119,12 @@ def activate_archive(
 def verify_expected_manifest(
     manifest: ReleaseManifest,
     expected_build_id: str,
-    expected_chromium_version: str,
     expected_mcp_version: str,
-    expected_depot_tools_version: str,
     expected_scriptcat_version: str,
 ) -> None:
     expected = {
         "build_id": (manifest.build_id, expected_build_id),
-        "Chromium version": (manifest.chromium_version, expected_chromium_version),
         "MCP version": (manifest.mcp_version, expected_mcp_version),
-        "depot_tools version": (
-            manifest.depot_tools_version,
-            expected_depot_tools_version,
-        ),
         "ScriptCat version": (
             manifest.scriptcat_version,
             expected_scriptcat_version,
@@ -149,24 +135,6 @@ def verify_expected_manifest(
             raise WorkflowError(
                 f"release {component} does not match the requested upstream lock"
             )
-
-
-def verify_chromium_binary(release: Path, expected_version: str) -> None:
-    executable = release / "chromium" / "chrome-linux" / "chrome"
-    if not os.access(executable, os.X_OK):
-        raise WorkflowError("portable Chromium entry is not executable")
-    try:
-        completed = subprocess.run(
-            (str(executable), "--version"),
-            check=True,
-            text=True,
-            capture_output=True,
-            timeout=30,
-        )
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as error:
-        raise WorkflowError("portable Chromium version probe failed") from error
-    if expected_version not in completed.stdout:
-        raise WorkflowError("portable Chromium reports an unexpected version")
 
 
 def commit_activation(
@@ -319,25 +287,10 @@ def publish_extension_directory(
 
 
 def read_release_provenance(release: Path) -> ReleaseProvenance:
-    manifest_path = release / "manifest.json"
-    try:
-        raw = json.loads(manifest_path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise WorkflowError(f"release provenance is invalid: {error}") from error
-    if not isinstance(raw, dict):
-        raise WorkflowError("release provenance is invalid")
-    component_build_id = raw.get("component_build_id")
-    project_commit = raw.get("project_commit")
-    lock_digest = raw.get("lock_digest")
-    if not all(
-        isinstance(value, str)
-        for value in (
-            component_build_id,
-            project_commit,
-            lock_digest,
-        )
-    ):
-        raise WorkflowError("release provenance is missing or invalid")
+    manifest = read_manifest(release)
+    component_build_id = manifest.component_build_id
+    project_commit = manifest.project_commit
+    lock_digest = manifest.lock_digest
     validate_build_id(component_build_id, "release component build ID")
     validate_project_commit(project_commit, "release project commit")
     validate_lock_digest(lock_digest, "release lock digest")
@@ -441,13 +394,11 @@ def materialize_release(
                 "existing release conflicts with the requested build_id"
             )
         verify_manifest(final, manifest)
-        verify_chromium_binary(final, manifest.chromium_version)
         return final
     remove_tree(temporary)
     try:
         shutil.copytree(release, temporary)
         verify_manifest(temporary, manifest)
-        verify_chromium_binary(temporary, manifest.chromium_version)
         fsync_tree(temporary)
         os.replace(temporary, final)
         fsync_directory(releases)

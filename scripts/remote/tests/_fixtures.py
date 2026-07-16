@@ -13,11 +13,11 @@ from scripts.remote._archive import ReleaseManifest, read_manifest
 from scripts.remote._lock import UpstreamLock
 
 BUILD_ID = "0123456789abcdef01234567"
-CHROMIUM_VERSION = "148.0.7778.215"
+COMPONENT_BUILD_ID = "89abcdef0123456701234567"
+PROJECT_COMMIT = "1" * 40
+LOCK_DIGEST = "2" * 64
 MCP_VERSION = "1.5.0"
-DEPOT_TOOLS_VERSION = "chromium-148-deps"
 SCRIPTCAT_VERSION = "1.3.2"
-CHROME_RELATIVE = "chromium/chrome-linux/chrome"
 MCP_RELATIVE = "mcp/bin/chrome-devtools-mcp.js"
 EXTENSION_MANIFEST_RELATIVE = "scriptcat/manifest.json"
 EXTENSION_WORKER_RELATIVE = "scriptcat/worker.js"
@@ -25,41 +25,23 @@ EXTRA_RELATIVE = "scriptcat/unlisted.js"
 SPECIAL_RELATIVE = "scriptcat/unsupported"
 ESCAPING_RELATIVE = "../outside"
 SOURCE_PROVENANCE = {
-    "chromium": {
-        "upstream_commit": "1" * 40,
-        "patch_digest": "2" * 64,
-        "build_commit": "3" * 40,
-    },
     "chrome_devtools_mcp": {
-        "upstream_commit": "4" * 40,
-        "build_commit": "5" * 40,
-    },
-    "depot_tools": {
-        "upstream_commit": "6" * 40,
-        "build_commit": "6" * 40,
+        "upstream_commit": "3" * 40,
+        "build_commit": "4" * 40,
     },
     "scriptcat": {
-        "upstream_commit": "7" * 40,
-        "patch_digest": "8" * 64,
-        "build_commit": "9" * 40,
+        "upstream_commit": "5" * 40,
+        "patch_digest": "6" * 64,
+        "build_commit": "7" * 40,
     },
 }
 
 
 def provenance_for_lock(lock: UpstreamLock) -> dict[str, dict[str, str]]:
     return {
-        "chromium": {
-            "upstream_commit": lock.chromium.commit,
-            "patch_digest": lock.patch_digest("chromium"),
-            "build_commit": "a" * 40,
-        },
         "chrome_devtools_mcp": {
             "upstream_commit": lock.mcp.upstream_commit,
             "build_commit": lock.mcp.commit,
-        },
-        "depot_tools": {
-            "upstream_commit": lock.depot_tools.commit,
-            "build_commit": lock.depot_tools.commit,
         },
         "scriptcat": {
             "upstream_commit": lock.scriptcat.commit,
@@ -69,41 +51,35 @@ def provenance_for_lock(lock: UpstreamLock) -> dict[str, dict[str, str]]:
     }
 
 
-def create_release(parent: Path, *, build_id: str = BUILD_ID) -> Path:
+def create_release(
+    parent: Path,
+    *,
+    build_id: str = BUILD_ID,
+    component_build_id: str = COMPONENT_BUILD_ID,
+    project_commit: str = PROJECT_COMMIT,
+    lock_digest: str = LOCK_DIGEST,
+    provenance: dict[str, dict[str, str]] | None = None,
+) -> Path:
     release = parent / f"release-{build_id}"
-    write_file(
-        release / CHROME_RELATIVE,
-        f"#!/bin/sh\nprintf '%s\\n' 'Chromium {CHROMIUM_VERSION}'\n".encode(),
-        executable=True,
-    )
     write_file(release / MCP_RELATIVE, b"export const ready = true;\n")
     write_file(release / EXTENSION_MANIFEST_RELATIVE, b'{"manifest_version":3}\n')
     write_file(release / EXTENSION_WORKER_RELATIVE, b"const managed = true;\n")
     files, directories = release_tree(release)
     manifest_payload = {
+        "schema": 3,
         "build_id": build_id,
-        "chromium_version": CHROMIUM_VERSION,
-        "mcp_version": MCP_VERSION,
-        "depot_tools_version": DEPOT_TOOLS_VERSION,
-        "scriptcat_version": SCRIPTCAT_VERSION,
-        "provenance": SOURCE_PROVENANCE,
+        "component_build_id": component_build_id,
+        "project_commit": project_commit,
+        "lock_digest": lock_digest,
+        "versions": {
+            "chrome_devtools_mcp": MCP_VERSION,
+            "scriptcat": SCRIPTCAT_VERSION,
+        },
+        "provenance": provenance or SOURCE_PROVENANCE,
         "files": files,
         "directories": directories,
     }
-    manifest_path = release / "manifest.json"
-    manifest_path.write_text(
-        json.dumps(manifest_payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    checksums = release / "SHA256SUMS"
-    with checksums.open("wb") as stream:
-        for relative in sorted([*files, "manifest.json"]):
-            stream.write(
-                sha256(release / relative).encode("ascii")
-                + b"  "
-                + relative.encode("utf-8")
-                + b"\0"
-            )
+    write_manifest_and_checksums(release, manifest_payload)
     return release
 
 
@@ -162,10 +138,7 @@ def add_symbolic_link(release: Path) -> None:
 
 
 def add_hard_link(release: Path) -> None:
-    os.link(
-        release / EXTENSION_MANIFEST_RELATIVE,
-        release / SPECIAL_RELATIVE,
-    )
+    os.link(release / EXTENSION_MANIFEST_RELATIVE, release / SPECIAL_RELATIVE)
 
 
 def add_fifo(release: Path) -> None:
@@ -180,6 +153,32 @@ def write_file(path: Path, payload: bytes, *, executable: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(payload)
     path.chmod(0o755 if executable else 0o644)
+
+
+def rewrite_release_file(release: Path, relative: str, payload: bytes) -> None:
+    write_file(release / relative, payload)
+    manifest_path = release / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["files"][relative] = sha256(release / relative)
+    write_manifest_and_checksums(release, manifest)
+
+
+def write_manifest_and_checksums(release: Path, manifest: dict[str, object]) -> None:
+    manifest_path = release / "manifest.json"
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
+    files = manifest["files"]
+    if not isinstance(files, dict):
+        raise AssertionError("manifest files must be a mapping")
+    with (release / "SHA256SUMS").open("wb") as stream:
+        for relative in sorted([*files, "manifest.json"]):
+            stream.write(
+                sha256(release / relative).encode("ascii")
+                + b"  "
+                + relative.encode("utf-8")
+                + b"\0"
+            )
 
 
 def release_tree(root: Path) -> tuple[dict[str, str], list[str]]:
@@ -204,5 +203,7 @@ def release_tree(root: Path) -> tuple[dict[str, str], list[str]]:
 
 def sha256(path: Path) -> str:
     digest = hashlib.sha256()
-    digest.update(path.read_bytes())
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
     return digest.hexdigest()
