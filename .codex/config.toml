@@ -10,6 +10,7 @@ args = [
   "--user-data-dir=/home/bluebird/.codex/chrome-devtools-scriptcat-chromium-profile",
   "--proxy-server=http://127.0.0.1:7891",
   "--managed-scriptcat-path=/home/bluebird/.codex/chrome-extensions/scriptcat/v1.3.2",
+  "--managed-scriptcat-data-root=/home/bluebird/.local/share/scriptcat-mcp",
   "--scriptcat-repository-root=/home/bluebird/git/scriptcat",
   "--scriptcat-extension-id=ckchkcgpbkhleahkgkbiiikpcjdbopje",
   "--headless",
