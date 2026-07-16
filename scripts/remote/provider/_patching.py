@@ -51,7 +51,7 @@ activate_chromium_patch() {
   actual_sha=$(cat "${patch_files[@]}" | sha256sum | awk '{print $1}')
   test "$actual_sha" = "$expected_sha"
   git -C "$destination" fetch --depth=1 "$source" "$base"
-  git -C "$destination" checkout --detach "$base"
+  git -C "$destination" checkout --force --detach "$base"
   git -C "$destination" reset --hard "$base"
   git -C "$destination" clean -ffd
   git -C "$destination" apply --index "${patch_files[@]}"
