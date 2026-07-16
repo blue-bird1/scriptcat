@@ -6,8 +6,6 @@ from ._lock import UpstreamLock
 from ._patching import patch_preparation_script
 from ._verified_build import component_build_id, verified_build_finalize_script
 
-REMOTE_TEST_BROWSER = "/root/scriptcat-browser-build/current/chrome-linux/chrome"
-
 
 def _mcp_test_sandbox_helpers() -> str:
     """Render the non-root private mount namespace MCP test launcher."""
@@ -38,14 +36,13 @@ terminate_test_process_group() {
 
 run_mcp_tests_in_sandbox() {
   local test_command=$1 test_uid test_gid test_status
-  local command_file launcher_file provider_release
+  local command_file launcher_file
   test_uid=$(id -u nobody)
   test_gid=$(id -g nobody)
   test "$test_uid" -ne 0 && test "$test_gid" -ne 0
-  provider_release=$(dirname "$(dirname "$external_browser")")
   test_root=$(mktemp -d /tmp/scriptcat-mcp-tests.XXXXXX)
   chmod 0755 "$test_root"
-  install -d -m 0755 "$test_root/mcp" "$test_root/browser"
+  install -d -m 0755 "$test_root/mcp"
   install -d -m 0700 -o "$test_uid" -g "$test_gid" \
     "$test_root/home" "$test_root/tmp" "$test_root/runtime"
   command_file="$test_root/command.sh"
@@ -59,12 +56,9 @@ test_root=${SANDBOX_TEST_ROOT:?}
 test_uid=${SANDBOX_TEST_UID:?}
 test_gid=${SANDBOX_TEST_GID:?}
 mcp_source=${SANDBOX_MCP_SOURCE:?}
-browser_source=${SANDBOX_BROWSER_SOURCE:?}
 command_file=${SANDBOX_COMMAND_FILE:?}
 mount --bind "$mcp_source" "$test_root/mcp"
 mount -o remount,bind,ro "$test_root/mcp"
-mount --bind "$browser_source" "$test_root/browser"
-mount -o remount,bind,ro "$test_root/browser"
 cd "$test_root/mcp"
 exec setpriv \
   --reuid="$test_uid" --regid="$test_gid" --clear-groups \
@@ -77,7 +71,6 @@ exec setpriv \
     XDG_CACHE_HOME="$test_root/home/.cache" \
     XDG_CONFIG_HOME="$test_root/home/.config" \
     XDG_RUNTIME_DIR="$test_root/runtime" \
-    PUPPETEER_EXECUTABLE_PATH="$test_root/browser/chrome-linux/chrome" \
     /bin/bash -Eeuo pipefail "$command_file"
 LAUNCHER
   chmod 0555 "$launcher_file"
@@ -90,7 +83,6 @@ LAUNCHER
     SANDBOX_TEST_UID="$test_uid" \
     SANDBOX_TEST_GID="$test_gid" \
     SANDBOX_MCP_SOURCE="$mcp" \
-    SANDBOX_BROWSER_SOURCE="$provider_release" \
     SANDBOX_COMMAND_FILE="$command_file" \
     setsid unshare --mount --propagation private /bin/bash "$launcher_file" 9>&- &
   test_session_pid=$!
@@ -143,7 +135,6 @@ set -Eeuo pipefail
 umask 022
 build_root={shell_quote(config.build_root)}
 checkout={shell_quote(config.checkout)}
-external_browser={shell_quote(REMOTE_TEST_BROWSER)}
 test "$build_root" = {shell_quote(REMOTE_BUILD_ROOT)}
 mkdir -p "$build_root/src" "$build_root/out" "$build_root/builds"
 command -v flock >/dev/null
@@ -226,8 +217,6 @@ test "$(git -C "$mcp" rev-parse HEAD)" = "$mcp_commit"
 test "$(git -C "$mcp" remote get-url origin)" = {shell_quote(lock.mcp.source)}
 git -C "$mcp" merge-base --is-ancestor {shell_quote(lock.mcp.upstream_commit)} HEAD
 assert_mcp_checkout_clean
-test -x "$external_browser"
-"$external_browser" --version >/dev/null
 
 rm -rf "$runtime"
 mkdir -p "$runtime/mcp" "$runtime/scriptcat"
@@ -242,7 +231,7 @@ set_phase mcp-build
 pnpm build
 set_phase mcp-focused-tests
 run_mcp_tests_in_sandbox '
-  node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts tests/ManagedExtensionConsistency.test.ts tests/tools/extensions.test.ts
+  node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedBrowserShutdown.test.ts tests/ManagedExtensionConsistency.test.ts
 '
 set_phase mcp-bundle
 pnpm bundle

@@ -15,7 +15,7 @@ MANAGED_PATH_ARGUMENT = "--managed-scriptcat-path="
 class ExtensionRootContractTest(unittest.TestCase):
     def test_extension_root_matches_managed_scriptcat_path(self) -> None:
         config_path = REPOSITORY_ROOT / ".codex" / "config.toml"
-        lock_path = REPOSITORY_ROOT / "browser" / "upstreams.lock.json"
+        lock_path = REPOSITORY_ROOT / "browser" / "mcp.lock.json"
         config = tomllib.loads(config_path.read_text(encoding="utf-8"))
         lock = json.loads(lock_path.read_text(encoding="utf-8"))
         arguments = config["mcp_servers"][MCP_SERVER]["args"]

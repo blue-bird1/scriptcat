@@ -72,7 +72,7 @@ class McpSubmoduleProvenanceTest(unittest.TestCase):
         self._run(("git", "add", ".gitmodules", MCP_PATH), cwd=root)
         self._run(("git", "commit", "-m", "add mcp"), cwd=root)
 
-        lock_path = root / "upstreams.lock.json"
+        lock_path = root / "mcp.lock.json"
         lock_path.write_text(
             json.dumps(
                 self._lock_payload(baseline=baseline, custom=custom),

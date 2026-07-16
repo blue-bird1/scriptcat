@@ -38,8 +38,8 @@ def parser() -> argparse.ArgumentParser:
             "Verifies the trusted archive digest, selected MCP lock, manifest, and "
             "runtime inventory before activating under ~/.local/share/scriptcat-mcp. "
             "The operation is offline, preserves the fixed profile, deploys the "
-            "physical managed ScriptCat extension transactionally, and never reads "
-            "or modifies the external browser installation."
+            "physical managed ScriptCat extension transactionally, and does not "
+            "access another product."
         ),
     )
     result.add_argument("archive", type=Path, help="local .tar.zst MCP archive")

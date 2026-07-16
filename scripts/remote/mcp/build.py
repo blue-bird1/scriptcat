@@ -51,10 +51,9 @@ def parser() -> argparse.ArgumentParser:
         ),
         epilog=(
             "Requires a clean local main branch, pushes origin/main, and uses wg0. "
-            "The focused MCP tests execute the fixed remote external browser at "
-            "/root/scriptcat-browser-build/current/chrome-linux/chrome. The browser "
-            "is not part of this lock, build, or provenance. This command does not "
-            "package, download, or activate a release."
+            "This product build only compiles and tests MCP/ScriptCat sources. "
+            "Cross-product integration is validated after independent installation. "
+            "This command does not package, download, or activate a release."
         ),
     )
     result.add_argument(

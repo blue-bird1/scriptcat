@@ -28,13 +28,13 @@
 
 ## 浏览器 provider 与 MCP 的远程发布
 
-- **执行主机与入口**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，制品由 remote wrapper 拉回本机激活。主机经本地 WireGuard `wg0` 访问；连接可用后通过 `scripts/remote/provider/` 或 `scripts/remote/mcp/` 执行对应产品的 doctor、build、package 和 install。不得手写 SSH、SCP、rsync、远端 checkout/reset 或 Chromium 构建命令。远端使用自身透明代理，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
+- **执行主机与入口**：Chromium、派生 MCP 和 managed ScriptCat 的编译、协议测试与打包只在 `192.168.50.8` 执行，制品由 remote wrapper 拉回本机激活。主机经本地 WireGuard `wg0` 访问；连接可用后通过 `scripts/remote/provider/` 或 `scripts/remote/mcp/` 执行对应产品的 build、package 和 install。不得手写 SSH、SCP、rsync、远端 checkout/reset 或 Chromium 构建命令。远端使用自身透明代理，不建立 SSH 反向代理，也不传递本机 `127.0.0.1:7891`。
 - **本地门禁**：远程 build 前，本地 `main` 必须干净；build 命令推送提交后的 `HEAD` 到 `origin/main`，并在返回后确认本地 `HEAD` 未变化。`gclient`、`gn`、`autoninja`、`ninja` 与其他 Chromium 构建命令不得在本机或裸 SSH 中执行；`.codex/config.toml` 的 `PreToolUse` hook 强制该规则。只读检查不属于构建。
 - **provider 三阶段**：provider 使用 `browser/provider.lock.json`，依次执行 `scripts/remote/provider/build.py`、`scripts/remote/provider/package.py --build-id <component-build-id>`、`scripts/remote/provider/install.py <archive> --lock browser/provider.lock.json --build-id <release-build-id> --archive-sha256 <digest>`。build 编译 Chromium 并运行协议测试；package 只校验该 provider build 并生成归档；install 只校验归档、lock 与 manifest 后原子激活到 `~/.local/share/scriptcat-browser/releases/<release-build-id>`，维护 `current`/`previous`。
-- **MCP 三阶段**：MCP 使用 `browser/mcp.lock.json`，依次执行 `scripts/remote/mcp/build.py`、`scripts/remote/mcp/package.py --build-id <component-build-id>`、`scripts/remote/mcp/install.py <archive> --lock browser/mcp.lock.json --build-id <release-build-id> --archive-sha256 <digest>`。MCP build 只使用远端稳定外部浏览器路径进行测试；其 lock、manifest、build 目录和归档不读取或包含 browser/provider 身份。install 原子激活到 `~/.local/share/scriptcat-mcp/releases/<release-build-id>`，维护 `current`/`previous` 并部署 managed ScriptCat，同时保持既有 profile 数据。
+- **MCP 三阶段**：MCP 使用 `browser/mcp.lock.json`，依次执行 `scripts/remote/mcp/build.py`、`scripts/remote/mcp/package.py --build-id <component-build-id>`、`scripts/remote/mcp/install.py <archive> --lock browser/mcp.lock.json --build-id <release-build-id> --archive-sha256 <digest>`。MCP build、lock、manifest、build 目录和归档均不读取、执行或包含 browser/provider 身份；浏览器集成只在两个产品独立安装后验收。install 原子激活到 `~/.local/share/scriptcat-mcp/releases/<release-build-id>`，维护 `current`/`previous` 并部署 managed ScriptCat，同时保持既有 profile 数据。
 - **阶段边界**：每个 build、package、install 命令只完成所属阶段；package 不推送、同步、编译、测试或激活，install 不读取 Git、不访问远端或网络。归档 SHA-256 与来源校验属于各自产品的供应链完整性，MCP 运行时不以它们作为浏览器启动门禁。
 - **迁移入口**：顶层 `scripts/remote/doctor.py`、`build.py`、`package.py`、`install.py` 与 `build_install.py` 只返回迁移错误；调用方选择 provider 或 MCP 后执行该产品的显式三阶段命令。
-- **验收范围**：provider build 覆盖补丁与 Chromium protocol tests；MCP build 覆盖 MCP、managed ScriptCat 与外部浏览器接口；两者的 package 校验各自 runtime 与归档。MCP install 后通过完整 MCP 验收 ScriptCat CRUD、真实注入、并发锁和进程清理。仅在共享改动或明确要求时扩大测试范围。
+- **验收范围**：provider build 覆盖补丁与 Chromium protocol tests；MCP build 只覆盖 MCP 与 managed ScriptCat。两者的 package 分别校验自身 runtime 与归档。两个产品独立 install 后，再通过完整 MCP 验收外部浏览器调用、ScriptCat CRUD、真实注入、并发锁和进程清理。仅在共享改动或明确要求时扩大测试范围。
 
 ## 项目
 
@@ -125,7 +125,6 @@ pnpm run lint:userscripts -- foo.user.js
 pnpm install:scriptcat -- steampy-token-sync.user.js
 
 # browser provider 远程发布：fish 中显式按阶段执行
-uv run --project scripts --python 3.12 python scripts/remote/provider/doctor.py
 set provider_component_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/build.py)
 set provider_archive /tmp/scriptcat-browser-portable.tar.zst
 set provider_release_build_id (uv run --project scripts --python 3.12 python scripts/remote/provider/package.py --build-id $provider_component_build_id --output $provider_archive)
@@ -133,7 +132,6 @@ set provider_archive_sha256 (string trim < "$provider_archive.sha256")
 uv run --project scripts --python 3.12 python scripts/remote/provider/install.py $provider_archive --lock browser/provider.lock.json --build-id $provider_release_build_id --archive-sha256 $provider_archive_sha256
 
 # ScriptCat MCP 远程发布：fish 中显式按阶段执行
-uv run --project scripts --python 3.12 python scripts/remote/mcp/doctor.py
 set mcp_component_build_id (uv run --project scripts --python 3.12 python scripts/remote/mcp/build.py)
 set mcp_archive /tmp/scriptcat-mcp-portable.tar.zst
 set mcp_release_build_id (uv run --project scripts --python 3.12 python scripts/remote/mcp/package.py --build-id $mcp_component_build_id --output $mcp_archive)

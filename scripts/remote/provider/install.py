@@ -29,10 +29,26 @@ def parser() -> argparse.ArgumentParser:
             "not access Git, the remote host, ScriptCat, MCP, profiles, or extensions."
         ),
     )
-    result.add_argument("archive", type=Path)
-    result.add_argument("--lock", type=Path, required=True, metavar="LOCK_PATH")
-    result.add_argument("--archive-sha256", required=True, metavar="SHA256")
-    result.add_argument("--build-id", required=True, metavar="RELEASE_BUILD_ID")
+    result.add_argument("archive", type=Path, help="local .tar.zst provider archive")
+    result.add_argument(
+        "--lock",
+        type=Path,
+        required=True,
+        metavar="LOCK_PATH",
+        help="exact provider lock used to create the archive",
+    )
+    result.add_argument(
+        "--archive-sha256",
+        required=True,
+        metavar="SHA256",
+        help="trusted lowercase SHA-256 of the complete archive bytes",
+    )
+    result.add_argument(
+        "--build-id",
+        required=True,
+        metavar="RELEASE_BUILD_ID",
+        help="expected 24-character provider release build ID",
+    )
     return result
 
 

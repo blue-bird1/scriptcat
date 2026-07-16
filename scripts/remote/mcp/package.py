@@ -56,8 +56,8 @@ def parser() -> argparse.ArgumentParser:
         description="Package one verified remote MCP/ScriptCat component build.",
         epilog=(
             "Requires a clean pushed main checkout, wg0, SSH, and rsync. It reads "
-            "only the selected verified MCP build and never builds, tests, installs, "
-            "or reads the external browser installation. Outputs are non-overwriting."
+            "only the selected verified MCP build and does not access another product. "
+            "Outputs are non-overwriting."
         ),
     )
     result.add_argument(

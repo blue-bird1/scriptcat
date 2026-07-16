@@ -60,10 +60,28 @@ def parser() -> argparse.ArgumentParser:
             "new archive plus trusted SHA-256 sidecar to /tmp by default."
         ),
     )
-    result.add_argument("--build-id", required=True, metavar="COMPONENT_BUILD_ID")
-    result.add_argument("--lock", type=Path, default=LOCK_PATH)
-    result.add_argument("--output", type=Path)
-    result.add_argument("--sha256-output", type=Path)
+    result.add_argument(
+        "--build-id",
+        required=True,
+        metavar="COMPONENT_BUILD_ID",
+        help="24-character provider component build ID on the remote host",
+    )
+    result.add_argument(
+        "--lock",
+        type=Path,
+        default=LOCK_PATH,
+        help="provider lock relative to the repository root (default: %(default)s)",
+    )
+    result.add_argument(
+        "--output",
+        type=Path,
+        help="local archive path (default: non-overwriting /tmp path)",
+    )
+    result.add_argument(
+        "--sha256-output",
+        type=Path,
+        help="local trusted digest path (default: <output>.sha256)",
+    )
     return result
 
 

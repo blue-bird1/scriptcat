@@ -5,7 +5,7 @@ from pathlib import Path
 
 from scripts.remote._common import RemoteConfig
 from scripts.remote._lock import load_lock
-from scripts.remote._remote_build import REMOTE_TEST_BROWSER, remote_build_script
+from scripts.remote._remote_build import remote_build_script
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 PROJECT_COMMIT = "0" * 40
@@ -21,13 +21,17 @@ class McpRemoteBuildContractTest(unittest.TestCase):
             "https://example.invalid/scriptcat.git",
         )
 
-    def test_uses_only_fixed_external_browser_for_focused_tests(self) -> None:
-        self.assertIn(f"external_browser={REMOTE_TEST_BROWSER}", self.script)
-        self.assertIn('test -x "$external_browser"', self.script)
-        self.assertIn('"$external_browser" --version', self.script)
-        self.assertIn("PUPPETEER_EXECUTABLE_PATH", self.script)
-        self.assertNotIn("test-provider", self.script)
-        self.assertNotIn("receipt", self.script)
+    def test_does_not_inspect_or_execute_a_browser_provider(self) -> None:
+        for forbidden in (
+            "external_browser",
+            "PUPPETEER_EXECUTABLE_PATH",
+            "SANDBOX_BROWSER_SOURCE",
+            "scriptcat-browser",
+            "chrome-linux",
+            "provider_release",
+            "tests/tools/extensions.test.ts",
+        ):
+            self.assertNotIn(forbidden, self.script)
 
     def test_builds_only_mcp_and_scriptcat(self) -> None:
         self.assertIn('mkdir -p "$runtime/mcp" "$runtime/scriptcat"', self.script)
