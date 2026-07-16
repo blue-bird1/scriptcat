@@ -22,7 +22,10 @@ import { onRegularUpdateCheckAlarm } from "./regular_updatecheck";
 import { cacheInstance } from "@App/app/cache";
 import { InfoNotification } from "./utils";
 import {
+  EXTENSION_INSTALL_REASON,
+  EXTENSION_UPDATE_REASON,
   isManagedMcp,
+  registerManagedMcpInstallPage,
   registerManagedMcpRoutes,
   REGULAR_EXTENSION_UPDATE_ALARM,
   REGULAR_SCRIPT_UPDATE_ALARM,
@@ -206,53 +209,64 @@ export default class ServiceWorkerManager {
       return true;
     });
 
-    if (process.env.NODE_ENV === "production" && !isManagedMcp()) {
-      chrome.runtime.onInstalled.addListener((details) => {
-        const lastError = chrome.runtime.lastError;
-        if (lastError) {
-          console.error("chrome.runtime.lastError in chrome.runtime.onInstalled:", lastError);
-          // chrome.runtime.onInstalled API出错不进行后续处理
-        }
+    if (process.env.NODE_ENV === "production") {
+      registerManagedMcpInstallPage(() => {
         initLocalesPromise.then(() => {
-          if (details.reason === "install") {
-            chrome.tabs.create({ url: `${DocumentationSite}${localePath}/docs/use/install_comple` });
-          } else if (details.reason === "update") {
-            const url = `${DocumentationSite}${localePath}/docs/change/${ExtVersion.includes("-") ? "beta-changelog/" : ""}#${ExtVersion}`;
-            // 如果只是修复版本，只弹出通知不打开页面
-            // beta版本还是每次都打开更新页面
-            InfoNotification(t("ext_update_notification"), t("ext_update_notification_desc", { version: ExtVersion }), {
-              url,
-            });
-            if (ExtVersion.endsWith(".0")) {
-              getCurrentTab()
-                .then((tab) => {
-                  // 检查是否正在播放视频，或者窗口未激活
-                  const openInBackground = !tab || tab.audible === true || !tab.active;
-                  // chrome.tabs.create 传回 Promise<chrome.tabs.Tab>
-                  return chrome.tabs.create({
-                    url,
-                    active: !openInBackground,
-                    index: !tab ? undefined : tab.index + 1,
-                    windowId: !tab ? undefined : tab.windowId,
-                  });
-                })
-                .catch((e) => {
-                  console.error(e);
-                });
-            }
-          }
-        });
-
-        // 监听扩展卸载事件
-        watchLanguageChange(() => {
-          chrome.runtime.setUninstallURL(`${DocumentationSite}${localePath}/uninstall`, () => {
-            const lastError = chrome.runtime.lastError;
-            if (lastError) {
-              console.error("chrome.runtime.lastError in chrome.runtime.setUninstallURL:", lastError);
-            }
-          });
+          chrome.tabs.create({ url: `${DocumentationSite}${localePath}/docs/use/install_comple` });
         });
       });
+
+      if (!isManagedMcp())
+        chrome.runtime.onInstalled.addListener((details) => {
+          const lastError = chrome.runtime.lastError;
+          if (lastError) {
+            console.error("chrome.runtime.lastError in chrome.runtime.onInstalled:", lastError);
+            // chrome.runtime.onInstalled API出错不进行后续处理
+          }
+          initLocalesPromise.then(() => {
+            if (details.reason === EXTENSION_INSTALL_REASON) {
+              chrome.tabs.create({ url: `${DocumentationSite}${localePath}/docs/use/install_comple` });
+            } else if (details.reason === EXTENSION_UPDATE_REASON) {
+              const url = `${DocumentationSite}${localePath}/docs/change/${ExtVersion.includes("-") ? "beta-changelog/" : ""}#${ExtVersion}`;
+              // 如果只是修复版本，只弹出通知不打开页面
+              // beta版本还是每次都打开更新页面
+              InfoNotification(
+                t("ext_update_notification"),
+                t("ext_update_notification_desc", { version: ExtVersion }),
+                {
+                  url,
+                }
+              );
+              if (ExtVersion.endsWith(".0")) {
+                getCurrentTab()
+                  .then((tab) => {
+                    // 检查是否正在播放视频，或者窗口未激活
+                    const openInBackground = !tab || tab.audible === true || !tab.active;
+                    // chrome.tabs.create 传回 Promise<chrome.tabs.Tab>
+                    return chrome.tabs.create({
+                      url,
+                      active: !openInBackground,
+                      index: !tab ? undefined : tab.index + 1,
+                      windowId: !tab ? undefined : tab.windowId,
+                    });
+                  })
+                  .catch((e) => {
+                    console.error(e);
+                  });
+              }
+            }
+          });
+
+          // 监听扩展卸载事件
+          watchLanguageChange(() => {
+            chrome.runtime.setUninstallURL(`${DocumentationSite}${localePath}/uninstall`, () => {
+              const lastError = chrome.runtime.lastError;
+              if (lastError) {
+                console.error("chrome.runtime.lastError in chrome.runtime.setUninstallURL:", lastError);
+              }
+            });
+          });
+        });
     }
 
     setOnUserActionDomainChanged(
