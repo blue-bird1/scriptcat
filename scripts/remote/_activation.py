@@ -32,6 +32,7 @@ from ._activation_state import (
 from ._archive import (
     ReleaseManifest,
     copy_verified_archive,
+    read_installed_manifest,
     read_manifest,
     single_release_root,
     unpack_archive,
@@ -264,8 +265,7 @@ def verify_legacy_extension(
     active_release = Path(current_state.target)
     if not active_release.is_absolute():
         active_release = current.parent / active_release
-    active_manifest = read_manifest(active_release)
-    verify_manifest(active_release, active_manifest)
+    active_manifest = read_installed_manifest(active_release)
     if extension_root.is_symlink():
         return
     if not extension_matches_manifest(extension_root, active_manifest):

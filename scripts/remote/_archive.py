@@ -171,6 +171,15 @@ def single_release_root(staging: Path) -> Path:
 
 
 def read_manifest(release: Path) -> ReleaseManifest:
+    return _read_manifest(release, allow_missing_provenance=False)
+
+
+def read_installed_manifest(release: Path) -> ReleaseManifest:
+    """Read an activated release, including schema-1 predecessors."""
+    return _read_manifest(release, allow_missing_provenance=True)
+
+
+def _read_manifest(release: Path, *, allow_missing_provenance: bool) -> ReleaseManifest:
     path = release / MANIFEST_NAME
     try:
         raw = json.loads(path.read_text(encoding="utf-8"))
@@ -187,7 +196,11 @@ def read_manifest(release: Path) -> ReleaseManifest:
     )
     files = raw.get("files")
     directories = raw.get("directories")
-    provenance = require_provenance(raw)
+    provenance = (
+        {}
+        if allow_missing_provenance and "provenance" not in raw
+        else require_provenance(raw)
+    )
     if (
         not isinstance(files, dict)
         or not all(

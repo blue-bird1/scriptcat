@@ -11,9 +11,8 @@ from pathlib import Path
 from ._archive import (
     ReleaseManifest,
     inspect_release_tree,
-    read_manifest,
+    read_installed_manifest,
     sha256,
-    verify_manifest,
 )
 from ._common import WorkflowError
 
@@ -309,8 +308,7 @@ def extension_matches_current(
     if not active_release.is_absolute():
         active_release = data_root / active_release
     try:
-        manifest = read_manifest(active_release)
-        verify_manifest(active_release, manifest)
+        manifest = read_installed_manifest(active_release)
     except WorkflowError:
         return False
     return extension_matches_manifest(extension_root, manifest)

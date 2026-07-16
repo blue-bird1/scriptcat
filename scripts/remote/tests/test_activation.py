@@ -187,9 +187,11 @@ class ActivationIntegrityTest(unittest.TestCase):
                 EXTENSION_WORKER_RELATIVE,
                 OLD_EXTENSION_PAYLOAD,
             )
+            remove_source_provenance(old_source)
             old_release = releases / OLD_BUILD_ID
             old_release.parent.mkdir(parents=True)
             shutil.copytree(old_source, old_release)
+            (old_release / "chromium" / "chrome-linux" / "extensions").mkdir()
             (data_root / "current").symlink_to(old_release)
             extension_root = root / "extensions" / SCRIPTCAT_VERSION
             shutil.copytree(old_release / "scriptcat", extension_root)
@@ -310,6 +312,29 @@ def rewrite_release_file(
         json.dumps(manifest, indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
+    with (release / "SHA256SUMS").open("wb") as stream:
+        for covered in sorted([*files, "manifest.json"]):
+            stream.write(
+                sha256(release / covered).encode("ascii")
+                + b"  "
+                + covered.encode("utf-8")
+                + b"\0"
+            )
+
+
+def remove_source_provenance(release: Path) -> None:
+    manifest_path = release / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    provenance = manifest.pop("provenance", None)
+    if not isinstance(provenance, dict):
+        raise AssertionError("release provenance must be a mapping")
+    manifest_path.write_text(
+        json.dumps(manifest, indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    files = manifest["files"]
+    if not isinstance(files, dict):
+        raise AssertionError("release manifest files must be a mapping")
     with (release / "SHA256SUMS").open("wb") as stream:
         for covered in sorted([*files, "manifest.json"]):
             stream.write(
