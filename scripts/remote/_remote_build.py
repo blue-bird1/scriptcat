@@ -126,6 +126,49 @@ run_browser_test_in_sandbox() {
 }"""
 
 
+def _mcp_checkout_helpers() -> str:
+    """Render cleanup and verification for the managed MCP checkout."""
+    return r"""# BEGIN managed MCP checkout helpers
+clean_mcp_untracked_files() {
+  local untracked
+  untracked=$(git -C "$mcp" ls-files --others --exclude-standard)
+  if [ -z "$untracked" ]; then
+    return 0
+  fi
+  printf 'removing reproducible untracked MCP files before provenance validation:\n' >&2
+  printf '%s\n' "$untracked" >&2
+  git -C "$mcp" clean -ffd
+  untracked=$(git -C "$mcp" ls-files --others --exclude-standard)
+  if [ -n "$untracked" ]; then
+    printf 'MCP checkout still has untracked files after cleanup:\n%s\n' \
+      "$untracked" >&2
+    return 1
+  fi
+}
+assert_mcp_checkout_clean() {
+  local status
+  status=$(git -C "$mcp" status --porcelain)
+  if [ -n "$status" ]; then
+    printf 'MCP checkout has tracked or untracked drift:\n%s\n' "$status" >&2
+    return 1
+  fi
+}
+cleanup_mcp_checkout() {
+  if [ -z "${mcp:-}" ] || [ -z "${mcp_commit:-}" ]; then
+    return 0
+  fi
+  if ! git -C "$mcp" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+    printf 'cannot restore managed MCP checkout: %s\n' "$mcp" >&2
+    return 1
+  fi
+  printf 'restoring managed MCP checkout after build: %s\n' "$mcp" >&2
+  git -C "$mcp" reset --hard "$mcp_commit"
+  clean_mcp_untracked_files
+  assert_mcp_checkout_clean
+}
+# END managed MCP checkout helpers"""
+
+
 def remote_build_script(
     config: RemoteConfig, lock: UpstreamLock, project_commit: str, project_origin: str
 ) -> str:
@@ -152,10 +195,22 @@ test_session_pid=
 test_session_pgid=
 exec > >(tee \"$run_log\") 2>&1
 cleanup_remote_test() {{
+  local status=$? cleanup_status
   terminate_browser_test_process_group
   case \"$test_root\" in
     /tmp/scriptcat-browser-tests.*) rm -rf -- \"$test_root\" ;;
   esac
+  if declare -F cleanup_mcp_checkout >/dev/null; then
+    cleanup_mcp_checkout || {{
+      cleanup_status=$?
+      printf 'managed MCP checkout cleanup failed: status=%s\\n' \\
+        \"$cleanup_status\" >&2
+      if [ \"$status\" -eq 0 ]; then
+        return \"$cleanup_status\"
+      fi
+    }}
+  fi
+  return \"$status\"
 }}
 report_remote_failure() {{
   local status=$?
@@ -255,15 +310,16 @@ ensure_chromium_source {shell_quote(lock.chromium.source)} {shell_quote(lock.chr
 ensure_source_checkout \"$build_root/src/scriptcat\" {shell_quote(lock.scriptcat.source)}
 chromium=\"$build_root/src/src\"
 mcp=\"$checkout\"/{shell_quote(lock.mcp.submodule_path.as_posix())}
+mcp_commit={shell_quote(lock.mcp.commit)}
 scriptcat=\"$build_root/src/scriptcat\"
 runtime=\"$build_root/out/runtime\"
+{_mcp_checkout_helpers()}
 {patch_commands}
+clean_mcp_untracked_files
 test \"$(git -C \"$mcp\" rev-parse HEAD)\" = {shell_quote(lock.mcp.commit)}
 test \"$(git -C \"$mcp\" remote get-url origin)\" = {shell_quote(lock.mcp.source)}
 git -C \"$mcp\" merge-base --is-ancestor {shell_quote(lock.mcp.upstream_commit)} HEAD
-git -C \"$mcp\" diff --quiet
-git -C \"$mcp\" diff --cached --quiet
-test -z \"$(git -C \"$mcp\" status --porcelain)\"
+assert_mcp_checkout_clean
 if [ -d \"$build_root/src/chromium\" ]; then
   printf 'removing obsolete non-gclient Chromium checkout: %s\\n' \"$build_root/src/chromium\"
   rm -rf \"$build_root/src/chromium\"
@@ -370,6 +426,9 @@ rsync -a --delete build/src/ \"$runtime/mcp/\"
 cp package.json LICENSE \"$runtime/mcp/\"
 test -f \"$runtime/mcp/bin/chrome-devtools-mcp.js\"
 node \"$runtime/mcp/bin/chrome-devtools-mcp.js\" --help >/dev/null
+set_phase mcp-cleanup
+clean_mcp_untracked_files
+assert_mcp_checkout_clean
 cd \"$scriptcat\"
 set_phase scriptcat-install
 pnpm install --frozen-lockfile

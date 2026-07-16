@@ -15,6 +15,71 @@ from scripts.remote._remote_build import remote_build_script
 
 
 class McpBrowserSandboxRegressionTest(unittest.TestCase):
+    def test_mcp_cleanup_removes_generated_lock_before_provenance_validation(
+        self,
+    ) -> None:
+        helpers = self._render_mcp_checkout_helpers()
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            mcp_directory = self._initialize_mcp_repository(temporary)
+            generated_lock = mcp_directory / "pnpm-lock.yaml"
+            preserved_cache = mcp_directory / "node_modules"
+            generated_lock.write_text("generated\n", encoding="utf-8")
+            preserved_cache.mkdir()
+
+            result = self._run_mcp_helper(
+                helpers,
+                mcp_directory,
+                "clean_mcp_untracked_files\nassert_mcp_checkout_clean",
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertFalse(generated_lock.exists())
+            self.assertTrue(preserved_cache.is_dir())
+
+    def test_mcp_cleanup_restores_checkout_after_failed_build(self) -> None:
+        helpers = self._render_mcp_checkout_helpers()
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            mcp_directory = self._initialize_mcp_repository(temporary)
+            committed_file = mcp_directory / "package-lock.json"
+            generated_lock = mcp_directory / "pnpm-lock.yaml"
+            original_content = committed_file.read_text(encoding="utf-8")
+            committed_file.write_text("drift\n", encoding="utf-8")
+            generated_lock.write_text("generated\n", encoding="utf-8")
+
+            result = self._run_mcp_helper(
+                helpers,
+                mcp_directory,
+                "trap cleanup_mcp_checkout EXIT\nexit 47",
+            )
+
+            self.assertEqual(result.returncode, 47, result.stderr)
+            self.assertEqual(
+                committed_file.read_text(encoding="utf-8"), original_content
+            )
+            self.assertFalse(generated_lock.exists())
+
+    def test_mcp_cleanliness_diagnostic_names_tracked_drift(self) -> None:
+        helpers = self._render_mcp_checkout_helpers()
+
+        with tempfile.TemporaryDirectory() as temporary_name:
+            temporary = Path(temporary_name)
+            mcp_directory = self._initialize_mcp_repository(temporary)
+            changed_file = mcp_directory / "package-lock.json"
+            changed_file.write_text("drift\n", encoding="utf-8")
+
+            result = self._run_mcp_helper(
+                helpers,
+                mcp_directory,
+                "assert_mcp_checkout_clean",
+            )
+
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn(changed_file.name, result.stderr)
+
     def test_mcp_gate_executes_managed_extension_protection_test(self) -> None:
         repository = Path(__file__).resolve().parents[3]
         script = remote_build_script(
@@ -390,6 +455,69 @@ class McpBrowserSandboxRegressionTest(unittest.TestCase):
         launcher_start = script.index("run_browser_test_in_sandbox() {", function_start)
         function_end = script.index("\n}", launcher_start) + 2
         return script[function_start:function_end]
+
+    def _render_mcp_checkout_helpers(self) -> str:
+        repository = Path(__file__).resolve().parents[3]
+        script = remote_build_script(
+            RemoteConfig(),
+            load_lock(repository / "browser/upstreams.lock.json"),
+            "0" * 40,
+            "https://example.invalid/scriptcat.git",
+        )
+        start = script.index("# BEGIN managed MCP checkout helpers")
+        end = script.index("# END managed MCP checkout helpers", start)
+        return script[start:end]
+
+    def _initialize_mcp_repository(self, temporary: Path) -> Path:
+        mcp_directory = temporary / "mcp"
+        mcp_directory.mkdir()
+        subprocess.run(("git", "init", "-q"), check=True, cwd=mcp_directory)
+        subprocess.run(
+            ("git", "config", "user.email", "test@example.invalid"),
+            check=True,
+            cwd=mcp_directory,
+        )
+        subprocess.run(
+            ("git", "config", "user.name", "Test"), check=True, cwd=mcp_directory
+        )
+        (mcp_directory / ".gitignore").write_text("node_modules/\n", encoding="utf-8")
+        (mcp_directory / "package-lock.json").write_text(
+            "committed\n", encoding="utf-8"
+        )
+        subprocess.run(("git", "add", "."), check=True, cwd=mcp_directory)
+        subprocess.run(
+            ("git", "commit", "-qm", "fixture"), check=True, cwd=mcp_directory
+        )
+        return mcp_directory
+
+    def _run_mcp_helper(
+        self, helpers: str, mcp_directory: Path, command: str
+    ) -> subprocess.CompletedProcess[str]:
+        mcp_commit = subprocess.run(
+            ("git", "rev-parse", "HEAD"),
+            check=True,
+            cwd=mcp_directory,
+            text=True,
+            capture_output=True,
+        ).stdout.strip()
+        harness = "\n".join(
+            (
+                "#!/usr/bin/env bash",
+                "set -Eeuo pipefail",
+                f"mcp={shlex.quote(str(mcp_directory))}",
+                f"mcp_commit={shlex.quote(mcp_commit)}",
+                helpers,
+                command,
+                "",
+            )
+        )
+        return subprocess.run(
+            ("bash", "-c", harness),
+            check=False,
+            cwd=mcp_directory,
+            text=True,
+            capture_output=True,
+        )
 
     def _require_sandbox_primitives(self) -> None:
         if os.geteuid() != 0:
