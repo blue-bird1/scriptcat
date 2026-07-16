@@ -1,5 +1,5 @@
 {
-  "schema_version": 1,
+  "schema_version": 2,
   "chromium": {
     "version": "148.0.7778.215",
     "commit": "7c855c70efe3f6ade6663c1520913fa7f63a0b2b",
@@ -7,8 +7,11 @@
   },
   "chrome_devtools_mcp": {
     "version": "1.5.0",
-    "commit": "913308263bdc8042af74924b68dc39a374ad071d",
-    "source": "https://github.com/ChromeDevTools/chrome-devtools-mcp.git"
+    "commit": "d244c70d5212c20dc2d7c3adad55c16aa430ff48",
+    "source": "https://github.com/blue-bird1/chrome-devtools-mcp.git",
+    "upstream_source": "https://github.com/ChromeDevTools/chrome-devtools-mcp.git",
+    "upstream_commit": "913308263bdc8042af74924b68dc39a374ad071d",
+    "submodule_path": "browser/chrome-devtools-mcp"
   },
   "depot_tools": {
     "version": "chromium-148-deps",
@@ -24,17 +27,12 @@
     {
       "target": "chromium",
       "path": "browser/patches/chromium",
-      "sha256": "e8ae12e52de5b94a537e9eb7f72b8dc1b192f27ce19ab53e9f8fa8275f389f8e"
-    },
-    {
-      "target": "chrome-devtools-mcp",
-      "path": "browser/patches/chrome-devtools-mcp",
-      "sha256": "cf0013fbd302044600c82ccc0db54ccc391ab149cd20e03074c27650efc98d21"
+      "sha256": "113e364bf9f0c0af6fbf4dca9838ad7679b679aafd68d1a72fb47161e8df2d64"
     },
     {
       "target": "scriptcat",
       "path": "browser/patches/scriptcat",
-      "sha256": "80b31b838837eb463e02d4b9528ce35064096a691924fe497197144c515bfbd2"
+      "sha256": "77cc0d9c7100e97b63a70e3db6dbe56ac70ebe20c094f7f24a43b61ebb962b79"
     }
   ]
 }

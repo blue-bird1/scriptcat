@@ -64,8 +64,10 @@ __pycache__/
 # ScriptCat MCP source pins, patch stacks, and remote build tooling.
 !browser/
 !browser/upstreams.lock.json
+!browser/chrome-devtools-mcp
 !browser/patches/
 !browser/patches/**
+!.gitmodules
 !scripts/pyproject.toml
 !scripts/remote/
 !scripts/remote/**

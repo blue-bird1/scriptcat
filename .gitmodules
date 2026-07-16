@@ -1,0 +1,4 @@
+[submodule "browser/chrome-devtools-mcp"]
+	path = browser/chrome-devtools-mcp
+	url = https://github.com/blue-bird1/chrome-devtools-mcp.git
+	branch = scriptcat/v1.5.0
