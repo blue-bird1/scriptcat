@@ -20,55 +20,132 @@ builds = pathlib.Path(sys.argv[1])
 build_id, lock_digest, chromium_version, depot_tools_version = sys.argv[2:6]
 chromium_commit, patch_digest, depot_tools_commit = sys.argv[6:9]
 target = builds / build_id
-if not target.exists() and not target.is_symlink():
+def fail(message):
+    raise SystemExit(f'existing verified provider component build {{message}}')
+
+def is_hex(value, length):
+    return isinstance(value, str) and len(value) == length and all(character in '0123456789abcdef' for character in value)
+
+def runtime_inventory(runtime):
+    if runtime.is_symlink() or not runtime.is_dir() or {{entry.name for entry in runtime.iterdir()}} != {{'chrome-linux'}}:
+        fail('runtime is invalid')
+    files, directories = {{}}, []
+    for current, names, file_names in os.walk(runtime, followlinks=False):
+        names.sort()
+        file_names.sort()
+        current_path = pathlib.Path(current)
+        for name in names:
+            path = current_path / name
+            if path.is_symlink() or not stat.S_ISDIR(path.lstat().st_mode):
+                fail('has an invalid directory')
+            directories.append(path.relative_to(runtime).as_posix())
+        for name in file_names:
+            path = current_path / name
+            status = path.lstat()
+            if path.is_symlink() or not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+                fail('has an invalid file')
+            files[path.relative_to(runtime).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    chrome = runtime / 'chrome-linux' / 'chrome'
+    if 'chrome-linux/chrome' not in files or not os.access(chrome, os.X_OK):
+        fail('inventory omits chrome-linux/chrome')
+    return dict(sorted(files.items())), sorted(directories)
+
+def read_manifest(path):
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except (OSError, json.JSONDecodeError) as error:
+        fail(f'is invalid: {{error}}')
+
+def validate_schema_two(component, manifest):
+    expected = {{
+        'schema': {BUILD_SCHEMA}, 'build_id': build_id, 'lock_digest': lock_digest,
+        'versions': {{'chromium': chromium_version, 'depot_tools': depot_tools_version}},
+    }}
+    keys = {{'schema', 'build_id', 'lock_digest', 'source_date_epoch', 'versions', 'provenance', 'files', 'directories'}}
+    if not isinstance(manifest, dict) or set(manifest) != keys or any(manifest.get(key) != value for key, value in expected.items()):
+        fail('does not match the lock')
+    if not isinstance(manifest.get('source_date_epoch'), int) or isinstance(manifest['source_date_epoch'], bool) or manifest['source_date_epoch'] <= 0:
+        fail('source date is invalid')
+    provenance = manifest.get('provenance')
+    chromium = provenance.get('chromium') if isinstance(provenance, dict) else None
+    if not isinstance(chromium, dict) or set(chromium) != {{'upstream_commit', 'patch_digest', 'build_commit'}} or chromium.get('upstream_commit') != chromium_commit or chromium.get('patch_digest') != patch_digest:
+        fail('Chromium provenance is invalid')
+    if not is_hex(chromium.get('build_commit'), 40):
+        fail('Chromium build commit is invalid')
+    if provenance.get('depot_tools') != {{'upstream_commit': depot_tools_commit, 'build_commit': depot_tools_commit}}:
+        fail('depot_tools provenance is invalid')
+    files, directories = runtime_inventory(component / 'runtime')
+    if manifest.get('files') != files or manifest.get('directories') != directories:
+        fail('inventory is invalid')
+
+def activate_current(runtime):
+    current = builds.parent / 'current'
+    if current.is_symlink() and os.readlink(current) == str(runtime):
+        return
+    link_stage = builds.parent / f'.current-{{build_id}}.{{os.getpid()}}.new'
+    if link_stage.exists() or link_stage.is_symlink():
+        fail('current-link staging path already exists')
+    os.symlink(str(runtime), link_stage)
+    os.replace(link_stage, current)
+
+def migrate_current_schema_one():
+    current = builds.parent / 'current'
+    if not current.is_symlink():
+        return False
+    runtime_target = pathlib.Path(os.readlink(current))
+    if not runtime_target.is_absolute() or runtime_target.name != 'runtime' or runtime_target.parent.parent != builds:
+        return False
+    legacy = runtime_target.parent
+    if legacy.is_symlink() or not legacy.is_dir():
+        return False
+    manifest = read_manifest(legacy / 'build-manifest.json')
+    if not isinstance(manifest, dict) or manifest.get('schema') != 1 or manifest.get('lock_digest') != lock_digest:
+        return False
+    keys = {{'schema', 'build_id', 'project_commit', 'lock_digest', 'source_date_epoch', 'chromium_version', 'depot_tools_version', 'provenance', 'files', 'directories'}}
+    project_commit = manifest.get('project_commit')
+    expected_legacy_id = hashlib.sha256(f'{{lock_digest}}{{project_commit}}'.encode()).hexdigest()[:24] if is_hex(project_commit, 40) else None
+    if set(manifest) != keys or not is_hex(project_commit, 40) or manifest.get('build_id') != legacy.name or legacy.name != expected_legacy_id:
+        fail('schema-1 identity is invalid')
+    if not isinstance(manifest.get('source_date_epoch'), int) or isinstance(manifest['source_date_epoch'], bool) or manifest['source_date_epoch'] <= 0:
+        fail('schema-1 source date is invalid')
+    if manifest.get('chromium_version') != chromium_version or manifest.get('depot_tools_version') != depot_tools_version:
+        fail('schema-1 versions do not match the lock')
+    provenance = manifest.get('provenance')
+    chromium = provenance.get('chromium') if isinstance(provenance, dict) else None
+    if not isinstance(chromium, dict) or set(chromium) != {{'upstream_commit', 'patch_digest', 'build_commit'}} or chromium.get('upstream_commit') != chromium_commit or chromium.get('patch_digest') != patch_digest or not is_hex(chromium.get('build_commit'), 40):
+        fail('schema-1 Chromium provenance is invalid')
+    if provenance.get('depot_tools') != {{'upstream_commit': depot_tools_commit, 'build_commit': depot_tools_commit}}:
+        fail('schema-1 depot_tools provenance is invalid')
+    files, directories = runtime_inventory(legacy / 'runtime')
+    if manifest.get('files') != files or manifest.get('directories') != directories:
+        fail('schema-1 inventory is invalid')
+    migrated_manifest = {{
+        'schema': {BUILD_SCHEMA}, 'build_id': build_id, 'lock_digest': lock_digest,
+        'source_date_epoch': manifest['source_date_epoch'],
+        'versions': {{'chromium': chromium_version, 'depot_tools': depot_tools_version}},
+        'provenance': provenance, 'files': files, 'directories': directories,
+    }}
+    manifest_stage = builds / f'.{{build_id}}.{{os.getpid()}}.manifest'
+    link_stage = builds.parent / f'.current-{{build_id}}.{{os.getpid()}}.new'
+    if manifest_stage.exists() or manifest_stage.is_symlink() or link_stage.exists() or link_stage.is_symlink():
+        fail('migration staging path already exists')
+    manifest_stage.write_text(json.dumps(migrated_manifest, indent=2, sort_keys=True) + '\\n', encoding='utf-8')
+    os.symlink(str(target / 'runtime'), link_stage)
+    os.replace(legacy, target)
+    os.replace(manifest_stage, target / 'build-manifest.json')
+    os.replace(link_stage, current)
+    return True
+
+if target.exists() or target.is_symlink():
+    if target.is_symlink() or not target.is_dir():
+        fail('is invalid')
+    validate_schema_two(target, read_manifest(target / 'build-manifest.json'))
+    activate_current(target / 'runtime')
+    print('reuse')
+elif migrate_current_schema_one():
+    print('reuse')
+else:
     print('build')
-    raise SystemExit(0)
-if target.is_symlink() or not target.is_dir():
-    raise SystemExit('existing verified provider component build is invalid')
-try:
-    raw = json.loads((target / 'build-manifest.json').read_text(encoding='utf-8'))
-except (OSError, json.JSONDecodeError) as error:
-    raise SystemExit(f'existing verified provider component build is invalid: {{error}}')
-expected = {{
-    'schema': {BUILD_SCHEMA}, 'build_id': build_id, 'lock_digest': lock_digest,
-    'versions': {{'chromium': chromium_version, 'depot_tools': depot_tools_version}},
-}}
-keys = {{'schema', 'build_id', 'lock_digest', 'source_date_epoch', 'versions', 'provenance', 'files', 'directories'}}
-if not isinstance(raw, dict) or set(raw) != keys or any(raw.get(key) != value for key, value in expected.items()):
-    raise SystemExit('existing verified provider component build does not match the lock')
-if not isinstance(raw.get('source_date_epoch'), int) or isinstance(raw['source_date_epoch'], bool) or raw['source_date_epoch'] <= 0:
-    raise SystemExit('existing verified provider component build source date is invalid')
-provenance = raw.get('provenance')
-chromium = provenance.get('chromium') if isinstance(provenance, dict) else None
-if not isinstance(chromium, dict) or set(chromium) != {{'upstream_commit', 'patch_digest', 'build_commit'}} or chromium.get('upstream_commit') != chromium_commit or chromium.get('patch_digest') != patch_digest:
-    raise SystemExit('existing verified provider component build Chromium provenance is invalid')
-build_commit = chromium.get('build_commit')
-if not isinstance(build_commit, str) or len(build_commit) != 40 or any(character not in '0123456789abcdef' for character in build_commit):
-    raise SystemExit('existing verified provider component build Chromium build commit is invalid')
-if provenance.get('depot_tools') != {{'upstream_commit': depot_tools_commit, 'build_commit': depot_tools_commit}}:
-    raise SystemExit('existing verified provider component build depot_tools provenance is invalid')
-runtime = target / 'runtime'
-if runtime.is_symlink() or not runtime.is_dir() or {{entry.name for entry in runtime.iterdir()}} != {{'chrome-linux'}}:
-    raise SystemExit('existing verified provider component build runtime is invalid')
-files, directories = {{}}, []
-for current, names, file_names in os.walk(runtime, followlinks=False):
-    names.sort()
-    file_names.sort()
-    current_path = pathlib.Path(current)
-    for name in names:
-        path = current_path / name
-        if path.is_symlink() or not stat.S_ISDIR(path.lstat().st_mode):
-            raise SystemExit('existing verified provider component build has an invalid directory')
-        directories.append(path.relative_to(runtime).as_posix())
-    for name in file_names:
-        path = current_path / name
-        status = path.lstat()
-        if path.is_symlink() or not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
-            raise SystemExit('existing verified provider component build has an invalid file')
-        files[path.relative_to(runtime).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
-if 'chrome-linux/chrome' not in files or raw.get('files') != dict(sorted(files.items())) or raw.get('directories') != sorted(directories):
-    raise SystemExit('existing verified provider component build inventory is invalid')
-print('reuse')
 PY
 )
 if [ "$reuse_status" = reuse ]; then

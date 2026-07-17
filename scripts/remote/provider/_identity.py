@@ -14,6 +14,11 @@ def component_build_id(lock_digest: str) -> str:
     return hashlib.sha256(source).hexdigest()[:24]
 
 
+def legacy_component_build_id(lock_digest: str, project_commit: str) -> str:
+    """Return the schema-1 provider component identity for migration only."""
+    return hashlib.sha256(f"{lock_digest}{project_commit}".encode()).hexdigest()[:24]
+
+
 def release_build_id(component_id: str, runtime_files: Mapping[str, str]) -> str:
     """Return the provider release identity for one verified runtime inventory."""
     serialized_files = json.dumps(
