@@ -36,8 +36,8 @@ const createService = () => {
   return { message, service };
 };
 
-describe(GET_SOURCE_ACTION, () => {
-  it("returns the stored raw userscript source through the service-worker message route", async () => {
+describe("serviceWorker/script/getSource 消息契约", () => {
+  it("通过 service worker 消息路由读取脚本时应返回完整原始源码", async () => {
     const originalAlarms = chrome.alarms;
     Object.defineProperty(chrome, "alarms", {
       configurable: true,
@@ -60,7 +60,7 @@ describe(GET_SOURCE_ACTION, () => {
     }
   });
 
-  it("returns exact null for the MCP capability-probe sentinel", async () => {
+  it("使用 MCP 能力探针标识读取时应精确返回 null", async () => {
     const originalAlarms = chrome.alarms;
     Object.defineProperty(chrome, "alarms", {
       configurable: true,
