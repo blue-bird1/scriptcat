@@ -1,7 +1,7 @@
 [project]
 name = "scriptcat-build-tools"
 version = "0.1.0"
-description = "Remote build and portable activation tooling for ScriptCat MCP"
+description = "Local ScriptCat extension publication and remote browser provider/MCP tooling"
 requires-python = ">=3.12,<3.13"
 dependencies = []
 
@@ -11,3 +11,8 @@ line-length = 88
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.22",
+]

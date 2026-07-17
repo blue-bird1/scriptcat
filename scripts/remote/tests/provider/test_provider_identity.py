@@ -27,6 +27,8 @@ FIRST_PARENT_COMMIT = "1" * 40
 SECOND_PARENT_COMMIT = "2" * 40
 FIRST_RUNTIME = {"chrome-linux/chrome": "3" * 64}
 SECOND_RUNTIME = {"chrome-linux/chrome": "4" * 64}
+FIRST_DIRECTORIES = ("chrome-linux",)
+SECOND_DIRECTORIES = ("chrome-linux", "chrome-linux/empty")
 UNSUPPORTED_PARENT_FIELD = "project_commit"
 LEGACY_PROJECT_COMMIT = "a" * 40
 TRUNCATED_MANIFEST_STAGE = b'{"schema":'
@@ -55,21 +57,31 @@ class ProviderIdentityTest(unittest.TestCase):
             component_build_id(lock.digest), component_build_id("0" * 64)
         )
         self.assertNotEqual(
-            release_build_id(component_build_id(lock.digest), FIRST_RUNTIME),
-            release_build_id(component_build_id(lock.digest), SECOND_RUNTIME),
+            release_build_id(
+                component_build_id(lock.digest), FIRST_RUNTIME, FIRST_DIRECTORIES
+            ),
+            release_build_id(
+                component_build_id(lock.digest), SECOND_RUNTIME, FIRST_DIRECTORIES
+            ),
+        )
+        self.assertNotEqual(
+            release_build_id(
+                component_build_id(lock.digest), FIRST_RUNTIME, FIRST_DIRECTORIES
+            ),
+            release_build_id(
+                component_build_id(lock.digest), FIRST_RUNTIME, SECOND_DIRECTORIES
+            ),
         )
 
     def test_release_manifest_rejects_parent_repository_provenance(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
             root = Path(temporary_name)
             lock = load_lock(LOCK_PATH)
-            create_provider_archive(
-                root,
-                lock,
-                build_id="0123456789abcdef01234567",
-                component_id="fedcba987654321001234567",
+            archive = create_provider_archive(
+                root, lock, component_id="fedcba987654321001234567"
             )
-            manifest_path = root / "release-0123456789abcdef01234567" / "manifest.json"
+            release_name = archive.name.removesuffix(".tar.zst")
+            manifest_path = root / release_name / "manifest.json"
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
 
             self.assertEqual(set(manifest), RELEASE_FIELDS)
@@ -79,9 +91,7 @@ class ProviderIdentityTest(unittest.TestCase):
 
             with self.assertRaises(WorkflowError):
                 read_manifest(
-                    manifest_path.parent,
-                    "0123456789abcdef01234567",
-                    lock,
+                    manifest_path.parent, release_name.removeprefix("release-"), lock
                 )
 
     def test_current_schema_one_build_rekeys_without_rebuilding_runtime(self) -> None:

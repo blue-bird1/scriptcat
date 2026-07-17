@@ -18,9 +18,8 @@ from scripts.remote.tests.provider._fixtures import (
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 LOCK_SOURCE = REPOSITORY_ROOT / "browser" / "provider.lock.json"
 INSTALL_SCRIPT = REPOSITORY_ROOT / "scripts" / "remote" / "provider" / "install.py"
-FIRST_BUILD_ID = "0123456789abcdef01234567"
-SECOND_BUILD_ID = "89abcdef0123456701234567"
 COMPONENT_ID = "fedcba987654321001234567"
+MISMATCHED_BUILD_ID = "f" * 24
 
 
 class BrowserProviderReleaseContractTest(unittest.TestCase):
@@ -28,9 +27,7 @@ class BrowserProviderReleaseContractTest(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
             root = Path(temporary_name)
             lock = load_lock(LOCK_SOURCE)
-            archive = create_provider_archive(
-                root, lock, build_id=FIRST_BUILD_ID, component_id=COMPONENT_ID
-            )
+            archive = create_provider_archive(root, lock, component_id=COMPONENT_ID)
             tar_path = root / "release.tar"
             with tar_path.open("wb") as output:
                 subprocess.run(
@@ -40,7 +37,7 @@ class BrowserProviderReleaseContractTest(unittest.TestCase):
                 )
             with tarfile.open(tar_path) as archive_stream:
                 members = [PurePosixPath(member.name) for member in archive_stream]
-            root_name = f"release-{FIRST_BUILD_ID}"
+            root_name = archive.name.removesuffix(".tar.zst")
             self.assertTrue(members)
             self.assertTrue(
                 all(
@@ -60,15 +57,14 @@ class BrowserProviderReleaseContractTest(unittest.TestCase):
             lock_path = root / "provider.lock.json"
             shutil.copyfile(LOCK_SOURCE, lock_path)
             lock = load_lock(lock_path)
-            archive = create_provider_archive(
-                root, lock, build_id=FIRST_BUILD_ID, component_id=COMPONENT_ID
-            )
+            archive = create_provider_archive(root, lock, component_id=COMPONENT_ID)
+            build_id = self._archive_build_id(archive)
             home = root / "home"
             sentinel = home / ".local" / "share" / "scriptcat-mcp" / "sentinel"
             sentinel.parent.mkdir(parents=True)
             sentinel.write_bytes(b"unrelated managed data")
 
-            completed = self._install(archive, lock_path, FIRST_BUILD_ID, home)
+            completed = self._install(archive, lock_path, build_id, home)
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertEqual(sentinel.read_bytes(), b"unrelated managed data")
@@ -84,6 +80,27 @@ class BrowserProviderReleaseContractTest(unittest.TestCase):
                 ).is_file()
             )
 
+    def test_install_rejects_build_id_not_derived_from_runtime_inventory(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
+            root = Path(temporary_name)
+            lock_path = root / "provider.lock.json"
+            shutil.copyfile(LOCK_SOURCE, lock_path)
+            lock = load_lock(lock_path)
+            archive = create_provider_archive(
+                root,
+                lock,
+                component_id=COMPONENT_ID,
+                build_id=MISMATCHED_BUILD_ID,
+            )
+            home = root / "home"
+
+            completed = self._install(archive, lock_path, MISMATCHED_BUILD_ID, home)
+
+            self.assertNotEqual(completed.returncode, 0)
+            data_root = home / ".local" / "share" / "scriptcat-browser"
+            self.assertFalse((data_root / "current").exists())
+            self.assertFalse((data_root / "releases").exists())
+
     def test_second_install_retains_independent_previous_release(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
             root = Path(temporary_name)
@@ -91,34 +108,34 @@ class BrowserProviderReleaseContractTest(unittest.TestCase):
             shutil.copyfile(LOCK_SOURCE, lock_path)
             lock = load_lock(lock_path)
             first = create_provider_archive(
-                root / "first",
-                lock,
-                build_id=FIRST_BUILD_ID,
-                component_id=COMPONENT_ID,
+                root / "first", lock, component_id=COMPONENT_ID, marker="first"
             )
             second = create_provider_archive(
-                root / "second",
-                lock,
-                build_id=SECOND_BUILD_ID,
-                component_id=COMPONENT_ID,
+                root / "second", lock, component_id=COMPONENT_ID, marker="second"
             )
+            first_build_id = self._archive_build_id(first)
+            second_build_id = self._archive_build_id(second)
             home = root / "home"
 
             self.assertEqual(
-                self._install(first, lock_path, FIRST_BUILD_ID, home).returncode, 0
+                self._install(first, lock_path, first_build_id, home).returncode, 0
             )
-            completed = self._install(second, lock_path, SECOND_BUILD_ID, home)
+            completed = self._install(second, lock_path, second_build_id, home)
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             data_root = home / ".local" / "share" / "scriptcat-browser"
             self.assertEqual(
                 os.readlink(data_root / "current"),
-                str(data_root / "releases" / SECOND_BUILD_ID),
+                str(data_root / "releases" / second_build_id),
             )
             self.assertEqual(
                 os.readlink(data_root / "previous"),
-                str(data_root / "releases" / FIRST_BUILD_ID),
+                str(data_root / "releases" / first_build_id),
             )
+
+    @staticmethod
+    def _archive_build_id(archive: Path) -> str:
+        return archive.name.removeprefix("release-").removesuffix(".tar.zst")
 
     def _install(
         self, archive: Path, lock_path: Path, build_id: str, home: Path

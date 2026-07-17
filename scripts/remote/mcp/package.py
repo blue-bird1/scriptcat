@@ -49,7 +49,7 @@ LOGGER = logging.getLogger("scriptcat.remote")
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Package one verified remote MCP/ScriptCat component build.",
+        description="Package one verified remote MCP component build.",
         epilog=(
             "Requires wg0, SSH, and rsync. It reads only the selected verified MCP "
             "build and does not access Git or another product. "
@@ -104,8 +104,8 @@ def run(argv: Sequence[str]) -> int:
             build_root=config.build_root,
         ),
     )
-    digest = download_archive(config, archive_name, output, digest_output)
     release_id = download_release_id(config, arguments.build_id, output.parent)
+    digest = download_archive(config, archive_name, output, digest_output)
     LOGGER.info("downloaded MCP archive: %s", output)
     LOGGER.info("MCP archive SHA-256: %s", digest)
     print(release_id)

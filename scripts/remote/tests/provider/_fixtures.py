@@ -5,6 +5,7 @@ import json
 import subprocess
 from pathlib import Path
 
+from scripts.remote.provider._identity import release_build_id
 from scripts.remote.provider._lock import ProviderLock
 
 
@@ -12,20 +13,24 @@ def create_provider_archive(
     root: Path,
     lock: ProviderLock,
     *,
-    build_id: str,
     component_id: str,
+    marker: str = "",
+    build_id: str | None = None,
 ) -> Path:
-    release = root / f"release-{build_id}"
+    chrome_payload = (
+        f"#!/bin/sh\necho 'Chromium {lock.chromium.version} {marker}'\n".encode()
+    )
+    files = {"chrome-linux/chrome": hashlib.sha256(chrome_payload).hexdigest()}
+    directories = ["chrome-linux"]
+    selected_build_id = build_id or release_build_id(component_id, files, directories)
+    release = root / f"release-{selected_build_id}"
     chrome = release / "chrome-linux" / "chrome"
     chrome.parent.mkdir(parents=True)
-    chrome.write_text(
-        f"#!/bin/sh\necho 'Chromium {lock.chromium.version}'\n", encoding="utf-8"
-    )
+    chrome.write_bytes(chrome_payload)
     chrome.chmod(0o755)
-    files = {"chrome-linux/chrome": _sha256(chrome)}
     manifest = {
         "schema": 2,
-        "build_id": build_id,
+        "build_id": selected_build_id,
         "component_build_id": component_id,
         "lock_digest": lock.digest,
         "versions": {
@@ -40,7 +45,7 @@ def create_provider_archive(
             "depot_tools": {"upstream_commit": lock.depot_tools.commit},
         },
         "files": files,
-        "directories": ["chrome-linux"],
+        "directories": directories,
     }
     manifest_path = release / "manifest.json"
     manifest_path.write_text(

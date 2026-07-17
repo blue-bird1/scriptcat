@@ -142,7 +142,7 @@ exec /usr/bin/zstd "$@"
         (runtime.parent / "build-manifest.json").write_text(
             json.dumps(manifest, sort_keys=True), encoding="utf-8"
         )
-        return release_build_id(COMPONENT_ID, files)
+        return release_build_id(COMPONENT_ID, files, ["chrome-linux"])
 
     def _run(
         self, additional_environment: dict[str, str] | None = None

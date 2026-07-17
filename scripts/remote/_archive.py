@@ -49,10 +49,6 @@ class ReleaseManifest:
     def mcp_version(self) -> str:
         return self.versions["chrome_devtools_mcp"]
 
-    @property
-    def scriptcat_version(self) -> str:
-        return self.versions["scriptcat"]
-
 
 def unpack_archive(archive: Path, staging: Path) -> None:
     if not archive.is_file():
@@ -156,20 +152,6 @@ def read_manifest(release: Path) -> ReleaseManifest:
     return _read_manifest(release)
 
 
-def read_installed_manifest(release: Path) -> ReleaseManifest:
-    """Read an activated release without traversing a legacy browser subtree."""
-    path = release / MANIFEST_NAME
-    try:
-        raw = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
-        raise WorkflowError(f"release manifest is invalid: {error}") from error
-    if isinstance(raw, dict) and raw.get("schema") == PACKAGE_SCHEMA:
-        return _parse_manifest(raw)
-    if isinstance(raw, dict) and raw.get("schema") == 3:
-        return _parse_schema3_manifest(raw)
-    return _read_legacy_installed_manifest(raw)
-
-
 def _read_manifest(release: Path) -> ReleaseManifest:
     path = release / MANIFEST_NAME
     try:
@@ -251,77 +233,6 @@ def _parse_manifest(raw: object) -> ReleaseManifest:
     )
 
 
-def _parse_schema3_manifest(raw: object) -> ReleaseManifest:
-    if not isinstance(raw, dict):
-        raise WorkflowError("legacy release manifest has an unsupported shape")
-    expected = {
-        "schema",
-        "build_id",
-        "component_build_id",
-        "project_commit",
-        "lock_digest",
-        "versions",
-        "provenance",
-        "files",
-        "directories",
-    }
-    if set(raw) != expected or raw.get("schema") != 3:
-        raise WorkflowError("legacy release manifest has an unsupported shape")
-    translated = dict(raw)
-    translated.pop("project_commit")
-    translated["schema"] = PACKAGE_SCHEMA
-    return _parse_manifest(translated)
-
-
-def _read_legacy_installed_manifest(raw: object) -> ReleaseManifest:
-    if not isinstance(raw, dict):
-        raise WorkflowError("legacy release manifest has an unsupported shape")
-    build_id = require_manifest_string(raw, "build_id")
-    raw_files = raw.get("files")
-    raw_directories = raw.get("directories")
-    if not isinstance(raw_files, dict) or not isinstance(raw_directories, list):
-        raise WorkflowError("legacy release manifest has an unsupported shape")
-    files: dict[str, str] = {}
-    for relative, digest in raw_files.items():
-        if not isinstance(relative, str) or not relative.startswith("scriptcat/"):
-            continue
-        canonical = manifest_relative_path(relative, "file").as_posix()
-        if not isinstance(digest, str) or not is_sha256(
-            digest.encode("ascii", errors="ignore")
-        ):
-            raise WorkflowError("legacy ScriptCat inventory is invalid")
-        files[canonical] = digest
-    directories = tuple(
-        manifest_relative_path(relative, "directory").as_posix()
-        for relative in raw_directories
-        if isinstance(relative, str) and relative.startswith("scriptcat/")
-    )
-    if not files or directories != tuple(sorted(set(directories))):
-        raise WorkflowError("legacy ScriptCat inventory is invalid")
-    mcp_version = raw.get("mcp_version")
-    scriptcat_version = raw.get("scriptcat_version")
-    return ReleaseManifest(
-        build_id=build_id,
-        component_build_id="0" * 24,
-        lock_digest="0" * 64,
-        versions={
-            "chrome_devtools_mcp": (
-                mcp_version
-                if isinstance(mcp_version, str) and mcp_version
-                else "legacy"
-            ),
-            "scriptcat": (
-                scriptcat_version
-                if isinstance(scriptcat_version, str) and scriptcat_version
-                else "legacy"
-            ),
-        },
-        provenance={},
-        files=dict(sorted(files.items())),
-        directories=directories,
-    )
-
-
 def require_manifest_string(raw: dict[object, object], key: str) -> str:
     value = raw.get(key)
     if not isinstance(value, str) or not value:
@@ -331,7 +242,7 @@ def require_manifest_string(raw: dict[object, object], key: str) -> str:
 
 def require_versions(raw: dict[object, object]) -> dict[str, str]:
     versions = raw.get("versions")
-    expected = {"chrome_devtools_mcp", "scriptcat"}
+    expected = {"chrome_devtools_mcp"}
     if (
         not isinstance(versions, dict)
         or set(versions) != expected
@@ -343,10 +254,7 @@ def require_versions(raw: dict[object, object]) -> dict[str, str]:
 
 def require_provenance(raw: dict[object, object]) -> dict[str, dict[str, str]]:
     provenance = raw.get("provenance")
-    required = {
-        "chrome_devtools_mcp": {"upstream_commit", "build_commit"},
-        "scriptcat": {"upstream_commit", "patch_digest", "build_commit"},
-    }
+    required = {"chrome_devtools_mcp": {"upstream_commit", "build_commit"}}
     if not isinstance(provenance, dict) or set(provenance) != set(required):
         raise WorkflowError("release manifest has an unsupported provenance shape")
     parsed: dict[str, dict[str, str]] = {}
@@ -356,7 +264,7 @@ def require_provenance(raw: dict[object, object]) -> dict[str, dict[str, str]]:
             raise WorkflowError("release manifest has an unsupported provenance shape")
         parsed_values: dict[str, str] = {}
         for key, value in values.items():
-            expected_length = 64 if key == "patch_digest" else 40
+            expected_length = 40
             if (
                 not isinstance(value, str)
                 or len(value) != expected_length
@@ -388,18 +296,15 @@ def canonical_relative_path(relative: str, context: str) -> PurePosixPath:
 
 
 def verify_manifest(release: Path, manifest: ReleaseManifest) -> None:
-    required = {
-        "mcp/bin/chrome-devtools-mcp.js",
-        "scriptcat/manifest.json",
-    }
+    required = {"mcp/bin/chrome-devtools-mcp.js"}
     if not required.issubset(manifest.files):
         raise WorkflowError("release manifest omits required portable runtime files")
     roots = {
         PurePosixPath(relative).parts[0]
         for relative in (*manifest.files, *manifest.directories)
     }
-    if roots != {"mcp", "scriptcat"}:
-        raise WorkflowError("release manifest must contain only MCP and ScriptCat")
+    if roots != {"mcp"}:
+        raise WorkflowError("release manifest must contain only MCP runtime files")
     actual_files, actual_directories = inspect_release_tree(release)
     expected_files = set(manifest.files) | RESERVED_FILES
     if actual_files != expected_files or actual_directories != set(

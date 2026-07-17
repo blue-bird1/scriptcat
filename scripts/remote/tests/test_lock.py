@@ -15,7 +15,6 @@ GIT_CONFIG_USER_NAME = "user.name"
 GIT_CONFIG_USER_EMAIL = "user.email"
 MCP_PATH = "browser/chrome-devtools-mcp"
 MCP_SOURCE = "https://example.invalid/chrome-devtools-mcp.git"
-PATCH_DIGEST = "a" * 64
 
 
 class McpSubmoduleProvenanceTest(unittest.TestCase):
@@ -91,20 +90,12 @@ class McpSubmoduleProvenanceTest(unittest.TestCase):
             "source": MCP_SOURCE,
         }
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "chrome_devtools_mcp": {
                 **upstream,
                 "upstream_source": "https://example.invalid/upstream.git",
                 "upstream_commit": baseline,
             },
-            "scriptcat": {**upstream, "commit": "3" * 40},
-            "patch_stacks": [
-                {
-                    "target": "scriptcat",
-                    "path": "browser/patches/scriptcat",
-                    "sha256": PATCH_DIGEST,
-                },
-            ],
         }
 
     def _configure_identity(self, repository: Path) -> None:

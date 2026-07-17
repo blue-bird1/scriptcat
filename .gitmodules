@@ -2,3 +2,7 @@
 	path = browser/chrome-devtools-mcp
 	url = https://github.com/blue-bird1/chrome-devtools-mcp.git
 	branch = scriptcat/v1.5.0
+[submodule "browser/scriptcat"]
+	path = browser/scriptcat
+	url = https://github.com/blue-bird1/scriptcat.git
+	branch = managed-extension

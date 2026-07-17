@@ -10,14 +10,13 @@ import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 
 LOGGER = logging.getLogger("scriptcat.remote")
 REMOTE_HOST = "root@192.168.50.8"
 REMOTE_CHECKOUT = "/root/scriptcat"
 REMOTE_BUILD_ROOT = "/root/scriptcat-mcp-build"
 HEARTBEAT_SECONDS = 60.0
-EXTENSION_BASE = Path.home() / ".codex" / "chrome-extensions" / "scriptcat"
 
 
 @dataclass(frozen=True)
@@ -143,18 +142,6 @@ def run_remote_script(config: RemoteConfig, script: str) -> None:
 
 def local_data_root() -> Path:
     return Path.home() / ".local" / "share" / "scriptcat-mcp"
-
-
-def extension_root(scriptcat_version: str) -> Path:
-    version_path = PurePosixPath(scriptcat_version)
-    if (
-        version_path.is_absolute()
-        or len(version_path.parts) != 1
-        or version_path.name != scriptcat_version
-        or scriptcat_version in {".", ".."}
-    ):
-        raise WorkflowError("scriptcat.version is unsafe for an extension path")
-    return EXTENSION_BASE / f"v{scriptcat_version}"
 
 
 def validate_build_id(value: str, label: str) -> None:

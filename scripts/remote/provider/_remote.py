@@ -137,9 +137,10 @@ build_root = pathlib.Path(sys.argv[1])
 component_id = sys.argv[2]
 raw = json.loads((build_root / "builds" / component_id / "build-manifest.json").read_text(encoding="utf-8"))
 files = raw.get("files") if isinstance(raw, dict) else None
-if not isinstance(files, dict) or any(not isinstance(name, str) or not isinstance(digest, str) for name, digest in files.items()):
-    raise SystemExit("provider build manifest runtime files are invalid")
-serialized = json.dumps(dict(sorted(files.items())), separators=(",", ":"), sort_keys=True)
+directories = raw.get("directories") if isinstance(raw, dict) else None
+if not isinstance(files, dict) or any(not isinstance(name, str) or not isinstance(digest, str) for name, digest in files.items()) or not isinstance(directories, list) or any(not isinstance(path, str) for path in directories) or directories != sorted(set(directories)):
+    raise SystemExit("provider build manifest runtime inventory is invalid")
+serialized = json.dumps({{"files": dict(sorted(files.items())), "directories": directories}}, separators=(",", ":"), sort_keys=True)
 source = f"provider-release-v{PACKAGE_SCHEMA}\\0{{component_id}}\\0{{serialized}}".encode()
 print(hashlib.sha256(source).hexdigest()[:24])
 PY"""
@@ -223,7 +224,7 @@ for current, names, file_names in os.walk(runtime, followlinks=False):
         files[path.relative_to(runtime).as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
 files, directories = dict(sorted(files.items())), sorted(directories)
 if "chrome-linux/chrome" not in files or raw.get("files") != files or raw.get("directories") != directories: raise SystemExit("provider runtime does not match build manifest")
-serialized = json.dumps(files, separators=(",", ":"), sort_keys=True)
+serialized = json.dumps({{"files": files, "directories": directories}}, separators=(",", ":"), sort_keys=True)
 calculated = hashlib.sha256(f"provider-release-v2\\0{{component_id}}\\0{{serialized}}".encode()).hexdigest()[:24]
 if calculated != release_id: raise SystemExit("provider release identity does not match runtime content")
 PY

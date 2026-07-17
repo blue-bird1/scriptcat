@@ -12,7 +12,6 @@ if __package__ in (None, ""):
     from remote._archive import validate_sha256_digest
     from remote._common import (
         cli_main,
-        extension_root,
         local_data_root,
         require_commands,
         validate_build_id,
@@ -23,7 +22,6 @@ else:
     from .._archive import validate_sha256_digest
     from .._common import (
         cli_main,
-        extension_root,
         local_data_root,
         require_commands,
         validate_build_id,
@@ -34,13 +32,12 @@ else:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        description="Validate and atomically activate an MCP/ScriptCat archive.",
+        description="Validate and atomically activate an MCP archive.",
         epilog=(
             "Verifies the trusted archive digest, selected MCP lock, manifest, and "
             "runtime inventory before activating under ~/.local/share/scriptcat-mcp. "
-            "The operation is offline, preserves the fixed profile, deploys the "
-            "physical managed ScriptCat extension transactionally, and does not "
-            "access another product.\n\nExample:\n"
+            "The operation is offline and does not access another product.\n\n"
+            "Example:\n"
             "  set archive_sha256 (string trim < /tmp/mcp.tar.zst.sha256)\n"
             "  uv run --project scripts --python 3.12 python "
             "scripts/remote/mcp/install.py /tmp/mcp.tar.zst "
@@ -80,15 +77,13 @@ def run(argv: Sequence[str]) -> int:
     activated = activate_archive(
         arguments.archive,
         local_data_root(),
-        extension_root(lock.scriptcat.version),
         arguments.build_id,
         lock.mcp.version,
-        lock.scriptcat.version,
         lock.digest,
         expected_archive_sha256=arguments.archive_sha256,
         expected_source_provenance=lock_provenance(lock),
     )
-    print(f"activated ScriptCat MCP release {activated}")
+    print(f"activated MCP release {activated}")
     return 0
 
 
@@ -97,10 +92,6 @@ def lock_provenance(lock: UpstreamLock) -> dict[str, dict[str, str]]:
         "chrome_devtools_mcp": {
             "upstream_commit": lock.mcp.upstream_commit,
             "build_commit": lock.mcp.commit,
-        },
-        "scriptcat": {
-            "upstream_commit": lock.scriptcat.commit,
-            "patch_digest": lock.patch_digest("scriptcat"),
         },
     }
 

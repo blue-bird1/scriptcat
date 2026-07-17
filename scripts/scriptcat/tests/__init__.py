@@ -1,0 +1,1 @@
+"""ScriptCat publisher regression tests."""

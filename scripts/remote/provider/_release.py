@@ -19,7 +19,7 @@ from .._archive import (
     verify_checksum_file,
 )
 from .._common import WorkflowError, validate_build_id
-from ._identity import PACKAGE_SCHEMA
+from ._identity import PACKAGE_SCHEMA, release_build_id
 from ._lock import ProviderLock
 
 RELEASE_MANIFEST_NAME = "manifest.json"
@@ -113,6 +113,10 @@ def read_manifest(
         raise WorkflowError("browser provider release source provenance is invalid")
     files = _parse_files(raw.get("files"))
     directories = _parse_directories(raw.get("directories"))
+    if release_build_id(component_id, files, directories) != expected_build_id:
+        raise WorkflowError(
+            "browser provider release build ID does not match its runtime inventory"
+        )
     return ProviderManifest(
         build_id=expected_build_id, files=files, directories=directories
     )

@@ -3,7 +3,7 @@ from __future__ import annotations
 import fcntl
 import os
 import shutil
-import stat
+import tempfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -15,21 +15,16 @@ from ._activation_state import (
     LinkState,
     capture_link,
     ensure_transaction_paths_available,
-    exchange_paths,
-    extension_matches_manifest,
     fsync_directory,
     recover_activation,
     remove_journal,
-    remove_tree,
     replace_symlink,
-    restore_link,
     transaction_paths,
     write_journal,
 )
 from ._archive import (
     ReleaseManifest,
     copy_verified_archive,
-    read_installed_manifest,
     read_manifest,
     single_release_root,
     unpack_archive,
@@ -42,8 +37,6 @@ ACTIVATION_LOCK_NAME = ".activation.lock"
 
 
 class ActivationStage(StrEnum):
-    EXTENSION_DIRECTORY_STAGED = "extension-directory-staged"
-    EXTENSION_DIRECTORY_PUBLISHED = "extension-directory-published"
     PREVIOUS_UPDATED = "previous-updated"
     CURRENT_UPDATED = "current-updated"
     CLEANUP_FINISHED = "cleanup-finished"
@@ -61,66 +54,43 @@ class ReleaseProvenance:
 def activate_archive(
     archive: Path,
     data_root: Path,
-    extension_root: Path,
     expected_build_id: str,
     expected_mcp_version: str,
-    expected_scriptcat_version: str,
     expected_lock_digest: str | None = None,
     *,
     expected_archive_sha256: str,
     expected_source_provenance: dict[str, dict[str, str]] | None = None,
 ) -> str:
     validate_build_id(expected_build_id, "expected build_id")
-    temporary_root = Path("/tmp") / f"scriptcat-mcp-stage-{os.getpid()}"
-    if temporary_root.exists():
-        raise WorkflowError(f"staging path already exists: {temporary_root}")
-    temporary_root.mkdir(mode=0o700)
-    staging = temporary_root / "unpacked"
-    staging.mkdir()
-    try:
+    with tempfile.TemporaryDirectory(
+        dir="/tmp", prefix="scriptcat-mcp-stage-"
+    ) as temporary_name:
+        temporary_root = Path(temporary_name)
+        staging = temporary_root / "unpacked"
+        staging.mkdir()
         verified_archive = temporary_root / "release.tar.zst"
         copy_verified_archive(archive, verified_archive, expected_archive_sha256)
         unpack_archive(verified_archive, staging)
         release = single_release_root(staging)
         manifest = read_manifest(release)
-        verify_expected_manifest(
-            manifest,
-            expected_build_id,
-            expected_mcp_version,
-            expected_scriptcat_version,
-        )
+        verify_expected_manifest(manifest, expected_build_id, expected_mcp_version)
         if expected_lock_digest is not None:
             verify_expected_provenance(
-                manifest,
-                read_release_provenance(release),
-                expected_lock_digest,
+                manifest, read_release_provenance(release), expected_lock_digest
             )
         verify_source_provenance(manifest, expected_source_provenance)
         verify_manifest(release, manifest)
+        verify_release_identity(manifest)
         with activation_lock(data_root):
-            return commit_activation(
-                release,
-                manifest,
-                data_root,
-                extension_root,
-            )
-    finally:
-        shutil.rmtree(temporary_root, ignore_errors=True)
+            return commit_activation(release, manifest, data_root)
 
 
 def verify_expected_manifest(
-    manifest: ReleaseManifest,
-    expected_build_id: str,
-    expected_mcp_version: str,
-    expected_scriptcat_version: str,
+    manifest: ReleaseManifest, expected_build_id: str, expected_mcp_version: str
 ) -> None:
     expected = {
         "build_id": (manifest.build_id, expected_build_id),
         "MCP version": (manifest.mcp_version, expected_mcp_version),
-        "ScriptCat version": (
-            manifest.scriptcat_version,
-            expected_scriptcat_version,
-        ),
     }
     for component, (actual, wanted) in expected.items():
         if actual != wanted:
@@ -133,12 +103,11 @@ def commit_activation(
     release: Path,
     manifest: ReleaseManifest,
     data_root: Path,
-    extension_root: Path,
     checkpoint: ActivationCheckpoint | None = None,
 ) -> str:
     active_checkpoint = checkpoint or ignore_checkpoint
     data_root.mkdir(parents=True, exist_ok=True)
-    recover_activation(data_root, extension_root)
+    recover_activation(data_root)
     releases = data_root / "releases"
     releases.mkdir(parents=True, exist_ok=True)
     final = materialize_release(release, manifest, releases)
@@ -146,188 +115,74 @@ def commit_activation(
     previous = data_root / "previous"
     current_state = capture_link(current)
     expected_current = LinkState(True, str(final))
-    if current_state == expected_current and extension_directory_is_valid(
-        extension_root, manifest
-    ):
+    if current_state == expected_current:
         return manifest.build_id
-
-    verify_existing_extension(
-        data_root,
-        extension_root,
-        current_state,
-    )
-    extension_root.parent.mkdir(parents=True, exist_ok=True)
-    paths = transaction_paths(data_root, extension_root)
+    paths = transaction_paths(data_root)
     ensure_transaction_paths_available(paths)
     write_journal(
         paths,
         ActivationJournal(
             build_id=manifest.build_id,
-            extension_existed=extension_path_exists(extension_root),
             current=current_state,
             previous=capture_link(previous),
         ),
     )
-    stage_extension_directory(final, manifest, paths.extension_temporary)
-    active_checkpoint(ActivationStage.EXTENSION_DIRECTORY_STAGED)
-    if current_state != expected_current:
-        restore_link(previous, current_state)
-        active_checkpoint(ActivationStage.PREVIOUS_UPDATED)
-    publish_extension_directory(
-        extension_root,
-        paths.extension_temporary,
-        paths.extension_rollback,
-    )
-    if current_state != expected_current:
-        replace_symlink(current, str(final))
-        active_checkpoint(ActivationStage.CURRENT_UPDATED)
-    active_checkpoint(ActivationStage.EXTENSION_DIRECTORY_PUBLISHED)
+    if current_state.exists:
+        replace_symlink(previous, current_state.target or "")
+    else:
+        previous.unlink(missing_ok=True)
+        fsync_directory(previous.parent)
+    active_checkpoint(ActivationStage.PREVIOUS_UPDATED)
+    replace_symlink(current, str(final))
+    active_checkpoint(ActivationStage.CURRENT_UPDATED)
     remove_journal(paths)
-    remove_tree(paths.extension_rollback)
-    fsync_directory(extension_root.parent)
     active_checkpoint(ActivationStage.CLEANUP_FINISHED)
     return manifest.build_id
 
 
-def verify_existing_extension(
-    data_root: Path,
-    extension_root: Path,
-    current_state: LinkState,
-) -> None:
-    if not extension_path_exists(extension_root):
-        return
-    if extension_root.is_symlink():
-        expected_target = data_root / "current" / "scriptcat"
-        if os.readlink(extension_root) != str(expected_target):
-            raise WorkflowError(
-                f"managed extension path has an unexpected target: {extension_root}"
-            )
-        verify_legacy_extension(extension_root, data_root / "current", current_state)
-        return
-    try:
-        extension_status = extension_root.lstat()
-    except FileNotFoundError:
-        return
-    if not stat.S_ISDIR(extension_status.st_mode):
-        raise WorkflowError(f"managed extension path is invalid: {extension_root}")
-    verify_legacy_extension(extension_root, data_root / "current", current_state)
-
-
-def verify_legacy_extension(
-    extension_root: Path,
-    current: Path,
-    current_state: LinkState,
-) -> None:
-    if not current_state.exists or current_state.target is None:
-        raise WorkflowError(
-            "cannot atomically migrate a managed extension without an active release"
-        )
-    active_release = Path(current_state.target)
-    if not active_release.is_absolute():
-        active_release = current.parent / active_release
-    active_manifest = read_installed_manifest(active_release)
-    if extension_root.is_symlink():
-        return
-    if not extension_matches_manifest(extension_root, active_manifest):
-        raise WorkflowError(
-            "managed extension does not match the active release; refusing migration"
-        )
-
-
-def extension_directory_is_valid(
-    extension_root: Path, manifest: ReleaseManifest
-) -> bool:
-    return extension_matches_manifest(extension_root, manifest)
-
-
-def extension_path_exists(path: Path) -> bool:
-    return path.exists() or path.is_symlink()
-
-
-def stage_extension_directory(
-    release: Path,
-    manifest: ReleaseManifest,
-    temporary: Path,
-) -> None:
-    try:
-        shutil.copytree(release / "scriptcat", temporary)
-        if not extension_matches_manifest(temporary, manifest):
-            raise WorkflowError(
-                "staged managed extension does not match release manifest"
-            )
-        fsync_tree(temporary)
-        fsync_directory(temporary.parent)
-    except BaseException:
-        remove_tree(temporary)
-        raise
-
-
-def publish_extension_directory(
-    extension_root: Path,
-    temporary: Path,
-    rollback: Path,
-) -> None:
-    extension_root.parent.mkdir(parents=True, exist_ok=True)
-    if extension_path_exists(extension_root):
-        exchange_paths(temporary, extension_root)
-        fsync_directory(extension_root.parent)
-        os.replace(temporary, rollback)
-        fsync_directory(extension_root.parent)
-        return
-    os.replace(temporary, extension_root)
-    fsync_directory(extension_root.parent)
-
-
 def read_release_provenance(release: Path) -> ReleaseProvenance:
     manifest = read_manifest(release)
-    component_build_id = manifest.component_build_id
-    lock_digest = manifest.lock_digest
-    validate_build_id(component_build_id, "release component build ID")
-    validate_lock_digest(lock_digest, "release lock digest")
     return ReleaseProvenance(
-        component_build_id=component_build_id,
-        lock_digest=lock_digest,
+        component_build_id=manifest.component_build_id,
+        lock_digest=manifest.lock_digest,
     )
 
 
 def verify_expected_provenance(
-    manifest: ReleaseManifest,
-    provenance: ReleaseProvenance,
-    expected_lock_digest: str,
+    manifest: ReleaseManifest, provenance: ReleaseProvenance, expected_lock_digest: str
 ) -> None:
     validate_lock_digest(expected_lock_digest, "expected lock digest")
-    expected_component_build_id = component_build_id(expected_lock_digest)
-    expected_release_build_id = release_build_id(
-        expected_component_build_id, manifest.files
-    )
-    expected = {
-        "lock digest": (provenance.lock_digest, expected_lock_digest),
-        "component build ID": (
-            provenance.component_build_id,
-            expected_component_build_id,
-        ),
-        "release build ID": (manifest.build_id, expected_release_build_id),
-    }
-    for component, (actual, wanted) in expected.items():
-        if actual != wanted:
-            raise WorkflowError(
-                f"release {component} does not match the requested provenance"
-            )
+    expected_component = component_build_id(expected_lock_digest)
+    if provenance.lock_digest != expected_lock_digest:
+        raise WorkflowError("release lock digest does not match the requested lock")
+    if provenance.component_build_id != expected_component:
+        raise WorkflowError(
+            "release component build ID does not match the requested lock"
+        )
+    if manifest.component_build_id != expected_component:
+        raise WorkflowError(
+            "release manifest component build ID does not match its provenance"
+        )
 
 
 def verify_source_provenance(
-    manifest: ReleaseManifest, expected: dict[str, dict[str, str]] | None
+    manifest: ReleaseManifest,
+    expected: dict[str, dict[str, str]] | None,
 ) -> None:
-    if expected is None:
-        return
-    for component, fields in expected.items():
-        actual = manifest.provenance.get(component)
-        if actual is None or any(
-            actual.get(key) != value for key, value in fields.items()
-        ):
-            raise WorkflowError(
-                "release source provenance does not match the selected lock"
-            )
+    if expected is not None and manifest.provenance != expected:
+        raise WorkflowError(
+            "release source provenance does not match the requested lock"
+        )
+
+
+def verify_release_identity(manifest: ReleaseManifest) -> None:
+    expected = release_build_id(
+        manifest.component_build_id, manifest.files, manifest.directories
+    )
+    if manifest.build_id != expected:
+        raise WorkflowError(
+            "release build ID does not match its component and runtime inventory"
+        )
 
 
 def validate_lock_digest(value: str, label: str) -> None:
@@ -341,55 +196,42 @@ def materialize_release(
     release: Path, manifest: ReleaseManifest, releases: Path
 ) -> Path:
     final = releases / manifest.build_id
-    temporary = releases / f".{manifest.build_id}-activation-new"
     if final.exists() or final.is_symlink():
-        if not final.is_dir() or final.is_symlink():
-            raise WorkflowError(f"existing release path is invalid: {final}")
-        try:
-            existing_manifest_bytes = (final / "manifest.json").read_bytes()
-            trusted_manifest_bytes = (release / "manifest.json").read_bytes()
-        except OSError as error:
+        if final.is_symlink() or not final.is_dir():
+            raise WorkflowError(f"release path is invalid: {final}")
+        installed = read_manifest(final)
+        if installed != manifest:
             raise WorkflowError(
-                f"cannot compare existing release metadata: {error}"
-            ) from error
-        if existing_manifest_bytes != trusted_manifest_bytes:
-            raise WorkflowError(
-                "existing release conflicts with the requested build_id"
+                "existing release manifest differs from requested release"
             )
-        verify_manifest(final, manifest)
+        verify_manifest(final, installed)
         return final
-    remove_tree(temporary)
+    temporary = releases / f".{manifest.build_id}-new"
+    if temporary.is_symlink() or (temporary.exists() and not temporary.is_dir()):
+        raise WorkflowError(f"release staging path already exists: {temporary}")
+    if temporary.is_dir():
+        shutil.rmtree(temporary)
     try:
-        shutil.copytree(release, temporary)
-        verify_manifest(temporary, manifest)
+        shutil.copytree(release, temporary, copy_function=shutil.copy2)
+        verify_manifest(temporary, read_manifest(temporary))
         fsync_tree(temporary)
         os.replace(temporary, final)
         fsync_directory(releases)
-    finally:
-        remove_tree(temporary)
+    except BaseException:
+        shutil.rmtree(temporary, ignore_errors=True)
+        raise
     return final
 
 
 def fsync_tree(root: Path) -> None:
-    directories: list[Path] = []
-    for current, directory_names, file_names in os.walk(root, followlinks=False):
-        current_path = Path(current)
-        directories.append(current_path)
-        for name in directory_names:
-            path = current_path / name
-            if path.is_symlink():
-                raise WorkflowError(f"transaction tree contains a symlink: {path}")
+    for current, directory_names, file_names in os.walk(root):
+        directory = Path(current)
         for name in file_names:
-            path = current_path / name
-            status = path.lstat()
-            if not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
-                raise WorkflowError(
-                    f"transaction tree contains an unsupported entry: {path}"
-                )
-            with path.open("rb") as stream:
+            with (directory / name).open("rb") as stream:
                 os.fsync(stream.fileno())
-    for directory in reversed(directories):
-        fsync_directory(directory)
+        for name in directory_names:
+            fsync_directory(directory / name)
+    fsync_directory(root)
 
 
 def ignore_checkpoint(stage: ActivationStage) -> None:
@@ -399,14 +241,12 @@ def ignore_checkpoint(stage: ActivationStage) -> None:
 @contextmanager
 def activation_lock(data_root: Path) -> Iterator[None]:
     data_root.mkdir(parents=True, exist_ok=True)
-    lock_path = data_root / ACTIVATION_LOCK_NAME
-    with lock_path.open("a+", encoding="utf-8") as stream:
+    path = data_root / ACTIVATION_LOCK_NAME
+    with path.open("a+", encoding="utf-8") as stream:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
-            raise WorkflowError(
-                f"activation transaction is already running: {lock_path}"
-            ) from error
+            raise WorkflowError("another MCP activation is already running") from error
         try:
             yield
         finally:

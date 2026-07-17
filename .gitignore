@@ -61,15 +61,19 @@ __pycache__/
 !vendor/
 !vendor/page-agent.js
 
-# ScriptCat MCP source pins, patch stacks, and remote build tooling.
+# ScriptCat MCP source pins, managed extension submodules, and remote build tooling.
 !browser/
 !browser/mcp.lock.json
 !browser/provider.lock.json
 !browser/chrome-devtools-mcp
-!browser/patches/
-!browser/patches/**
+!browser/scriptcat
 !.gitmodules
 !scripts/pyproject.toml
+!scripts/uv.lock
+!scripts/scriptcat/
+!scripts/scriptcat/**
+scripts/scriptcat/__pycache__/
+scripts/scriptcat/**/*.pyc
 !scripts/remote/
 !scripts/remote/**
 scripts/remote/__pycache__/
