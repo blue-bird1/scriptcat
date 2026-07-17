@@ -237,7 +237,7 @@ set_phase mcp-build
 pnpm build
 set_phase mcp-focused-tests
 run_mcp_tests_in_sandbox '
-  node scripts/test.mjs -- tests/ProfileLock.test.ts tests/ScriptCatManager.test.ts tests/cli.test.ts tests/ManagedExtensionConsistency.test.ts
+  node scripts/test.mjs -- tests/ScriptCatManager.test.ts tests/ScriptCatTools.test.ts tests/cli.test.ts tests/shutdown.test.ts
 '
 set_phase mcp-bundle
 pnpm bundle

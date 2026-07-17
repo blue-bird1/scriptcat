@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import select
@@ -11,10 +12,9 @@ import traceback
 import unittest
 from contextlib import suppress
 from pathlib import Path
-from unittest.mock import patch
 
-from scripts.remote import _activation
 from scripts.remote._activation import (
+    ACTIVATION_LOCK_NAME,
     ActivationStage,
     activate_archive,
     commit_activation,
@@ -39,6 +39,27 @@ CHECKPOINT_READY = b"ready"
 
 
 class ActivationIntegrityTest(unittest.TestCase):
+    def test_activation_fails_when_transaction_is_already_running(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
+            root = Path(temporary)
+            source = create_release(root)
+            archive = create_archive(root, source)
+            data_root = root / "data"
+            data_root.mkdir()
+            lock_path = data_root / ACTIVATION_LOCK_NAME
+            with lock_path.open("a+", encoding="utf-8") as lock_stream:
+                fcntl.flock(lock_stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(WorkflowError):
+                    activate_archive(
+                        archive,
+                        data_root,
+                        root / "extension",
+                        BUILD_ID,
+                        MCP_VERSION,
+                        SCRIPTCAT_VERSION,
+                        expected_archive_sha256=sha256(archive),
+                    )
+
     def test_repeated_activation_is_idempotent(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary:
             root = Path(temporary)
@@ -54,14 +75,13 @@ class ActivationIntegrityTest(unittest.TestCase):
                 MCP_VERSION,
                 SCRIPTCAT_VERSION,
             )
-            with patch.object(_activation, "PROFILE_LOCK_PATH", root / "profile.lock"):
-                first = activate_archive(
-                    *arguments, expected_archive_sha256=sha256(archive)
-                )
-                first_target = os.readlink(data_root / "current")
-                second = activate_archive(
-                    *arguments, expected_archive_sha256=sha256(archive)
-                )
+            first = activate_archive(
+                *arguments, expected_archive_sha256=sha256(archive)
+            )
+            first_target = os.readlink(data_root / "current")
+            second = activate_archive(
+                *arguments, expected_archive_sha256=sha256(archive)
+            )
             self.assertEqual((first, second), (BUILD_ID, BUILD_ID))
             self.assertEqual(os.readlink(data_root / "current"), first_target)
             self.assertFalse((data_root / "previous").exists())
@@ -73,10 +93,7 @@ class ActivationIntegrityTest(unittest.TestCase):
             root = Path(temporary)
             source = create_release(root)
             archive = create_archive(root, source)
-            with (
-                patch.object(_activation, "PROFILE_LOCK_PATH", root / "profile.lock"),
-                self.assertRaises(WorkflowError),
-            ):
+            with self.assertRaises(WorkflowError):
                 activate_archive(
                     archive,
                     root / "data",

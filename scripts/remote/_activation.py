@@ -38,12 +38,7 @@ from ._archive import (
 from ._common import WorkflowError, validate_build_id
 from ._verified_build import component_build_id, release_build_id
 
-PROFILE_LOCK_PATH = (
-    Path.home()
-    / ".codex"
-    / "chrome-devtools-scriptcat-chromium-profile"
-    / ".scriptcat-mcp.lock"
-)
+ACTIVATION_LOCK_NAME = ".activation.lock"
 
 
 class ActivationStage(StrEnum):
@@ -102,7 +97,7 @@ def activate_archive(
             )
         verify_source_provenance(manifest, expected_source_provenance)
         verify_manifest(release, manifest)
-        with profile_lock():
+        with activation_lock(data_root):
             return commit_activation(
                 release,
                 manifest,
@@ -402,14 +397,15 @@ def ignore_checkpoint(stage: ActivationStage) -> None:
 
 
 @contextmanager
-def profile_lock() -> Iterator[None]:
-    PROFILE_LOCK_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with PROFILE_LOCK_PATH.open("a+", encoding="utf-8") as stream:
+def activation_lock(data_root: Path) -> Iterator[None]:
+    data_root.mkdir(parents=True, exist_ok=True)
+    lock_path = data_root / ACTIVATION_LOCK_NAME
+    with lock_path.open("a+", encoding="utf-8") as stream:
         try:
             fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError as error:
             raise WorkflowError(
-                "PROFILE_BUSY: ScriptCat MCP profile is in use"
+                f"activation transaction is already running: {lock_path}"
             ) from error
         try:
             yield
