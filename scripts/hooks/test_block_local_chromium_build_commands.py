@@ -11,6 +11,9 @@ if SPEC is None or SPEC.loader is None:
 BUILD_GUARD = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(BUILD_GUARD)
 
+REMOTE_WRAPPER = (
+    "uv run --project scripts --python 3.12 python scripts/remote/provider/build.py"
+)
 READ_ONLY_COMMANDS = (
     "gclient revinfo",
     "gclient status",
@@ -43,6 +46,9 @@ FORBIDDEN_COMMANDS = (
 
 
 class ChromiumBuildGuardTests(unittest.TestCase):
+    def test_allows_remote_wrapper(self) -> None:
+        self.assertFalse(BUILD_GUARD.is_blocked(REMOTE_WRAPPER))
+
     def test_allows_read_only_checks(self) -> None:
         for command in READ_ONLY_COMMANDS:
             with self.subTest(command=command):
