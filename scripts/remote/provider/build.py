@@ -22,9 +22,9 @@ if __package__ in (None, ""):
     from remote.provider._lock import load_lock, validate_patch_stack
     from remote.provider._remote import (
         ProviderRemoteConfig,
-        component_build_id,
         remote_build_script,
     )
+    from remote.provider._identity import component_build_id
 else:
     from .._common import (
         assert_local_head,
@@ -38,7 +38,8 @@ else:
         run_remote_script,
     )
     from ._lock import load_lock, validate_patch_stack
-    from ._remote import ProviderRemoteConfig, component_build_id, remote_build_script
+    from ._identity import component_build_id
+    from ._remote import ProviderRemoteConfig, remote_build_script
 
 
 LOCK_PATH = Path("browser/provider.lock.json")
@@ -83,7 +84,7 @@ def run(argv: Sequence[str]) -> int:
         config.common(), remote_build_script(config, lock, commit, origin)
     )
     assert_local_head(root, commit)
-    print(component_build_id(lock.digest, commit))
+    print(component_build_id(lock.digest))
     return 0
 
 

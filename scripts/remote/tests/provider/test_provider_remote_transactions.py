@@ -10,13 +10,12 @@ import unittest
 from pathlib import Path
 
 from scripts.remote.provider._lock import load_lock
+from scripts.remote.provider._identity import release_build_id
 from scripts.remote.provider._remote import ProviderRemoteConfig, remote_package_script
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
 LOCK_PATH = REPOSITORY_ROOT / "browser" / "provider.lock.json"
 COMPONENT_ID = "0123456789abcdef01234567"
-RELEASE_ID = "89abcdef0123456789abcdef"
-PROJECT_COMMIT = "a" * 40
 ARCHIVE_NAME = "provider-transaction.tar.zst"
 
 
@@ -30,7 +29,7 @@ class ProviderRemoteTransactionTest(unittest.TestCase):
         )
         self.archive = self.root / "out" / ARCHIVE_NAME
         self.digest = self.archive.with_suffix(self.archive.suffix + ".sha256")
-        self._create_verified_build()
+        self.release_id = self._create_verified_build()
 
     def tearDown(self) -> None:
         self.temporary_directory.cleanup()
@@ -70,7 +69,9 @@ fi
             hashlib.sha256(self.archive.read_bytes()).hexdigest(),
             self.digest.read_text(encoding="utf-8").strip(),
         )
-        self.assertEqual(list((self.root / "out").glob(f".package-{RELEASE_ID}.*")), [])
+        self.assertEqual(
+            list((self.root / "out").glob(f".package-{self.release_id}.*")), []
+        )
 
     def test_package_lock_serializes_concurrent_idempotent_retries(self) -> None:
         commands = self.root / "commands"
@@ -108,7 +109,7 @@ exec /usr/bin/zstd "$@"
         self.assertTrue(self.archive.is_file())
         self.assertTrue(self.digest.is_file())
 
-    def _create_verified_build(self) -> None:
+    def _create_verified_build(self) -> str:
         runtime = self.root / "builds" / COMPONENT_ID / "runtime"
         chrome = runtime / "chrome-linux" / "chrome"
         chrome.parent.mkdir(parents=True)
@@ -116,18 +117,19 @@ exec /usr/bin/zstd "$@"
         chrome.chmod(0o755)
         files = {"chrome-linux/chrome": hashlib.sha256(chrome.read_bytes()).hexdigest()}
         manifest = {
-            "schema": 1,
+            "schema": 2,
             "build_id": COMPONENT_ID,
-            "project_commit": PROJECT_COMMIT,
             "lock_digest": self.lock.digest,
             "source_date_epoch": 1,
-            "chromium_version": self.lock.chromium.version,
-            "depot_tools_version": self.lock.depot_tools.version,
+            "versions": {
+                "chromium": self.lock.chromium.version,
+                "depot_tools": self.lock.depot_tools.version,
+            },
             "provenance": {
                 "chromium": {
                     "upstream_commit": self.lock.chromium.commit,
                     "patch_digest": self.lock.chromium_patch.sha256,
-                    "build_commit": PROJECT_COMMIT,
+                    "build_commit": "a" * 40,
                 },
                 "depot_tools": {
                     "upstream_commit": self.lock.depot_tools.commit,
@@ -140,6 +142,7 @@ exec /usr/bin/zstd "$@"
         (runtime.parent / "build-manifest.json").write_text(
             json.dumps(manifest, sort_keys=True), encoding="utf-8"
         )
+        return release_build_id(COMPONENT_ID, files)
 
     def _run(
         self, additional_environment: dict[str, str] | None = None
@@ -168,8 +171,7 @@ exec /usr/bin/zstd "$@"
             self.config,
             self.lock,
             COMPONENT_ID,
-            RELEASE_ID,
-            PROJECT_COMMIT,
+            self.release_id,
             ARCHIVE_NAME,
         )
 

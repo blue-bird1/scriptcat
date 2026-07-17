@@ -19,6 +19,7 @@ from .._archive import (
     verify_checksum_file,
 )
 from .._common import WorkflowError, validate_build_id
+from ._identity import PACKAGE_SCHEMA
 from ._lock import ProviderLock
 
 RELEASE_MANIFEST_NAME = "manifest.json"
@@ -28,10 +29,8 @@ RELEASE_FIELDS = frozenset(
         "schema",
         "build_id",
         "component_build_id",
-        "project_commit",
         "lock_digest",
-        "chromium_version",
-        "depot_tools_version",
+        "versions",
         "provenance",
         "files",
         "directories",
@@ -92,22 +91,17 @@ def read_manifest(
             "browser provider release manifest has an unsupported shape"
         )
     if (
-        raw.get("schema") != 1
+        raw.get("schema") != PACKAGE_SCHEMA
         or raw.get("build_id") != expected_build_id
         or raw.get("lock_digest") != lock.digest
-        or raw.get("chromium_version") != lock.chromium.version
-        or raw.get("depot_tools_version") != lock.depot_tools.version
+        or raw.get("versions")
+        != {"chromium": lock.chromium.version, "depot_tools": lock.depot_tools.version}
     ):
         raise WorkflowError("browser provider release does not match the selected lock")
     component_id = raw.get("component_build_id")
-    project_commit = raw.get("project_commit")
-    if not isinstance(component_id, str) or not isinstance(project_commit, str):
+    if not isinstance(component_id, str):
         raise WorkflowError("browser provider release provenance is invalid")
     validate_build_id(component_id, "component build ID")
-    if len(project_commit) != 40 or any(
-        character not in "0123456789abcdef" for character in project_commit
-    ):
-        raise WorkflowError("browser provider release project commit is invalid")
     expected_provenance = {
         "chromium": {
             "upstream_commit": lock.chromium.commit,

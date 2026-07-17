@@ -7,9 +7,6 @@ from pathlib import Path
 
 from scripts.remote.provider._lock import ProviderLock
 
-PROJECT_COMMIT = "1" * 40
-
-
 def create_provider_archive(
     root: Path,
     lock: ProviderLock,
@@ -26,13 +23,14 @@ def create_provider_archive(
     chrome.chmod(0o755)
     files = {"chrome-linux/chrome": _sha256(chrome)}
     manifest = {
-        "schema": 1,
+        "schema": 2,
         "build_id": build_id,
         "component_build_id": component_id,
-        "project_commit": PROJECT_COMMIT,
         "lock_digest": lock.digest,
-        "chromium_version": lock.chromium.version,
-        "depot_tools_version": lock.depot_tools.version,
+        "versions": {
+            "chromium": lock.chromium.version,
+            "depot_tools": lock.depot_tools.version,
+        },
         "provenance": {
             "chromium": {
                 "upstream_commit": lock.chromium.commit,

@@ -14,7 +14,7 @@ if __package__ in (None, ""):
     from remote._common import (
         WorkflowError,
         cli_main,
-        git_output,
+        remote_checked,
         repository_root,
         require_clean_main,
         require_commands,
@@ -26,7 +26,7 @@ if __package__ in (None, ""):
     from remote.provider._lock import load_lock, validate_patch_stack
     from remote.provider._remote import (
         ProviderRemoteConfig,
-        release_build_id,
+        remote_component_release_id_command,
         remote_package_script,
     )
 else:
@@ -34,7 +34,7 @@ else:
     from .._common import (
         WorkflowError,
         cli_main,
-        git_output,
+        remote_checked,
         repository_root,
         require_clean_main,
         require_commands,
@@ -44,7 +44,11 @@ else:
         validate_build_id,
     )
     from ._lock import load_lock, validate_patch_stack
-    from ._remote import ProviderRemoteConfig, release_build_id, remote_package_script
+    from ._remote import (
+        ProviderRemoteConfig,
+        remote_component_release_id_command,
+        remote_package_script,
+    )
 
 
 LOCK_PATH = Path("browser/provider.lock.json")
@@ -97,19 +101,22 @@ def run(argv: Sequence[str]) -> int:
     root = repository_root()
     lock = load_lock(root / arguments.lock)
     validate_patch_stack(root, lock)
-    commit = require_clean_main(root)
-    if git_output(root, "rev-parse", "@{upstream}") != commit:
-        raise WorkflowError("local HEAD is not pushed; run provider/build.py first")
-    release_id = release_build_id(arguments.build_id, commit)
+    require_clean_main(root)
+    config = ProviderRemoteConfig()
+    release_id = remote_checked(
+        config.common(),
+        remote_component_release_id_command(config, arguments.build_id),
+        capture=True,
+    ).stdout.strip()
+    validate_build_id(release_id, "remote provider release ID")
     output = _output_path(arguments.output, release_id, root)
     sidecar = _sidecar_path(arguments.sha256_output, output, root)
     _ensure_outputs_available(output, sidecar)
-    config = ProviderRemoteConfig()
     archive_name = f"{ARCHIVE_PREFIX}-{release_id}.tar.zst"
     run_remote_script(
         config.common(),
         remote_package_script(
-            config, lock, arguments.build_id, release_id, commit, archive_name
+            config, lock, arguments.build_id, release_id, archive_name
         ),
     )
     _download(config, archive_name, output, sidecar)
