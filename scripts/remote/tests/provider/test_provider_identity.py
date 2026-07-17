@@ -29,6 +29,7 @@ FIRST_RUNTIME = {"chrome-linux/chrome": "3" * 64}
 SECOND_RUNTIME = {"chrome-linux/chrome": "4" * 64}
 UNSUPPORTED_PARENT_FIELD = "project_commit"
 LEGACY_PROJECT_COMMIT = "a" * 40
+TRUNCATED_MANIFEST_STAGE = b'{"schema":'
 
 
 class ProviderIdentityTest(unittest.TestCase):
@@ -117,6 +118,46 @@ class ProviderIdentityTest(unittest.TestCase):
             before = chrome.stat()
             content = chrome.read_bytes()
             component = self._create_schema_one_migration_stages(legacy, lock)
+
+            completed = self._run_reuse_script(root, lock)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self._assert_schema_one_migration_recovered(
+                root, legacy, component, before, content
+            )
+
+    def test_schema_one_migration_retries_after_empty_manifest_stage_interruption(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
+            root = Path(temporary_name) / "build-root"
+            lock = load_lock(LOCK_PATH)
+            legacy, chrome = self._create_schema_one_current(root, lock)
+            before = chrome.stat()
+            content = chrome.read_bytes()
+            component = self._create_partial_schema_one_manifest_stage(
+                legacy, lock, b""
+            )
+
+            completed = self._run_reuse_script(root, lock)
+
+            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self._assert_schema_one_migration_recovered(
+                root, legacy, component, before, content
+            )
+
+    def test_schema_one_migration_retries_after_truncated_manifest_stage_interruption(
+        self,
+    ) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
+            root = Path(temporary_name) / "build-root"
+            lock = load_lock(LOCK_PATH)
+            legacy, chrome = self._create_schema_one_current(root, lock)
+            before = chrome.stat()
+            content = chrome.read_bytes()
+            component = self._create_partial_schema_one_manifest_stage(
+                legacy, lock, TRUNCATED_MANIFEST_STAGE
+            )
 
             completed = self._run_reuse_script(root, lock)
 
@@ -230,6 +271,14 @@ class ProviderIdentityTest(unittest.TestCase):
             encoding="utf-8",
         )
         current_stage.symlink_to(component / "runtime")
+        return component
+
+    def _create_partial_schema_one_manifest_stage(
+        self, legacy: Path, provider_lock: ProviderLock, content: bytes
+    ) -> Path:
+        component = legacy.parent / component_build_id(provider_lock.digest)
+        manifest_stage = legacy.parent / f".{component.name}.999.manifest"
+        manifest_stage.write_bytes(content)
         return component
 
     def _assert_schema_one_migration_recovered(

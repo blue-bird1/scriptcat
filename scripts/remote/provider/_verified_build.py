@@ -82,7 +82,7 @@ def validate_schema_two(component, manifest):
 def managed_stages(directory, prefix, suffix):
     for stage in directory.glob(f'{{prefix}}*{{suffix}}'):
         process_id = stage.name[len(prefix):-len(suffix)]
-        if process_id.isdecimal():
+        if process_id and all('0' <= character <= '9' for character in process_id):
             yield stage
 
 def clear_managed_link_stages(runtime):
@@ -132,15 +132,15 @@ def schema_one_migrated_manifest(component):
         'provenance': provenance, 'files': files, 'directories': directories,
     }}
 
-def clear_managed_manifest_stages(migrated_manifest):
+def clear_managed_manifest_stages():
     prefix = f'.{{build_id}}.'
     for stage in managed_stages(builds, prefix, '.manifest'):
-        if stage.is_symlink() or not stage.is_file() or read_manifest(stage) != migrated_manifest:
+        if stage.is_symlink() or not stage.is_file():
             fail('manifest migration staging path is invalid')
         stage.unlink()
 
 def replace_schema_one_manifest(component, migrated_manifest):
-    clear_managed_manifest_stages(migrated_manifest)
+    clear_managed_manifest_stages()
     manifest_stage = builds / f'.{{build_id}}.{{os.getpid()}}.manifest'
     if manifest_stage.exists() or manifest_stage.is_symlink():
         fail('manifest migration staging path already exists')
@@ -164,7 +164,7 @@ def migrate_current_schema_one():
     legacy_manifest = read_manifest(legacy / 'build-manifest.json')
     if legacy.name != legacy_manifest.get('build_id'):
         fail('schema-1 identity is invalid')
-    clear_managed_manifest_stages(migrated_manifest)
+    clear_managed_manifest_stages()
     os.replace(legacy, target)
     replace_schema_one_manifest(target, migrated_manifest)
     return True
