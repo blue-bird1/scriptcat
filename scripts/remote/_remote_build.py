@@ -4,7 +4,11 @@ from __future__ import annotations
 from ._common import REMOTE_BUILD_ROOT, RemoteConfig, shell_quote
 from ._lock import UpstreamLock
 from ._patching import patch_preparation_script
-from ._verified_build import component_build_id, verified_build_finalize_script
+from ._verified_build import (
+    component_build_id,
+    verified_build_finalize_script,
+    verified_build_reuse_script,
+)
 
 
 def _mcp_test_sandbox_helpers() -> str:
@@ -129,7 +133,7 @@ def remote_build_script(
 ) -> str:
     """Render MCP/ScriptCat source sync, build, focused tests, and finalization."""
     patch_helpers, patch_command = patch_preparation_script(lock)
-    build_id = component_build_id(lock.digest, project_commit)
+    build_id = component_build_id(lock.digest)
     return f"""#!/usr/bin/env bash
 set -Eeuo pipefail
 umask 022
@@ -140,6 +144,7 @@ mkdir -p "$build_root/src" "$build_root/out" "$build_root/builds"
 command -v flock >/dev/null
 exec 9>"$build_root/.build.lock"
 flock -x 9
+{verified_build_reuse_script(lock)}
 run_id=$(date -u +%Y%m%dT%H%M%SZ)-$$
 run_log="$build_root/out/build-$run_id.log"
 phase=bootstrap
@@ -198,9 +203,6 @@ git -C "$checkout" clean -ffd
 git -C "$checkout" submodule sync --recursive
 git -C "$checkout" submodule update --init --force --checkout --recursive
 test "$(git -C "$checkout" rev-parse HEAD)" = "$project_commit"
-SOURCE_DATE_EPOCH=$(git -C "$checkout" show -s --format=%ct "$project_commit")
-test "$SOURCE_DATE_EPOCH" -gt 0
-export SOURCE_DATE_EPOCH
 export SC_MANAGED_MCP_RANDOM_KEY="$build_id"
 
 {patch_helpers}
@@ -211,6 +213,10 @@ mcp_commit={shell_quote(lock.mcp.commit)}
 scriptcat="$build_root/src/scriptcat"
 runtime="$build_root/out/runtime"
 {patch_command}
+
+SOURCE_DATE_EPOCH=$(git -C "$mcp" show -s --format=%ct "$mcp_commit")
+test "$SOURCE_DATE_EPOCH" -gt 0
+export SOURCE_DATE_EPOCH
 
 clean_mcp_untracked_files
 test "$(git -C "$mcp" rev-parse HEAD)" = "$mcp_commit"
@@ -256,6 +262,6 @@ test -f "$runtime/scriptcat/manifest.json"
 
 mcp_build_commit=$(git -C "$mcp" rev-parse HEAD)
 scriptcat_build_commit=$(git -C "$scriptcat" rev-parse HEAD)
-{verified_build_finalize_script(lock, project_commit)}
+{verified_build_finalize_script(lock)}
 printf 'remote MCP component build completed: %s\n' "$build_id"
 """

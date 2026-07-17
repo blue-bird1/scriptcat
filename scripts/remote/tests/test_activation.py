@@ -109,7 +109,7 @@ class ActivationIntegrityTest(unittest.TestCase):
             )
             legacy_manifest.pop("schema")
             legacy_manifest.pop("component_build_id")
-            legacy_manifest.pop("project_commit")
+            legacy_manifest.pop("project_commit", None)
             legacy_manifest.pop("lock_digest")
             versions = legacy_manifest.pop("versions")
             legacy_manifest["mcp_version"] = versions["chrome_devtools_mcp"]

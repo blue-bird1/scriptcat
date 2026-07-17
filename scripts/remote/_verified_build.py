@@ -2,25 +2,112 @@
 from __future__ import annotations
 
 import hashlib
+import json
+from collections.abc import Mapping
 
 from ._common import shell_quote
 from ._lock import UpstreamLock
 
 MANIFEST_NAME = "build-manifest.json"
-BUILD_SCHEMA = 3
+BUILD_SCHEMA = 4
+PACKAGE_SCHEMA = 4
 
 
-def component_build_id(lock_digest: str, project_commit: str) -> str:
+def component_build_id(lock_digest: str) -> str:
     """Return the stable identifier for one fully pinned MCP component build."""
-    return hashlib.sha256(f"{lock_digest}{project_commit}".encode()).hexdigest()[:24]
+    source = f"mcp-component-v{BUILD_SCHEMA}\0{lock_digest}".encode()
+    return hashlib.sha256(source).hexdigest()[:24]
 
 
-def verified_build_finalize_script(lock: UpstreamLock, project_commit: str) -> str:
+def release_build_id(component_id: str, runtime_files: Mapping[str, str]) -> str:
+    """Return the reproducible release identifier for one verified runtime map."""
+    serialized_files = json.dumps(
+        dict(sorted(runtime_files.items())), separators=(",", ":"), sort_keys=True
+    )
+    source = (
+        f"mcp-release-v{PACKAGE_SCHEMA}\0{component_id}\0{serialized_files}"
+    ).encode()
+    return hashlib.sha256(source).hexdigest()[:24]
+
+
+def verified_build_reuse_script(lock: UpstreamLock) -> str:
+    """Render an early validation and reuse gate for a verified build."""
+    build_id = component_build_id(lock.digest)
+    return f"""reuse_status=$(python3 - "$build_root/builds" {shell_quote(build_id)} {shell_quote(lock.digest)} {shell_quote(lock.mcp.version)} {shell_quote(lock.scriptcat.version)} {shell_quote(lock.mcp.upstream_commit)} {shell_quote(lock.mcp.commit)} {shell_quote(lock.scriptcat.commit)} {shell_quote(lock.patch_digest("scriptcat"))} <<'PY'
+import hashlib
+import json
+import os
+import pathlib
+import stat
+import sys
+
+builds = pathlib.Path(sys.argv[1])
+build_id, lock_digest, mcp_version, scriptcat_version = sys.argv[2:6]
+mcp_upstream, mcp_build, scriptcat_upstream, patch_digest = sys.argv[6:10]
+target = builds / build_id
+if not target.exists() and not target.is_symlink():
+    print('build')
+    raise SystemExit(0)
+if target.is_symlink() or not target.is_dir():
+    raise SystemExit('existing verified MCP component build is invalid')
+try:
+    manifest = json.loads((target / 'build-manifest.json').read_text(encoding='utf-8'))
+except (OSError, json.JSONDecodeError) as error:
+    raise SystemExit(f'existing verified MCP component build is invalid: {{error}}')
+expected = {{
+    'schema': {BUILD_SCHEMA}, 'build_id': build_id, 'lock_digest': lock_digest,
+    'versions': {{'chrome_devtools_mcp': mcp_version, 'scriptcat': scriptcat_version}},
+}}
+manifest_keys = {{'schema', 'build_id', 'lock_digest', 'source_date_epoch', 'versions', 'provenance', 'files', 'directories'}}
+if not isinstance(manifest, dict) or set(manifest) != manifest_keys or any(manifest.get(key) != value for key, value in expected.items()):
+    raise SystemExit('existing verified MCP component build does not match the lock')
+if not isinstance(manifest.get('source_date_epoch'), int) or isinstance(manifest['source_date_epoch'], bool) or manifest['source_date_epoch'] <= 0:
+    raise SystemExit('existing verified MCP component build source date is invalid')
+provenance = manifest.get('provenance')
+if not isinstance(provenance, dict) or provenance.get('chrome_devtools_mcp') != {{'upstream_commit': mcp_upstream, 'build_commit': mcp_build}}:
+    raise SystemExit('existing verified MCP component build MCP provenance is invalid')
+scriptcat = provenance.get('scriptcat')
+if not isinstance(scriptcat, dict) or set(scriptcat) != {{'upstream_commit', 'patch_digest', 'build_commit'}} or scriptcat.get('upstream_commit') != scriptcat_upstream or scriptcat.get('patch_digest') != patch_digest or not isinstance(scriptcat.get('build_commit'), str) or len(scriptcat['build_commit']) != 40 or any(character not in '0123456789abcdef' for character in scriptcat['build_commit']):
+    raise SystemExit('existing verified MCP component build ScriptCat provenance is invalid')
+runtime = target / 'runtime'
+files, directories = {{}}, []
+if runtime.is_symlink() or not runtime.is_dir() or {{entry.name for entry in runtime.iterdir()}} != {{'mcp', 'scriptcat'}}:
+    raise SystemExit('existing verified MCP component build runtime is invalid')
+for current, names, file_names in os.walk(runtime, followlinks=False):
+    names.sort()
+    file_names.sort()
+    current_path = pathlib.Path(current)
+    for name in names:
+        path = current_path / name
+        if path.is_symlink() or not stat.S_ISDIR(path.lstat().st_mode):
+            raise SystemExit('existing verified MCP component build has an invalid directory')
+        directories.append(path.relative_to(runtime).as_posix())
+    for name in file_names:
+        path = current_path / name
+        status = path.lstat()
+        if path.is_symlink() or not stat.S_ISREG(status.st_mode) or status.st_nlink != 1:
+            raise SystemExit('existing verified MCP component build has an invalid file')
+        digest = hashlib.sha256(path.read_bytes()).hexdigest()
+        files[path.relative_to(runtime).as_posix()] = digest
+if not {{'mcp/bin/chrome-devtools-mcp.js', 'scriptcat/manifest.json'}} <= set(files) or manifest.get('files') != dict(sorted(files.items())) or manifest.get('directories') != sorted(directories):
+    raise SystemExit('existing verified MCP component build inventory is invalid')
+print('reuse')
+PY
+)
+if [ "$reuse_status" = reuse ]; then
+  printf 'reusing verified MCP component build: %s\\n' {shell_quote(build_id)}
+  exit 0
+fi
+test "$reuse_status" = build
+"""
+
+
+def verified_build_finalize_script(lock: UpstreamLock) -> str:
     """Render atomic MCP runtime finalization with exact source provenance."""
-    build_id = component_build_id(lock.digest, project_commit)
+    build_id = component_build_id(lock.digest)
     return f"""set_phase verified-build-finalize
 python3 - "$runtime" "$build_root/builds" {shell_quote(build_id)} \
-  {shell_quote(project_commit)} {shell_quote(lock.digest)} "$SOURCE_DATE_EPOCH" \
+  {shell_quote(lock.digest)} "$SOURCE_DATE_EPOCH" \
   {shell_quote(lock.mcp.version)} {shell_quote(lock.scriptcat.version)} \
   {shell_quote(lock.mcp.upstream_commit)} "$mcp_build_commit" \
   {shell_quote(lock.scriptcat.commit)} {shell_quote(lock.patch_digest("scriptcat"))} \
@@ -117,13 +204,12 @@ def validate_provenance(provenance):
                 fail('component provenance contains an invalid digest or commit')
 
 
-def manifest_for(runtime, build_id, project_commit, lock_digest, source_date_epoch, versions, provenance):
+def manifest_for(runtime, build_id, lock_digest, source_date_epoch, versions, provenance):
     validate_provenance(provenance)
     files, directories = inspect_runtime(runtime)
     return {{
         'schema': SCHEMA,
         'build_id': build_id,
-        'project_commit': project_commit,
         'lock_digest': lock_digest,
         'source_date_epoch': source_date_epoch,
         'versions': versions,
@@ -148,8 +234,8 @@ def read_verified_manifest(build):
     if not isinstance(payload, dict) or payload.get('schema') != SCHEMA:
         fail(f'invalid verified build manifest: {{path}}')
     actual = manifest_for(
-        build / 'runtime', payload.get('build_id'), payload.get('project_commit'),
-        payload.get('lock_digest'), payload.get('source_date_epoch'),
+        build / 'runtime', payload.get('build_id'), payload.get('lock_digest'),
+        payload.get('source_date_epoch'),
         payload.get('versions'), payload.get('provenance'),
     )
     if actual != payload:
@@ -170,12 +256,12 @@ def write_manifest(path, manifest):
 
 runtime = pathlib.Path(sys.argv[1])
 builds = pathlib.Path(sys.argv[2])
-build_id, project_commit, lock_digest = sys.argv[3:6]
-source_date_epoch = int(sys.argv[6])
-versions = {{'chrome_devtools_mcp': sys.argv[7], 'scriptcat': sys.argv[8]}}
-mcp_upstream_commit, mcp_build_commit = sys.argv[9:11]
-scriptcat_upstream_commit, scriptcat_patch_digest, scriptcat_build_commit = sys.argv[11:14]
-if source_date_epoch <= 0 or not is_hex(build_id, 24) or not is_hex(project_commit, 40) or not is_hex(lock_digest, 64):
+build_id, lock_digest = sys.argv[3:5]
+source_date_epoch = int(sys.argv[5])
+versions = {{'chrome_devtools_mcp': sys.argv[6], 'scriptcat': sys.argv[7]}}
+mcp_upstream_commit, mcp_build_commit = sys.argv[8:10]
+scriptcat_upstream_commit, scriptcat_patch_digest, scriptcat_build_commit = sys.argv[10:13]
+if source_date_epoch <= 0 or not is_hex(build_id, 24) or not is_hex(lock_digest, 64):
     fail('build identity or provenance is invalid')
 if not all(versions.values()):
     fail('component versions must be non-empty')
@@ -183,7 +269,7 @@ provenance = {{
     'chrome_devtools_mcp': {{'upstream_commit': mcp_upstream_commit, 'build_commit': mcp_build_commit}},
     'scriptcat': {{'upstream_commit': scriptcat_upstream_commit, 'patch_digest': scriptcat_patch_digest, 'build_commit': scriptcat_build_commit}},
 }}
-manifest = manifest_for(runtime, build_id, project_commit, lock_digest, source_date_epoch, versions, provenance)
+manifest = manifest_for(runtime, build_id, lock_digest, source_date_epoch, versions, provenance)
 builds.mkdir(mode=0o755, parents=True, exist_ok=True)
 temporary = builds / f'.{{build_id}}.{{os.getpid()}}.new'
 target = builds / build_id

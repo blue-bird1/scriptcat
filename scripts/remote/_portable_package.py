@@ -6,6 +6,7 @@ import textwrap
 
 from ._common import REMOTE_BUILD_ROOT, WorkflowError, shell_quote, validate_build_id
 from ._lock import UpstreamLock
+from ._verified_build import BUILD_SCHEMA, PACKAGE_SCHEMA
 
 _ARCHIVE_NAME_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.tar\.zst")
 
@@ -15,17 +16,10 @@ def portable_package_script(
     lock: UpstreamLock,
     *,
     component_build_id: str,
-    release_build_id: str,
-    project_commit: str,
     build_root: str = REMOTE_BUILD_ROOT,
 ) -> str:
     """Generate the self-contained MCP packaging program for a verified build."""
     validate_build_id(component_build_id, "component build ID")
-    validate_build_id(release_build_id, "release build ID")
-    if len(project_commit) != 40 or any(
-        character not in "0123456789abcdef" for character in project_commit
-    ):
-        raise WorkflowError("project commit must be a lowercase 40-hex Git commit")
     if not _ARCHIVE_NAME_PATTERN.fullmatch(archive_name):
         raise WorkflowError(f"archive name is unsafe or unsupported: {archive_name!r}")
 
@@ -37,10 +31,8 @@ def portable_package_script(
 
         build_root={shell_quote(build_root)}
         component_build_id={shell_quote(component_build_id)}
-        release_build_id={shell_quote(release_build_id)}
         archive_name={shell_quote(archive_name)}
         lock_digest={shell_quote(lock.digest)}
-        project_commit={shell_quote(project_commit)}
         mcp_version={shell_quote(lock.mcp.version)}
         scriptcat_version={shell_quote(lock.scriptcat.version)}
         mcp_upstream_commit={shell_quote(lock.mcp.upstream_commit)}
@@ -67,20 +59,18 @@ def portable_package_script(
         build_directory="$build_root/builds/$component_build_id"
         runtime="$build_directory/runtime"
         build_manifest="$build_directory/build-manifest.json"
-        release_directory="$build_root/out/release-$release_build_id"
-        temporary_parent="$build_root/out/.release-$release_build_id-new"
-        temporary_release="$temporary_parent/release-$release_build_id"
         archive="$build_root/out/$archive_name"
         temporary_archive="$build_root/out/.$archive_name-new"
         archive_digest="$archive.sha256"
         temporary_digest="$build_root/out/.$archive_name.sha256-new"
-        rm -rf -- "$temporary_parent" "$temporary_archive" "$temporary_digest"
+        release_identity="$build_root/out/release-$component_build_id.id"
+        temporary_identity="$build_root/out/.release-$component_build_id.id-new"
+        rm -rf -- "$temporary_archive" "$temporary_digest" "$temporary_identity"
 
         phase=verify-and-assemble
-        read -r source_date_epoch package_mode <<< "$(
-          python3 - "$runtime" "$build_manifest" "$release_directory" \
-            "$temporary_release" "$release_build_id" "$component_build_id" \
-            "$lock_digest" "$project_commit" "$mcp_version" \
+        read -r source_date_epoch package_mode release_build_id <<< "$(
+          python3 - "$runtime" "$build_manifest" "$build_root/out" \
+            "$component_build_id" "$lock_digest" "$mcp_version" \
             "$scriptcat_version" "$mcp_upstream_commit" "$mcp_build_commit" \
             "$scriptcat_upstream_commit" "$scriptcat_patch_digest" <<'PY'
 import hashlib
@@ -92,13 +82,15 @@ import stat
 import sys
 
 BUILD_KEYS = {{
-    'schema', 'build_id', 'project_commit', 'lock_digest', 'source_date_epoch',
+    'schema', 'build_id', 'lock_digest', 'source_date_epoch',
     'versions', 'provenance', 'files', 'directories',
 }}
 RELEASE_KEYS = {{
-    'schema', 'build_id', 'component_build_id', 'project_commit', 'lock_digest',
+    'schema', 'build_id', 'component_build_id', 'lock_digest',
     'versions', 'provenance', 'files', 'directories',
 }}
+BUILD_SCHEMA = {BUILD_SCHEMA}
+PACKAGE_SCHEMA = {PACKAGE_SCHEMA}
 RUNTIME_ROOTS = frozenset({{'mcp', 'scriptcat'}})
 REQUIRED_FILES = frozenset({{'mcp/bin/chrome-devtools-mcp.js', 'scriptcat/manifest.json'}})
 RESERVED = frozenset({{'manifest.json', 'SHA256SUMS'}})
@@ -204,11 +196,10 @@ def read_build(path, arguments):
         raw = json.loads(path.read_text(encoding='utf-8'))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
         fail(f'build manifest is invalid: {{error}}')
-    if not isinstance(raw, dict) or set(raw) != BUILD_KEYS or raw.get('schema') != 3:
+    if not isinstance(raw, dict) or set(raw) != BUILD_KEYS or raw.get('schema') != BUILD_SCHEMA:
         fail('build manifest has an unsupported shape')
     expected = {{
         'build_id': arguments['component_build_id'],
-        'project_commit': arguments['project_commit'],
         'lock_digest': arguments['lock_digest'],
         'versions': {{'chrome_devtools_mcp': arguments['mcp_version'], 'scriptcat': arguments['scriptcat_version']}},
     }}
@@ -224,10 +215,9 @@ def read_build(path, arguments):
 
 def release_manifest(release_id, build):
     return {{
-        'schema': 3,
+        'schema': PACKAGE_SCHEMA,
         'build_id': release_id,
         'component_build_id': build['build_id'],
-        'project_commit': build['project_commit'],
         'lock_digest': build['lock_digest'],
         'versions': build['versions'],
         'provenance': build['provenance'],
@@ -269,23 +259,26 @@ def verify_release(root, expected_manifest):
 
 runtime = pathlib.Path(sys.argv[1])
 build_manifest_path = pathlib.Path(sys.argv[2])
-release_directory = pathlib.Path(sys.argv[3])
-temporary_release = pathlib.Path(sys.argv[4])
-release_id = sys.argv[5]
+output_root = pathlib.Path(sys.argv[3])
 arguments = {{
-    'component_build_id': sys.argv[6], 'lock_digest': sys.argv[7],
-    'project_commit': sys.argv[8], 'mcp_version': sys.argv[9],
-    'scriptcat_version': sys.argv[10], 'mcp_upstream_commit': sys.argv[11],
-    'mcp_build_commit': sys.argv[12], 'scriptcat_upstream_commit': sys.argv[13],
-    'scriptcat_patch_digest': sys.argv[14],
+    'component_build_id': sys.argv[4], 'lock_digest': sys.argv[5],
+    'mcp_version': sys.argv[6], 'scriptcat_version': sys.argv[7],
+    'mcp_upstream_commit': sys.argv[8], 'mcp_build_commit': sys.argv[9],
+    'scriptcat_upstream_commit': sys.argv[10], 'scriptcat_patch_digest': sys.argv[11],
 }}
 build = read_build(build_manifest_path, arguments)
 files, directories = inspect_tree(runtime)
 if files != build['files'] or directories != build['directories']:
     fail('runtime does not match the verified build inventory')
+serialized_files = json.dumps(files, separators=(',', ':'), sort_keys=True)
+release_id = hashlib.sha256(
+    f'mcp-release-v{{PACKAGE_SCHEMA}}\\0{{build["build_id"]}}\\0{{serialized_files}}'.encode()
+).hexdigest()[:24]
+release_directory = output_root / f'release-{{release_id}}'
+temporary_release = output_root / f'.release-{{release_id}}-new' / f'release-{{release_id}}'
 manifest = release_manifest(release_id, build)
 if verify_release(release_directory, manifest):
-    print(build['source_date_epoch'], 'reuse')
+    print(build['source_date_epoch'], 'reuse', release_id)
     raise SystemExit(0)
 if temporary_release.exists() or temporary_release.is_symlink():
     fail(f'temporary release path already exists: {{temporary_release}}')
@@ -298,9 +291,13 @@ try:
 except BaseException:
     shutil.rmtree(temporary_release, ignore_errors=True)
     raise
-print(build['source_date_epoch'], 'create')
+print(build['source_date_epoch'], 'create', release_id)
 PY
         )"
+
+        release_directory="$build_root/out/release-$release_build_id"
+        temporary_parent="$build_root/out/.release-$release_build_id-new"
+        temporary_release="$temporary_parent/release-$release_build_id"
 
         test "$source_date_epoch" -gt 0
         if test -e "$archive" || test -L "$archive"; then
@@ -341,6 +338,14 @@ PY
           rm -f -- "$temporary_digest"
         else
           mv -- "$temporary_digest" "$archive_digest"
+        fi
+        printf '%s\n' "$release_build_id" > "$temporary_identity"
+        if test -e "$release_identity" || test -L "$release_identity"; then
+          test -f "$release_identity" && test ! -L "$release_identity"
+          cmp --silent "$temporary_identity" "$release_identity"
+          rm -f -- "$temporary_identity"
+        else
+          mv -- "$temporary_identity" "$release_identity"
         fi
         printf 'remote MCP package completed: release=%s archive=%s\n' "$release_build_id" "$archive"
         """

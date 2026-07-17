@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import fcntl
-import hashlib
 import os
 import shutil
 import stat
@@ -37,6 +36,7 @@ from ._archive import (
     verify_manifest,
 )
 from ._common import WorkflowError, validate_build_id
+from ._verified_build import component_build_id, release_build_id
 
 PROFILE_LOCK_PATH = (
     Path.home()
@@ -60,7 +60,6 @@ ActivationCheckpoint = Callable[[ActivationStage], None]
 @dataclass(frozen=True)
 class ReleaseProvenance:
     component_build_id: str
-    project_commit: str
     lock_digest: str
 
 
@@ -72,7 +71,6 @@ def activate_archive(
     expected_mcp_version: str,
     expected_scriptcat_version: str,
     expected_lock_digest: str | None = None,
-    expected_project_commit: str | None = None,
     *,
     expected_archive_sha256: str,
     expected_source_provenance: dict[str, dict[str, str]] | None = None,
@@ -96,12 +94,11 @@ def activate_archive(
             expected_mcp_version,
             expected_scriptcat_version,
         )
-        if expected_lock_digest is not None or expected_project_commit is not None:
+        if expected_lock_digest is not None:
             verify_expected_provenance(
                 manifest,
                 read_release_provenance(release),
                 expected_lock_digest,
-                expected_project_commit,
             )
         verify_source_provenance(manifest, expected_source_provenance)
         verify_manifest(release, manifest)
@@ -289,14 +286,11 @@ def publish_extension_directory(
 def read_release_provenance(release: Path) -> ReleaseProvenance:
     manifest = read_manifest(release)
     component_build_id = manifest.component_build_id
-    project_commit = manifest.project_commit
     lock_digest = manifest.lock_digest
     validate_build_id(component_build_id, "release component build ID")
-    validate_project_commit(project_commit, "release project commit")
     validate_lock_digest(lock_digest, "release lock digest")
     return ReleaseProvenance(
         component_build_id=component_build_id,
-        project_commit=project_commit,
         lock_digest=lock_digest,
     )
 
@@ -304,25 +298,15 @@ def read_release_provenance(release: Path) -> ReleaseProvenance:
 def verify_expected_provenance(
     manifest: ReleaseManifest,
     provenance: ReleaseProvenance,
-    expected_lock_digest: str | None,
-    expected_project_commit: str | None,
+    expected_lock_digest: str,
 ) -> None:
-    if expected_lock_digest is None and expected_project_commit is None:
-        return
-    if expected_lock_digest is None:
-        raise WorkflowError("release provenance lock digest is required")
     validate_lock_digest(expected_lock_digest, "expected lock digest")
-    selected_project_commit = expected_project_commit or provenance.project_commit
-    validate_project_commit(selected_project_commit, "expected project commit")
-    expected_component_build_id = component_build_id(
-        expected_lock_digest, selected_project_commit
-    )
+    expected_component_build_id = component_build_id(expected_lock_digest)
     expected_release_build_id = release_build_id(
-        expected_component_build_id, selected_project_commit
+        expected_component_build_id, manifest.files
     )
     expected = {
         "lock digest": (provenance.lock_digest, expected_lock_digest),
-        "project commit": (provenance.project_commit, selected_project_commit),
         "component build ID": (
             provenance.component_build_id,
             expected_component_build_id,
@@ -349,22 +333,6 @@ def verify_source_provenance(
             raise WorkflowError(
                 "release source provenance does not match the selected lock"
             )
-
-
-def component_build_id(lock_digest: str, project_commit: str) -> str:
-    return hashlib.sha256(f"{lock_digest}{project_commit}".encode()).hexdigest()[:24]
-
-
-def release_build_id(component_build_id: str, project_commit: str) -> str:
-    source = f"{component_build_id}{project_commit}".encode()
-    return hashlib.sha256(source).hexdigest()[:24]
-
-
-def validate_project_commit(value: str, label: str) -> None:
-    if len(value) != 40 or any(
-        character not in "0123456789abcdef" for character in value
-    ):
-        raise WorkflowError(f"{label} must be a lowercase 40-hex Git commit")
 
 
 def validate_lock_digest(value: str, label: str) -> None:

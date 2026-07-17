@@ -85,7 +85,7 @@ def run(argv: Sequence[str]) -> int:
     config = RemoteConfig()
     run_remote_script(config, remote_build_script(config, lock, commit, origin))
     assert_local_head(root, commit)
-    print(component_build_id(lock.digest, commit))
+    print(component_build_id(lock.digest))
     return 0
 
 

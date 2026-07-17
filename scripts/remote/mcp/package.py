@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import logging
 import os
 import sys
@@ -17,16 +16,14 @@ if __package__ in (None, ""):
         RemoteConfig,
         WorkflowError,
         cli_main,
-        git_output,
         repository_root,
-        require_clean_main,
         require_commands,
         require_wg0,
         run_checked,
         run_remote_script,
         validate_build_id,
     )
-    from remote._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
+    from remote._lock import load_lock
     from remote._portable_package import portable_package_script
 else:
     from .._archive import archive_digest_path, read_archive_digest, sha256
@@ -34,16 +31,14 @@ else:
         RemoteConfig,
         WorkflowError,
         cli_main,
-        git_output,
         repository_root,
-        require_clean_main,
         require_commands,
         require_wg0,
         run_checked,
         run_remote_script,
         validate_build_id,
     )
-    from .._lock import load_lock, validate_mcp_submodule, validate_patch_stacks
+    from .._lock import load_lock
     from .._portable_package import portable_package_script
 
 LOCK_PATH = Path("browser/mcp.lock.json")
@@ -56,8 +51,8 @@ def parser() -> argparse.ArgumentParser:
         formatter_class=argparse.RawDescriptionHelpFormatter,
         description="Package one verified remote MCP/ScriptCat component build.",
         epilog=(
-            "Requires a clean pushed main checkout, wg0, SSH, and rsync. It reads "
-            "only the selected verified MCP build and does not access another product. "
+            "Requires wg0, SSH, and rsync. It reads only the selected verified MCP "
+            "build and does not access Git or another product. "
             "Outputs are non-overwriting.\n\nExample:\n"
             "  uv run --project scripts --python 3.12 python "
             "scripts/remote/mcp/package.py --build-id 0123456789abcdef01234567"
@@ -95,53 +90,31 @@ def run(argv: Sequence[str]) -> int:
     require_wg0()
     root = repository_root()
     lock = load_lock(root / arguments.lock)
-    validate_patch_stacks(root, lock)
-    validate_mcp_submodule(root, lock)
-    package_commit = require_clean_main(root)
-    require_pushed_head(root, package_commit)
-    release_id = release_build_id(arguments.build_id, package_commit)
-    output = output_path(arguments.output, release_id, root)
+    output = output_path(arguments.output, arguments.build_id, root)
     digest_output = digest_output_path(arguments.sha256_output, output, root)
     ensure_outputs_available(output, digest_output)
     config = RemoteConfig()
-    archive_name = f"{ARCHIVE_PREFIX}-{release_id}.tar.zst"
+    archive_name = f"{ARCHIVE_PREFIX}-{arguments.build_id}.tar.zst"
     run_remote_script(
         config,
         portable_package_script(
             archive_name,
             lock,
             component_build_id=arguments.build_id,
-            release_build_id=release_id,
-            project_commit=package_commit,
             build_root=config.build_root,
         ),
     )
     digest = download_archive(config, archive_name, output, digest_output)
+    release_id = download_release_id(config, arguments.build_id, output.parent)
     LOGGER.info("downloaded MCP archive: %s", output)
     LOGGER.info("MCP archive SHA-256: %s", digest)
     print(release_id)
     return 0
 
 
-def release_build_id(component_id: str, project_commit: str) -> str:
-    validate_build_id(component_id, "component build ID")
-    if len(project_commit) != 40 or any(
-        character not in "0123456789abcdef" for character in project_commit
-    ):
-        raise WorkflowError("local project commit is not a lowercase 40-hex commit")
-    return hashlib.sha256(f"{component_id}{project_commit}".encode()).hexdigest()[:24]
-
-
-def require_pushed_head(root: Path, commit: str) -> None:
-    if git_output(root, "rev-parse", "@{upstream}") != commit:
-        raise WorkflowError(
-            "local HEAD is not the pushed main upstream; run mcp/build.py first"
-        )
-
-
-def output_path(argument: Path | None, release_id: str, root: Path) -> Path:
+def output_path(argument: Path | None, component_id: str, root: Path) -> Path:
     if argument is None:
-        return Path("/tmp") / f"scriptcat-mcp-{release_id}.tar.zst"
+        return Path("/tmp") / f"scriptcat-mcp-{component_id}.tar.zst"
     expanded = argument.expanduser()
     return expanded if expanded.is_absolute() else root / expanded
 
@@ -213,6 +186,22 @@ def download_archive(
     finally:
         archive_temporary.unlink(missing_ok=True)
         digest_temporary.unlink(missing_ok=True)
+
+
+def download_release_id(
+    config: RemoteConfig, component_id: str, destination: Path
+) -> str:
+    temporary = temporary_output(destination / f"release-{component_id}.id")
+    try:
+        remote_identity = (
+            f"{config.host}:{config.build_root}/out/release-{component_id}.id"
+        )
+        run_checked(("rsync", "--archive", remote_identity, str(temporary)))
+        release_id = temporary.read_text(encoding="ascii").strip()
+        validate_build_id(release_id, "remote release build ID")
+        return release_id
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 if __name__ == "__main__":

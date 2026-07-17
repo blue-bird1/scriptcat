@@ -19,6 +19,7 @@ from ._archive_digest import (
     validate_sha256_digest,
 )
 from ._common import WorkflowError
+from ._verified_build import PACKAGE_SCHEMA
 
 __all__ = (
     "ARCHIVE_DIGEST_SUFFIX",
@@ -38,7 +39,6 @@ RESERVED_FILES = frozenset({MANIFEST_NAME, CHECKSUMS_NAME})
 class ReleaseManifest:
     build_id: str
     component_build_id: str
-    project_commit: str
     lock_digest: str
     versions: dict[str, str]
     provenance: dict[str, dict[str, str]]
@@ -163,8 +163,10 @@ def read_installed_manifest(release: Path) -> ReleaseManifest:
         raw = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError, UnicodeDecodeError) as error:
         raise WorkflowError(f"release manifest is invalid: {error}") from error
-    if isinstance(raw, dict) and raw.get("schema") == 3:
+    if isinstance(raw, dict) and raw.get("schema") == PACKAGE_SCHEMA:
         return _parse_manifest(raw)
+    if isinstance(raw, dict) and raw.get("schema") == 3:
+        return _parse_schema3_manifest(raw)
     return _read_legacy_installed_manifest(raw)
 
 
@@ -182,18 +184,20 @@ def _parse_manifest(raw: object) -> ReleaseManifest:
         "schema",
         "build_id",
         "component_build_id",
-        "project_commit",
         "lock_digest",
         "versions",
         "provenance",
         "files",
         "directories",
     }
-    if not isinstance(raw, dict) or set(raw) != expected_keys or raw.get("schema") != 3:
+    if (
+        not isinstance(raw, dict)
+        or set(raw) != expected_keys
+        or raw.get("schema") != PACKAGE_SCHEMA
+    ):
         raise WorkflowError("release manifest has an unsupported shape")
     build_id = require_manifest_string(raw, "build_id")
     component_build_id = require_manifest_string(raw, "component_build_id")
-    project_commit = require_manifest_string(raw, "project_commit")
     lock_digest = require_manifest_string(raw, "lock_digest")
     versions = require_versions(raw)
     files = raw.get("files")
@@ -233,21 +237,40 @@ def _parse_manifest(raw: object) -> ReleaseManifest:
         "/" in build_id
         or len(component_build_id) != 24
         or not all(character in "0123456789abcdef" for character in component_build_id)
-        or len(project_commit) != 40
-        or not all(character in "0123456789abcdef" for character in project_commit)
         or not is_sha256(lock_digest.encode("ascii", errors="ignore"))
     ):
         raise WorkflowError("release manifest has an unsupported shape")
     return ReleaseManifest(
         build_id=build_id,
         component_build_id=component_build_id,
-        project_commit=project_commit,
         lock_digest=lock_digest,
         versions=versions,
         provenance=provenance,
         files=canonical_files,
         directories=canonical_directories,
     )
+
+
+def _parse_schema3_manifest(raw: object) -> ReleaseManifest:
+    if not isinstance(raw, dict):
+        raise WorkflowError("legacy release manifest has an unsupported shape")
+    expected = {
+        "schema",
+        "build_id",
+        "component_build_id",
+        "project_commit",
+        "lock_digest",
+        "versions",
+        "provenance",
+        "files",
+        "directories",
+    }
+    if set(raw) != expected or raw.get("schema") != 3:
+        raise WorkflowError("legacy release manifest has an unsupported shape")
+    translated = dict(raw)
+    translated.pop("project_commit")
+    translated["schema"] = PACKAGE_SCHEMA
+    return _parse_manifest(translated)
 
 
 def _read_legacy_installed_manifest(raw: object) -> ReleaseManifest:
@@ -280,7 +303,6 @@ def _read_legacy_installed_manifest(raw: object) -> ReleaseManifest:
     return ReleaseManifest(
         build_id=build_id,
         component_build_id="0" * 24,
-        project_commit="0" * 40,
         lock_digest="0" * 64,
         versions={
             "chrome_devtools_mcp": (

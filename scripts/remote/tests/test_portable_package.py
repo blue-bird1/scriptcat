@@ -10,12 +10,11 @@ from pathlib import Path
 from scripts.remote._archive import single_release_root, unpack_archive
 from scripts.remote._lock import load_lock
 from scripts.remote._portable_package import portable_package_script
+from scripts.remote._verified_build import BUILD_SCHEMA, release_build_id
 from scripts.remote.mcp.package import ARCHIVE_PREFIX
 from scripts.remote.tests._fixtures import provenance_for_lock
 
 COMPONENT_BUILD_ID = "0123456789abcdef01234567"
-RELEASE_BUILD_ID = "89abcdef0123456701234567"
-PROJECT_COMMIT = "0" * 40
 
 
 class PortablePackageScriptTest(unittest.TestCase):
@@ -72,9 +71,8 @@ class PortablePackageScriptTest(unittest.TestCase):
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_bytes(payload)
         manifest = {
-            "schema": 3,
+            "schema": BUILD_SCHEMA,
             "build_id": COMPONENT_BUILD_ID,
-            "project_commit": PROJECT_COMMIT,
             "lock_digest": lock.digest,
             "source_date_epoch": 1,
             "versions": {
@@ -91,15 +89,17 @@ class PortablePackageScriptTest(unittest.TestCase):
         (runtime.parent / "build-manifest.json").write_text(
             json.dumps(manifest, indent=2, sort_keys=True) + "\n", encoding="utf-8"
         )
-        archive_name = f"{ARCHIVE_PREFIX}-{RELEASE_BUILD_ID}.tar.zst"
+        runtime_digests = manifest["files"]
+        if not isinstance(runtime_digests, dict):
+            self.fail("fixture runtime files must be a mapping")
+        release_id = release_build_id(COMPONENT_BUILD_ID, runtime_digests)
+        archive_name = f"{ARCHIVE_PREFIX}-{COMPONENT_BUILD_ID}.tar.zst"
         script = root / "package.sh"
         script.write_text(
             portable_package_script(
                 archive_name,
                 lock,
                 component_build_id=COMPONENT_BUILD_ID,
-                release_build_id=RELEASE_BUILD_ID,
-                project_commit=PROJECT_COMMIT,
                 build_root=str(build_root),
             ),
             encoding="utf-8",
@@ -107,7 +107,7 @@ class PortablePackageScriptTest(unittest.TestCase):
         return (
             script,
             build_root / "out" / archive_name,
-            build_root / "out" / f"release-{RELEASE_BUILD_ID}",
+            build_root / "out" / f"release-{release_id}",
         )
 
     @staticmethod

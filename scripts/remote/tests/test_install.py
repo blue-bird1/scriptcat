@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 
 from scripts.remote._activation import component_build_id, release_build_id
+from scripts.remote._archive import read_manifest
 from scripts.remote._lock import load_lock
 from scripts.remote.tests._fixtures import (
     create_archive,
@@ -19,9 +20,6 @@ from scripts.remote.tests._fixtures import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 INSTALL_SCRIPT = REPOSITORY_ROOT / "scripts" / "remote" / "mcp" / "install.py"
-PROJECT_COMMIT = "1" * 40
-
-
 class OfflineInstallContractTest(unittest.TestCase):
     def test_installs_offline_without_git_or_browser_provider_root(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
@@ -29,13 +27,18 @@ class OfflineInstallContractTest(unittest.TestCase):
             lock_path = root / "mcp.lock.json"
             shutil.copyfile(REPOSITORY_ROOT / "browser" / "mcp.lock.json", lock_path)
             lock = load_lock(lock_path)
-            component_id = component_build_id(lock.digest, PROJECT_COMMIT)
-            build_id = release_build_id(component_id, PROJECT_COMMIT)
+            component_id = component_build_id(lock.digest)
+            draft = create_release(
+                root,
+                component_build_id=component_id,
+                lock_digest=lock.digest,
+                provenance=provenance_for_lock(lock),
+            )
+            build_id = release_build_id(component_id, read_manifest(draft).files)
             release = create_release(
                 root,
                 build_id=build_id,
                 component_build_id=component_id,
-                project_commit=PROJECT_COMMIT,
                 lock_digest=lock.digest,
                 provenance=provenance_for_lock(lock),
             )

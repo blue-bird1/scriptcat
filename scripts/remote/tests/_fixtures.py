@@ -14,7 +14,6 @@ from scripts.remote._lock import UpstreamLock
 
 BUILD_ID = "0123456789abcdef01234567"
 COMPONENT_BUILD_ID = "89abcdef0123456701234567"
-PROJECT_COMMIT = "1" * 40
 LOCK_DIGEST = "2" * 64
 MCP_VERSION = "1.5.0"
 SCRIPTCAT_VERSION = "1.3.2"
@@ -56,7 +55,6 @@ def create_release(
     *,
     build_id: str = BUILD_ID,
     component_build_id: str = COMPONENT_BUILD_ID,
-    project_commit: str = PROJECT_COMMIT,
     lock_digest: str = LOCK_DIGEST,
     provenance: dict[str, dict[str, str]] | None = None,
 ) -> Path:
@@ -66,10 +64,9 @@ def create_release(
     write_file(release / EXTENSION_WORKER_RELATIVE, b"const managed = true;\n")
     files, directories = release_tree(release)
     manifest_payload = {
-        "schema": 3,
+        "schema": 4,
         "build_id": build_id,
         "component_build_id": component_build_id,
-        "project_commit": project_commit,
         "lock_digest": lock_digest,
         "versions": {
             "chrome_devtools_mcp": MCP_VERSION,
