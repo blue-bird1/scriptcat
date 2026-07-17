@@ -5,4 +5,4 @@
 [submodule "browser/scriptcat"]
 	path = browser/scriptcat
 	url = https://github.com/blue-bird1/scriptcat.git
-	branch = managed-extension
+	branch = managed-extension-main

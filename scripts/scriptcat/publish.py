@@ -36,11 +36,7 @@ DEFAULT_EXTENSION_ROOT = (
 )
 DEFAULT_EXPECTED_EXTENSION_ID = "oepcbpjafionmhhelohlfhlmlaciclhc"
 SOURCE_PATH = Path("browser/scriptcat")
-FOCUSED_TESTS = (
-    "src/app/managed_mcp.test.ts",
-    "src/app/managed_mcp_lifecycle.test.ts",
-    "src/app/service/service_worker/regular_updatecheck.test.ts",
-)
+FOCUSED_TESTS = ("src/app/service/service_worker/script_get_source.test.ts",)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -89,13 +85,23 @@ def run(argv: Sequence[str]) -> int:
         source_commit = validate_submodule(root, source)
         print(f"installing ScriptCat dependencies in {source}")
         run_checked(("pnpm", "install", "--frozen-lockfile"), source)
-        print("running managed ScriptCat focused tests")
-        run_checked(("pnpm", "test:ci", "--", *FOCUSED_TESTS), source)
+        print("running ScriptCat source-read contract test")
+        run_checked(
+            (
+                "pnpm",
+                "exec",
+                "vitest",
+                "run",
+                "--no-coverage",
+                "--reporter=default",
+                "--reporter.summary=false",
+                *FOCUSED_TESTS,
+            ),
+            source,
+        )
         component = component_id(source_commit)
-        environment = os.environ.copy()
-        environment["SC_MANAGED_MCP_RANDOM_KEY"] = component
         print(f"building managed ScriptCat component {component}")
-        run_checked(("pnpm", "build:managed-mcp"), source, environment=environment)
+        run_checked(("pnpm", "build"), source)
         validate_checkout_unchanged(root, source, parent_commit, source_commit)
         extension = source / "dist" / "ext"
         release, extension_id = publish_built_extension(
@@ -209,13 +215,11 @@ def run_checked(
     command: Sequence[str],
     cwd: Path,
     capture: bool = False,
-    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
             command,
             cwd=cwd,
-            env=environment,
             check=True,
             text=True,
             stdout=subprocess.PIPE if capture else None,
