@@ -777,6 +777,11 @@ export class ScriptService {
     return script;
   }
 
+  async getSource(uuid: string): Promise<string | null> {
+    const scriptCode = await this.scriptCodeDAO.findByUUID(uuid);
+    return scriptCode?.code ?? null;
+  }
+
   async updateRunStatus(params: { uuid: string; runStatus: SCRIPT_RUN_STATUS; error?: string; nextruntime?: number }) {
     // 如果脚本删除了就不再更新状态
     const script = await this.scriptDAO.get(params.uuid);
@@ -1658,6 +1663,7 @@ export class ScriptService {
     this.group.on("enable", this.enableScript.bind(this));
     this.group.on("enables", this.enableScripts.bind(this));
     this.group.on("fetchInfo", this.fetchInfo.bind(this));
+    this.group.on("getSource", this.getSource.bind(this));
     this.group.on("updateRunStatus", this.updateRunStatus.bind(this));
     this.group.on("getFilterResult", this.getFilterResult.bind(this));
     this.group.on("getScriptRunResourceByUUID", this.getScriptRunResourceByUUID.bind(this));
