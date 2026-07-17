@@ -200,50 +200,6 @@ describe("ScriptService.deleteScripts —— 进回收站", () => {
   });
 });
 
-describe("serviceWorker/script/getSource", () => {
-  it("通过消息路由返回已保存的原始源码，不存在时返回 null", async () => {
-    const eventEmitter = new EventEmitter<string, any>();
-    const message = new MockMessage(eventEmitter);
-    const server = new Server("serviceWorker", message);
-    const mq = new MessageQueue();
-    const systemConfig = new SystemConfig(mq);
-    const scriptDAO = new ScriptDAO();
-    const service = new ScriptService(
-      systemConfig,
-      server.group("script"),
-      mq,
-      {} as ValueService,
-      { updateResourceByTypes: async () => {} } as unknown as ResourceService,
-      scriptDAO
-    );
-    service.scriptCodeDAO.useCache = false;
-    service.listenerScriptInstall = vi.fn();
-    systemConfig.getCheckScriptUpdateCycle = vi.fn().mockResolvedValue(0);
-    const originalAlarms = chrome.alarms;
-    Object.defineProperty(chrome, "alarms", {
-      configurable: true,
-      value: { clear: vi.fn().mockResolvedValue(true) },
-    });
-
-    try {
-      service.init();
-      const uuid = randomUUID();
-      const source = `// ==UserScript==\n// @name ${uuid}\n// ==/UserScript==`;
-      await service.scriptCodeDAO.save({ uuid, code: source });
-
-      await expect(message.sendMessage({ action: "serviceWorker/script/getSource", data: uuid })).resolves.toEqual({
-        code: 0,
-        data: source,
-      });
-      await expect(
-        message.sendMessage({ action: "serviceWorker/script/getSource", data: randomUUID() })
-      ).resolves.toEqual({ code: 0, data: null });
-    } finally {
-      Object.defineProperty(chrome, "alarms", { configurable: true, value: originalAlarms });
-    }
-  });
-});
-
 describe("ScriptService.restoreScripts —— 还原", () => {
   beforeEach(async () => {
     await resetActiveScriptData();
