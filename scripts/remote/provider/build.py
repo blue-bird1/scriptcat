@@ -8,7 +8,7 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from remote._common import (
+    from remote.provider._common import (
         assert_local_head,
         cli_main,
         push_main,
@@ -26,7 +26,7 @@ if __package__ in (None, ""):
         remote_build_script,
     )
 else:
-    from .._common import (
+    from ._common import (
         assert_local_head,
         cli_main,
         push_main,

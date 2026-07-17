@@ -1,7 +1,7 @@
 [project]
 name = "scriptcat-build-tools"
 version = "0.1.0"
-description = "Local ScriptCat extension publication and remote browser provider/MCP tooling"
+description = "Local ScriptCat extension and MCP publication with remote browser provider tooling"
 requires-python = ">=3.12,<3.13"
 dependencies = []
 

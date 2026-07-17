@@ -2,24 +2,41 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import stat
-import subprocess
-import tarfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from ._archive_digest import (
-    ARCHIVE_DIGEST_SUFFIX,
-    archive_digest_path,
-    copy_verified_archive,
-    is_sha256,
-    read_archive_digest,
-    sha256,
-    validate_sha256_digest,
-)
 from ._common import WorkflowError
-from ._verified_build import PACKAGE_SCHEMA
+from ._identity import PACKAGE_SCHEMA
+
+if __package__.startswith("scripts."):
+    from scripts.release_tools.archive import (
+        ARCHIVE_DIGEST_SUFFIX,
+        archive_digest_path,
+        canonical_relative_path,
+        copy_verified_archive,
+        is_sha256,
+        read_archive_digest,
+        sha256,
+        single_release_root,
+        unpack_archive,
+        validate_sha256_digest,
+        verify_checksum_file,
+    )
+else:
+    from release_tools.archive import (
+        ARCHIVE_DIGEST_SUFFIX,
+        archive_digest_path,
+        canonical_relative_path,
+        copy_verified_archive,
+        is_sha256,
+        read_archive_digest,
+        sha256,
+        single_release_root,
+        unpack_archive,
+        validate_sha256_digest,
+        verify_checksum_file,
+    )
 
 __all__ = (
     "ARCHIVE_DIGEST_SUFFIX",
@@ -27,6 +44,8 @@ __all__ = (
     "copy_verified_archive",
     "read_archive_digest",
     "sha256",
+    "single_release_root",
+    "unpack_archive",
     "validate_sha256_digest",
 )
 
@@ -48,104 +67,6 @@ class ReleaseManifest:
     @property
     def mcp_version(self) -> str:
         return self.versions["chrome_devtools_mcp"]
-
-
-def unpack_archive(archive: Path, staging: Path) -> None:
-    if not archive.is_file():
-        raise WorkflowError(f"release archive is missing: {archive}")
-    try:
-        process = subprocess.Popen(
-            ("zstd", "--decompress", "--stdout", "--", str(archive)),
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-        )
-    except OSError as error:
-        raise WorkflowError(f"cannot start archive decompressor: {error}") from error
-    assert process.stdout is not None
-    assert process.stderr is not None
-    directory_modes: list[tuple[Path, int]] = []
-    members: set[str] = set()
-    try:
-        with tarfile.open(fileobj=process.stdout, mode="r|") as stream:
-            for member in stream:
-                relative = archive_member_path(member)
-                canonical = relative.as_posix()
-                if canonical in members:
-                    raise WorkflowError(
-                        f"release archive contains a duplicate path: {canonical}"
-                    )
-                members.add(canonical)
-                destination = staging.joinpath(*relative.parts)
-                if member.type == tarfile.DIRTYPE:
-                    destination.mkdir(parents=True, exist_ok=True)
-                    if not destination.is_dir() or destination.is_symlink():
-                        raise WorkflowError(
-                            "release archive path conflicts with a directory: "
-                            f"{canonical}"
-                        )
-                    directory_modes.append((destination, member.mode & 0o777))
-                elif member.type in {tarfile.REGTYPE, tarfile.AREGTYPE}:
-                    destination.parent.mkdir(parents=True, exist_ok=True)
-                    extracted = stream.extractfile(member)
-                    if extracted is None:
-                        raise WorkflowError(
-                            f"release archive file cannot be read: {canonical}"
-                        )
-                    try:
-                        with destination.open("xb") as output:
-                            shutil.copyfileobj(extracted, output)
-                    except FileExistsError as error:
-                        raise WorkflowError(
-                            f"release archive path conflicts with a file: {canonical}"
-                        ) from error
-                    finally:
-                        extracted.close()
-                    destination.chmod(member.mode & 0o777)
-                else:
-                    raise WorkflowError(
-                        f"release archive contains an unsupported entry: {canonical}"
-                    )
-        for directory, mode in sorted(
-            directory_modes, key=lambda item: len(item[0].parts), reverse=True
-        ):
-            directory.chmod(mode)
-    except (OSError, tarfile.TarError, WorkflowError) as error:
-        if process.poll() is None:
-            process.kill()
-        process.communicate()
-        if isinstance(error, WorkflowError):
-            raise
-        raise WorkflowError(f"cannot unpack release archive: {error}") from error
-    else:
-        stderr = process.stderr.read().decode("utf-8", errors="replace").strip()
-        status = process.wait()
-        if status != 0:
-            detail = stderr or f"zstd exited with status {status}"
-            raise WorkflowError(f"cannot unpack release archive: {detail}")
-    finally:
-        process.stdout.close()
-        process.stderr.close()
-
-
-def archive_member_path(member: tarfile.TarInfo) -> PurePosixPath:
-    raw = member.name
-    if member.type == tarfile.DIRTYPE and raw.endswith("/"):
-        raw = raw[:-1]
-    path = canonical_relative_path(raw, "release archive")
-    if member.type not in {tarfile.REGTYPE, tarfile.AREGTYPE, tarfile.DIRTYPE}:
-        raise WorkflowError(
-            f"release archive contains an unsupported entry: {path.as_posix()}"
-        )
-    return path
-
-
-def single_release_root(staging: Path) -> Path:
-    entries = list(staging.iterdir())
-    if len(entries) != 1 or not entries[0].is_dir() or entries[0].is_symlink():
-        raise WorkflowError(
-            "release archive must contain exactly one top-level directory"
-        )
-    return entries[0]
 
 
 def read_manifest(release: Path) -> ReleaseManifest:
@@ -282,19 +203,6 @@ def manifest_relative_path(relative: str, kind: str) -> PurePosixPath:
     return canonical_relative_path(relative, f"release manifest {kind}")
 
 
-def canonical_relative_path(relative: str, context: str) -> PurePosixPath:
-    path = PurePosixPath(relative)
-    if (
-        not relative
-        or path == PurePosixPath(".")
-        or path.is_absolute()
-        or ".." in path.parts
-        or path.as_posix() != relative
-    ):
-        raise WorkflowError(f"{context} references an unsafe or non-canonical path")
-    return path
-
-
 def verify_manifest(release: Path, manifest: ReleaseManifest) -> None:
     required = {"mcp/bin/chrome-devtools-mcp.js"}
     if not required.issubset(manifest.files):
@@ -352,40 +260,3 @@ def inspect_release_tree(release: Path) -> tuple[set[str], set[str]]:
                 )
             files.add(relative)
     return files, directories
-
-
-def verify_checksum_file(release: Path, sums: Path) -> set[str]:
-    try:
-        payload = sums.read_bytes()
-    except FileNotFoundError as error:
-        raise WorkflowError("release omits SHA256SUMS") from error
-    if not payload or not payload.endswith(b"\0"):
-        raise WorkflowError("SHA256SUMS must be a NUL-terminated checksum list")
-    covered: set[str] = set()
-    for record in payload[:-1].split(b"\0"):
-        if len(record) < 67 or record[64:66] != b"  ":
-            raise WorkflowError("SHA256SUMS is invalid or does not match the release")
-        expected = record[:64]
-        try:
-            relative = record[66:].decode("utf-8")
-        except UnicodeDecodeError as error:
-            raise WorkflowError("SHA256SUMS contains a non-UTF-8 path") from error
-        path = canonical_relative_path(relative, "release checksum")
-        canonical = path.as_posix()
-        target = release.joinpath(*path.parts)
-        try:
-            status = target.lstat()
-        except FileNotFoundError as error:
-            raise WorkflowError(
-                "SHA256SUMS is invalid or does not match the release"
-            ) from error
-        if (
-            not is_sha256(expected)
-            or canonical in covered
-            or not stat.S_ISREG(status.st_mode)
-            or status.st_nlink != 1
-            or sha256(target) != expected.decode("ascii")
-        ):
-            raise WorkflowError("SHA256SUMS is invalid or does not match the release")
-        covered.add(canonical)
-    return covered

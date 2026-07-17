@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from .._common import RemoteConfig, shell_quote
+from ._common import RemoteConfig, shell_quote
 from ._identity import PACKAGE_SCHEMA, component_build_id
 from ._lock import ProviderLock
 from ._patching import chromium_patch_preparation_script

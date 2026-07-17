@@ -17,9 +17,11 @@ uv run --project scripts --python 3.12 python scripts/scriptcat/publish.py
 
 Publication stores extension data in `~/.local/share/scriptcat-extension` and atomically provides the managed extension at `~/.codex/chrome-extensions/scriptcat/managed`. The fixed extension ID is `oepcbpjafionmhhelohlfhlmlaciclhc`.
 
-The browser provider and ScriptCat MCP are separate remote three-stage products. Provider commands in `scripts/remote/provider/` build, package, and install Chromium; provider installation activates `~/.local/share/scriptcat-browser/current/chrome-linux/chrome`. MCP commands in `scripts/remote/mcp/` build, package, and install only the MCP; MCP installation activates `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js`. Their locks, component identities, archives, and release directories remain independent.
+The browser provider is the only remote build product. Its `scripts/remote/provider/` build and package stages use `192.168.50.8` through `wg0` to compile, test, and package Chromium; its offline local install stage activates `~/.local/share/scriptcat-browser/current/chrome-linux/chrome`.
 
-The MCP launches the provider executable with the fixed profile and receives the managed extension directory from configuration. It reads the extension manifest from that directory at runtime and does not assume an extension version or read extension installation transactions. Publishing the extension leaves provider and MCP installations unchanged; provider and MCP releases do not build, archive, install, or publish the extension.
+ScriptCat MCP is a local three-stage product. Commands in `scripts/mcp/` build and test from `browser/chrome-devtools-mcp`, store build state in `~/.local/share/scriptcat-mcp-build`, create a schema 5 archive, and install it under `~/.local/share/scriptcat-mcp`. The active executable remains `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js`; all MCP publication work executes against the local checkout and local release roots.
+
+The MCP launches the provider executable with the fixed profile and receives the managed extension directory from configuration. It reads the extension manifest from that directory at runtime and does not assume an extension version or read extension installation transactions. Extension, provider, and MCP publication remain independent.
 
 ## Extension Readiness
 

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .._common import shell_quote
+from ._common import shell_quote
 from ._lock import ProviderLock
 
 

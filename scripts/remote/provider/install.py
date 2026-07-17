@@ -8,13 +8,13 @@ from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from remote._archive import validate_sha256_digest
-    from remote._common import cli_main, require_commands, validate_build_id
+    from remote.provider._archive import validate_sha256_digest
+    from remote.provider._common import cli_main, require_commands, validate_build_id
     from remote.provider._lock import load_lock
     from remote.provider._release import activate_archive, local_data_root
 else:
-    from .._archive import validate_sha256_digest
-    from .._common import cli_main, require_commands, validate_build_id
+    from ._archive import validate_sha256_digest
+    from ._common import cli_main, require_commands, validate_build_id
     from ._lock import load_lock
     from ._release import activate_archive, local_data_root
 

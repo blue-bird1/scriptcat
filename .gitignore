@@ -61,7 +61,7 @@ __pycache__/
 !vendor/
 !vendor/page-agent.js
 
-# ScriptCat MCP source pins, managed extension submodules, and remote build tooling.
+# Browser and MCP source pins, local publication tools, and remote provider tooling.
 !browser/
 !browser/mcp.lock.json
 !browser/provider.lock.json
@@ -74,6 +74,14 @@ __pycache__/
 !scripts/scriptcat/**
 scripts/scriptcat/__pycache__/
 scripts/scriptcat/**/*.pyc
+!scripts/mcp/
+!scripts/mcp/**
+scripts/mcp/__pycache__/
+scripts/mcp/**/*.pyc
+!scripts/release_tools/
+!scripts/release_tools/**
+scripts/release_tools/__pycache__/
+scripts/release_tools/**/*.pyc
 !scripts/remote/
 !scripts/remote/**
 scripts/remote/__pycache__/

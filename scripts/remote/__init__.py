@@ -1,1 +1,1 @@
-"""Remote build tools for the portable ScriptCat MCP release."""
+"""Remote build and release tools for the Chromium browser provider."""

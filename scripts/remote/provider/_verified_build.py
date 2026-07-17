@@ -1,7 +1,7 @@
 # ruff: noqa: E501
 from __future__ import annotations
 
-from .._common import shell_quote
+from ._common import shell_quote
 from ._identity import BUILD_SCHEMA, component_build_id
 from ._lock import ProviderLock
 

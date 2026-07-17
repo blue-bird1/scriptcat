@@ -3,15 +3,20 @@ from __future__ import annotations
 
 import argparse
 import os
+import secrets
 import sys
-import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
 if __package__ in (None, ""):
     sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
-    from remote._archive import archive_digest_path, read_archive_digest, sha256
-    from remote._common import (
+    from remote.provider import _download_transaction
+    from remote.provider._archive import (
+        archive_digest_path,
+        read_archive_digest,
+        sha256,
+    )
+    from remote.provider._common import (
         WorkflowError,
         cli_main,
         remote_checked,
@@ -30,8 +35,9 @@ if __package__ in (None, ""):
         remote_package_script,
     )
 else:
-    from .._archive import archive_digest_path, read_archive_digest, sha256
-    from .._common import (
+    from . import _download_transaction
+    from ._archive import archive_digest_path, read_archive_digest, sha256
+    from ._common import (
         WorkflowError,
         cli_main,
         remote_checked,
@@ -53,6 +59,7 @@ else:
 
 LOCK_PATH = Path("browser/provider.lock.json")
 ARCHIVE_PREFIX = "scriptcat-browser-provider"
+TRANSACTION_TOKEN_BYTES = 16
 
 
 def parser() -> argparse.ArgumentParser:
@@ -142,68 +149,104 @@ def _ensure_outputs_available(archive: Path, sidecar: Path) -> None:
     for path in (archive, sidecar):
         if not path.parent.is_dir() or path.parent.is_symlink():
             raise WorkflowError(f"output parent is not a real directory: {path.parent}")
-        if path.exists() or path.is_symlink():
-            raise WorkflowError(f"refusing to overwrite output: {path}")
+    _download_transaction.ensure_available(archive, sidecar)
 
 
-def _temporary_output(output: Path) -> Path:
-    descriptor, name = tempfile.mkstemp(
-        dir=output.parent, prefix=f".{output.name}.", suffix=".part"
-    )
-    os.close(descriptor)
-    return Path(name)
+def _temporary_output(output: Path, token: str) -> Path:
+    return output.parent / f".{output.name}.{token}.part"
+
+
+def _create_transaction_temporaries(archive: Path, sidecar: Path) -> tuple[Path, Path]:
+    while True:
+        token = secrets.token_hex(TRANSACTION_TOKEN_BYTES)
+        archive_temporary = _temporary_output(archive, token)
+        sidecar_temporary = _temporary_output(sidecar, token)
+        created: list[Path] = []
+        try:
+            for path in (archive_temporary, sidecar_temporary):
+                descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+                os.close(descriptor)
+                created.append(path)
+        except FileExistsError:
+            for path in created:
+                path.unlink()
+            continue
+        except BaseException:
+            for path in created:
+                path.unlink()
+            raise
+        return archive_temporary, sidecar_temporary
 
 
 def _download(
     config: ProviderRemoteConfig, archive_name: str, output: Path, sidecar: Path
 ) -> None:
-    archive_temporary = _temporary_output(output)
-    sidecar_temporary = _temporary_output(sidecar)
-    try:
-        remote_base = f"{config.host}:{config.build_root}/out/"
-        run_checked(
-            (
-                "rsync",
-                "--archive",
-                "--partial",
-                f"{remote_base}{archive_name}",
-                str(archive_temporary),
-            )
+    with _download_transaction.output_pair_lock(output, sidecar):
+        _download_transaction.recover(output, sidecar)
+        _download_transaction.ensure_unoccupied(output, sidecar)
+        archive_temporary, sidecar_temporary = _create_transaction_temporaries(
+            output, sidecar
         )
-        run_checked(
-            (
-                "rsync",
-                "--archive",
-                "--partial",
-                f"{remote_base}{archive_digest_path(Path(archive_name)).name}",
-                str(sidecar_temporary),
-            )
+        journal = _download_transaction.create_journal(
+            output, sidecar, archive_temporary, sidecar_temporary
         )
-        expected = read_archive_digest(sidecar_temporary)
-        if sha256(archive_temporary) != expected:
-            raise WorkflowError("downloaded provider archive does not match SHA-256")
         try:
-            os.link(archive_temporary, output)
+            remote_base = f"{config.host}:{config.build_root}/out/"
+            run_checked(
+                (
+                    "rsync",
+                    "--archive",
+                    "--partial",
+                    f"{remote_base}{archive_name}",
+                    str(archive_temporary),
+                )
+            )
+            run_checked(
+                (
+                    "rsync",
+                    "--archive",
+                    "--partial",
+                    f"{remote_base}{archive_digest_path(Path(archive_name)).name}",
+                    str(sidecar_temporary),
+                )
+            )
+            expected = read_archive_digest(sidecar_temporary)
+            if sha256(archive_temporary) != expected:
+                raise WorkflowError(
+                    "downloaded provider archive does not match SHA-256"
+                )
+            _fsync_file(archive_temporary)
+            _fsync_file(sidecar_temporary)
             os.link(sidecar_temporary, sidecar)
+            _fsync_directory(sidecar.parent)
+            os.link(archive_temporary, output)
+            _fsync_directory(output.parent)
+            journal = _download_transaction.mark_archive_complete(journal)
         except FileExistsError as error:
+            _download_transaction.abort(journal)
             raise WorkflowError(
                 "refusing to overwrite provider download output"
             ) from error
-    except BaseException:
-        _remove_published_output(output, archive_temporary)
-        _remove_published_output(sidecar, sidecar_temporary)
-        raise
-    finally:
-        archive_temporary.unlink(missing_ok=True)
-        sidecar_temporary.unlink(missing_ok=True)
+        except BaseException:
+            _download_transaction.abort(journal)
+            raise
+        _download_transaction.finish(journal)
 
 
-def _remove_published_output(output: Path, temporary: Path) -> None:
+def _fsync_file(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY)
     try:
-        if output.samefile(temporary):
-            output.unlink()
-    except FileNotFoundError:
-        pass
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
+
+
+def _fsync_directory(path: Path) -> None:
+    descriptor = os.open(path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 if __name__ == "__main__":

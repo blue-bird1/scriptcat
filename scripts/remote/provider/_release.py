@@ -11,14 +11,14 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
-from .._archive import (
+from ._archive import (
     copy_verified_archive,
     sha256,
     single_release_root,
     unpack_archive,
     verify_checksum_file,
 )
-from .._common import WorkflowError, validate_build_id
+from ._common import WorkflowError, validate_build_id
 from ._identity import PACKAGE_SCHEMA, release_build_id
 from ._lock import ProviderLock
 

@@ -9,7 +9,7 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
-from scripts.remote._common import WorkflowError
+from scripts.remote.provider._common import WorkflowError
 from scripts.remote.provider._identity import (
     component_build_id,
     legacy_component_build_id,

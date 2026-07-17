@@ -31,7 +31,7 @@ from ._archive import (
     verify_manifest,
 )
 from ._common import WorkflowError, validate_build_id
-from ._verified_build import component_build_id, release_build_id
+from ._identity import component_build_id, release_build_id
 
 ACTIVATION_LOCK_NAME = ".activation.lock"
 
