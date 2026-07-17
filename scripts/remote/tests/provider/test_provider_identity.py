@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import json
 import hashlib
+import json
 import os
 import subprocess
 import tempfile
@@ -9,16 +9,16 @@ import unittest
 from dataclasses import replace
 from pathlib import Path
 
+from scripts.remote._common import WorkflowError
 from scripts.remote.provider._identity import (
     component_build_id,
     legacy_component_build_id,
     release_build_id,
 )
 from scripts.remote.provider._lock import ProviderLock, load_lock
-from scripts.remote.provider._remote import ProviderRemoteConfig, remote_build_script
 from scripts.remote.provider._release import RELEASE_FIELDS, read_manifest
+from scripts.remote.provider._remote import ProviderRemoteConfig, remote_build_script
 from scripts.remote.provider._verified_build import verified_build_reuse_script
-from scripts.remote._common import WorkflowError
 from scripts.remote.tests.provider._fixtures import create_provider_archive
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]
@@ -50,7 +50,9 @@ class ProviderIdentityTest(unittest.TestCase):
     def test_provider_input_and_runtime_changes_have_distinct_identities(self) -> None:
         lock = load_lock(LOCK_PATH)
 
-        self.assertNotEqual(component_build_id(lock.digest), component_build_id("0" * 64))
+        self.assertNotEqual(
+            component_build_id(lock.digest), component_build_id("0" * 64)
+        )
         self.assertNotEqual(
             release_build_id(component_build_id(lock.digest), FIRST_RUNTIME),
             release_build_id(component_build_id(lock.digest), SECOND_RUNTIME),
@@ -95,9 +97,7 @@ class ProviderIdentityTest(unittest.TestCase):
             component = root / "builds" / component_build_id(lock.digest)
             self.assertFalse(legacy.exists())
             self.assertTrue(component.is_dir())
-            self.assertEqual(
-                os.readlink(root / "current"), str(component / "runtime")
-            )
+            self.assertEqual(os.readlink(root / "current"), str(component / "runtime"))
             migrated_chrome = component / "runtime" / "chrome-linux" / "chrome"
             self.assertEqual(migrated_chrome.stat().st_ino, before.st_ino)
             self.assertEqual(migrated_chrome.stat().st_mtime_ns, before.st_mtime_ns)
@@ -120,9 +120,7 @@ class ProviderIdentityTest(unittest.TestCase):
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
             self.assertTrue(legacy.is_dir())
-            self.assertEqual(
-                os.readlink(root / "current"), str(legacy / "runtime")
-            )
+            self.assertEqual(os.readlink(root / "current"), str(legacy / "runtime"))
             self.assertFalse(
                 (root / "builds" / component_build_id(other_lock.digest)).exists()
             )
@@ -130,7 +128,9 @@ class ProviderIdentityTest(unittest.TestCase):
     def _create_schema_one_current(
         self, root: Path, provider_lock: ProviderLock
     ) -> tuple[Path, Path]:
-        legacy_id = legacy_component_build_id(provider_lock.digest, LEGACY_PROJECT_COMMIT)
+        legacy_id = legacy_component_build_id(
+            provider_lock.digest, LEGACY_PROJECT_COMMIT
+        )
         legacy = root / "builds" / legacy_id
         chrome = legacy / "runtime" / "chrome-linux" / "chrome"
         chrome.parent.mkdir(parents=True)

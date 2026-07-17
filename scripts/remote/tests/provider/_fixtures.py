@@ -7,6 +7,7 @@ from pathlib import Path
 
 from scripts.remote.provider._lock import ProviderLock
 
+
 def create_provider_archive(
     root: Path,
     lock: ProviderLock,

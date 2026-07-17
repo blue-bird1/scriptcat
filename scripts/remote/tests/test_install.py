@@ -20,6 +20,8 @@ from scripts.remote.tests._fixtures import (
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 INSTALL_SCRIPT = REPOSITORY_ROOT / "scripts" / "remote" / "mcp" / "install.py"
+
+
 class OfflineInstallContractTest(unittest.TestCase):
     def test_installs_offline_without_git_or_browser_provider_root(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:

@@ -9,8 +9,8 @@ import time
 import unittest
 from pathlib import Path
 
-from scripts.remote.provider._lock import load_lock
 from scripts.remote.provider._identity import release_build_id
+from scripts.remote.provider._lock import load_lock
 from scripts.remote.provider._remote import ProviderRemoteConfig, remote_package_script
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[4]

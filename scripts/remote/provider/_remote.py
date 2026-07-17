@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from .._common import RemoteConfig, shell_quote
-from ._identity import BUILD_SCHEMA, PACKAGE_SCHEMA, component_build_id
+from ._identity import PACKAGE_SCHEMA, component_build_id
 from ._lock import ProviderLock
 from ._patching import chromium_patch_preparation_script
 from ._sandbox import provider_protocol_sandbox_helpers
@@ -124,7 +124,9 @@ rm -f "$build_root/.current.new" "$build_root/.previous.new"
 """
 
 
-def remote_component_release_id_command(config: ProviderRemoteConfig, component_id: str) -> str:
+def remote_component_release_id_command(
+    config: ProviderRemoteConfig, component_id: str
+) -> str:
     """Render a read-only remote query for a verified component release ID."""
     return f"""python3 - {shell_quote(config.build_root)} {shell_quote(component_id)} <<'PY'
 import hashlib

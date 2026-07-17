@@ -19,12 +19,12 @@ if __package__ in (None, ""):
         run_checked,
         run_remote_script,
     )
+    from remote.provider._identity import component_build_id
     from remote.provider._lock import load_lock, validate_patch_stack
     from remote.provider._remote import (
         ProviderRemoteConfig,
         remote_build_script,
     )
-    from remote.provider._identity import component_build_id
 else:
     from .._common import (
         assert_local_head,
@@ -37,8 +37,8 @@ else:
         run_checked,
         run_remote_script,
     )
-    from ._lock import load_lock, validate_patch_stack
     from ._identity import component_build_id
+    from ._lock import load_lock, validate_patch_stack
     from ._remote import ProviderRemoteConfig, remote_build_script
 
 
