@@ -111,10 +111,25 @@ export function createSteampyXbootClient(options = {}) {
     return { success: true, result };
   }
 
+  async function fetchFilterMetadata() {
+    return requestJson(buildSearchUrl("/xboot/pyFilter/list", {}));
+  }
+
+  async function fetchSteamAppList(params) {
+    return requestJson(buildSearchUrl("/xboot/steamApp/list", params));
+  }
+
+  async function fetchSteamGameByAppId(appId) {
+    return requestJson(buildSearchUrl("/xboot/steamGame/searchByAppId", { appId }));
+  }
+
   return {
+    fetchFilterMetadata,
     isTokenInvalid,
     fetchSaleKeyByUrl,
     fetchSaleKeyByName,
+    fetchSteamAppList,
+    fetchSteamGameByAppId,
     requestJson,
   };
 }

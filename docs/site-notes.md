@@ -44,12 +44,14 @@
 
 - **@connect**：`steampy.com`、`store.steampowered.com`（steampy.user.js、keylol_to_steampy_price.user.js、snokwo.user.js）。
 - **鉴权**
-  - 价格/搜索接口需 Header：`accesstoken`（SteamPY 登录后 token）。snokwo 从 `localStorage.getItem('accessToken')` 读取并 GM_setValue 同步；keylol_to_steampy 用 `GM_getValue('accessToken')`（需在 steampy 站内先取得）。
+  - 价格与搜索接口使用 SteamPy 登录后 token，通过请求 Header `accesstoken` 传递。SteamPy Plus 与 snokwo 在站内读取 `localStorage.getItem("accessToken")`；snokwo 同时将 token 同步到 GM 存储，keylol_to_steampy_price 再通过 `GM_getValue("accessToken")` 使用该值。
 - **Steam 库同步（SteamPy Plus）**
   - 登录态下先请求 `GET https://store.steampowered.com/dynamicstore/userdata/`，再解析响应中的 `rgOwnedApps`、`rgWishlist`、`rgOwnedPackages` 和 `rgIgnoredApps`。现代登录响应的 `rgIgnoredApps` 是以 AppID 字符串为键、状态值为值的对象；匿名或旧响应可能返回空数组。SteamPy Plus 将该对象的键转换为 ignored AppID 集合。
   - `rgOwnedPackages` 是不透明的 PackageID 列表，按原值保存；它不遵循 AppID 的正整数校验规则。
 - **商品数据契约（SteamPy Plus）**
-  - 真实商品数据确认，商品记录嵌套 `steamApp`；`steamApp.type` 精确为小写 `dlc` 时表示 DLC。SteamPy Plus 的隐藏 DLC 筛选直接读取该字段，在现有商品列表上完成，不通过商品名称或父 App 推断，也不增加请求。
+  - 商品筛选元数据来自 `GET https://steampy.com/xboot/pyFilter/list`。接口返回 15 组筛选字段：`lowAmt`/`highAmt`、`lowDis`/`highDis`、`hisFlag`、`lowVs`/`highVs`、`kd`、`genre`、`releaseDay`、`reviewScoreDesc`、`lowRating`/`highRating`、`lowReview`/`highReview`、`lang`、`familySharing`、`deckVerified`、`cards`、`publisher`。每组记录包含 `name`、`code`、`highCode`、`type`、`sortOrder`、`showFlag`、`options`；`options[]` 包含 `label`、`lowValue`、`highValue`、`strValue`、`sortOrder`、`showFlag`。`type` 只有 `decRange`、`intRange`、`str`、`int` 四种：前两种表示成对范围，后两种表示单值筛选。`showFlag` 控制字段或选项是否展示，`sortOrder` 控制同层级显示顺序。
+  - 商品列表使用 `GET https://steampy.com/xboot/steamApp/list`。请求包含上述 15 组筛选字段、`pageNumber`、`pageSize`、`sort`、`order`；没有选择的字段传空字符串。`decRange` 值保留两位小数，`intRange` 与 `int` 值使用整数字符串，排序固定为 `sort=sp.keyDaily`、`order=desc`。响应是 Spring 分页对象，`result.content[]` 含 `appId`、`miniPrice`、`oriPrice`，但不含 `steamApp.type`。SteamPy Plus 浅拷贝每条记录，映射 `keyPrice=miniPrice`，并仅在 `miniPrice` 与正数 `oriPrice` 都有效时映射 `keyDiscount=miniPrice/oriPrice`；不伪造 `keyTxAmt`、`keySales`、`gameUrl` 或 `id`。高级筛选生效期间暂停并禁用依赖 `steamApp.type` 的隐藏 DLC 条件，退出后恢复原勾选状态与控件状态；价格、拥有和忽略过滤继续生效。
+  - 商品卡片的 `appId` 不能直接作为 CD-Key 详情参数。点击高级筛选结果时调用 `GET https://steampy.com/xboot/steamGame/searchByAppId?appId=...`，取 `result.content[0].id` 作为 `steamGame.id`，再进入现有 `cdkDetail` 路由并传递 `name=<areas>`、`gameId=<steamGame.id>`；该链路不预请求 `steamGame/getOne`。例如 `appId=1332010` 对应 `steamGame.id=544943379352391680`。`steamApp/getDetail` 返回的 `result.steamAppDetail.id` 属于 `steamApp`（示例值 `455666546174332928`），不属于 `steamGame`，不能替代详情链中的 `steamGame.id`。
 - **接口**
   - `GET https://steampy.com/xboot/steamGame/keyHot`：主游戏列表接口。主列表 `pageSize` 默认值为 30；响应使用 Spring 分页字段 `content`、`totalPages`、`totalElements`、`size`、`number`、`numberOfElements`、`first`、`last`、`empty`。服务端实际接受 `pageSize=100` 并返回 100 条，这是已验证值，不代表最大上限。
   - `GET https://steampy.com/xboot/steamGame/saleKeyByUrl`：按 Steam 商店链接查 Key 价格。参数：`pageNumber`、`pageSize`、`sort`、`order`、`gameUrl`、`gameName`。keylol_to_steampy_price.user.js。

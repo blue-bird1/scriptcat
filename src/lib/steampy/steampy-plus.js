@@ -1,10 +1,13 @@
+import { readSteampyLocalToken } from "./access-token.js";
 import { installSteamPyAjaxHooks } from "./steampy-plus-ajax-hooks.js";
+import { createSteamPyAdvancedFilterController } from "./steampy-plus-advanced-filter.js";
 import { createSteamPyBuyerController } from "./steampy-plus-buyer.js";
 import { createSteamPyPriceFilter } from "./steampy-plus-filter.js";
 import { createSteamPyRatingEnhancer } from "./steampy-plus-rating.js";
 import { createSteamPySaleListClient } from "./steampy-plus-sale-cache.js";
 import { createSteamPySellerController } from "./steampy-plus-seller.js";
 import { createSteamLibraryManager } from "./steam-library.js";
+import { createSteampyXbootClient } from "./xboot-client.js";
 
 const LEGACY_BUYER_PATH = "/cdKey/cdKey";
 const PRO_BUYER_PATH = "/pro/cdKey/cdKey";
@@ -25,7 +28,14 @@ export function startSteamPyPlus({ ajax, ajaxHooker, elmGetter, jQuery }) {
       buyer.applyCurrent(location.pathname);
     },
   });
-  buyer = createSteamPyBuyerController({ elmGetter, jQuery, filter, rating });
+  const xbootClient = createSteampyXbootClient({ getAccessToken: readSteampyLocalToken });
+  const advancedFilter = createSteamPyAdvancedFilterController({
+    fetchFilterMetadata: xbootClient.fetchFilterMetadata,
+    fetchSteamAppList: xbootClient.fetchSteamAppList,
+    fetchSteamGameByAppId: xbootClient.fetchSteamGameByAppId,
+    setHideDlcSuspended: filter.setHideDlcSuspended,
+  });
+  buyer = createSteamPyBuyerController({ advancedFilter, elmGetter, jQuery, filter, rating });
   const saleListClient = createSteamPySaleListClient({ ajax });
   const seller = createSteamPySellerController({ elmGetter, jQuery, getSaleList: saleListClient.getSaleList });
 

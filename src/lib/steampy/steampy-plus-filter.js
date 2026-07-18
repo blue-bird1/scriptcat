@@ -21,6 +21,7 @@ function loadFilterState() {
 
 export function createSteamPyPriceFilter({ libraryManager, onApply }) {
   const state = loadFilterState();
+  let hideDlcSuspended = false;
 
   function save() {
     GM_setValue(FILTER_STORAGE_KEY, JSON.stringify(state));
@@ -30,9 +31,13 @@ export function createSteamPyPriceFilter({ libraryManager, onApply }) {
     const price = Number(game?.keyTxAmt ?? game?.keyPrice);
     const matchesPrice = !state.isActive || (price >= state.minPrice && price <= state.maxPrice);
     return matchesPrice
-      && (!state.hideDlc || game?.steamApp?.type !== "dlc")
+      && (hideDlcSuspended || !state.hideDlc || game?.steamApp?.type !== "dlc")
       && !libraryManager.isGameOwned(game?.appId)
       && !libraryManager.isGameIgnored(game?.appId);
+  }
+
+  function setHideDlcSuspended(suspended) {
+    hideDlcSuspended = Boolean(suspended);
   }
 
   function apply() {
@@ -143,5 +148,5 @@ export function createSteamPyPriceFilter({ libraryManager, onApply }) {
     updatePresets();
   }
 
-  return { apply, mount, shouldShow };
+  return { apply, mount, setHideDlcSuspended, shouldShow };
 }

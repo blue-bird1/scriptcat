@@ -126,6 +126,7 @@ function findVue3BuyerVm({ silent = false } = {}) {
 }
 
 export function createSteamPyBuyerController({
+  advancedFilter,
   elmGetter,
   jQuery,
   filter,
@@ -272,6 +273,7 @@ export function createSteamPyBuyerController({
     captureSourceList(proVm);
     installProWatcher(proVm);
     initializeProPageSize(proVm);
+    advancedFilter?.mount(proVm);
     applyPro();
     proStarted = true;
   }
@@ -288,6 +290,7 @@ export function createSteamPyBuyerController({
 
   function cleanupPro() {
     proStartGeneration += 1;
+    advancedFilter?.cleanup();
     if (proVm?.__steamPyPlusUnwatch) proVm.__steamPyPlusUnwatch();
     if (proVm) proVm.__steamPyPlusWatcherInstalled = false;
     removeProBuyerPageSizeControl();
