@@ -2,8 +2,8 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.2.1
-// @description  愿望单或忽略成功后自动进入 Steam 探索队列下一项
+// @version      0.3.0
+// @description  自动筛选 Steam 探索队列，并在愿望单或忽略成功后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
 // @grant        none
@@ -14,6 +14,736 @@
 // ==/UserScript==
 
 (() => {
+  // src/lib/steam/discovery-queue-config.js
+  var STORAGE_KEY = "scriptcat:steam-discovery-queue:config:v1";
+  var BUTTON_ID = "scriptcat-steam-discovery-queue-config-button";
+  var POPUP_ID = "scriptcat-steam-discovery-queue-config-popup";
+  var STYLE_ID = "scriptcat-steam-discovery-queue-config-style";
+  var DEFAULT_DISCOVERY_QUEUE_CONFIG = {
+    version: 1,
+    enabled: false,
+    minimumPositiveRate: { enabled: false, value: 70 },
+    minimumReviewCount: { enabled: false, value: 100 },
+    maximumPrice: { enabled: false, value: 100 },
+    minimumDiscount: { enabled: false, value: 0 },
+    earliestReleaseDate: { enabled: false, value: "2015-01-01" },
+    ignoreFree: false,
+    ignoreUnreviewed: false,
+    excludedTags: { enabled: false, value: [] }
+  };
+  function cloneDefaultConfig() {
+    return {
+      ...DEFAULT_DISCOVERY_QUEUE_CONFIG,
+      minimumPositiveRate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumPositiveRate },
+      minimumReviewCount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumReviewCount },
+      maximumPrice: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.maximumPrice },
+      minimumDiscount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumDiscount },
+      earliestReleaseDate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.earliestReleaseDate },
+      excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] }
+    };
+  }
+  function isRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+  function normalizeBoolean(value, fallback) {
+    return typeof value === "boolean" ? value : fallback;
+  }
+  function normalizeNumber(value, fallback, maximum = Infinity) {
+    const number = typeof value === "number" ? value : typeof value === "string" && value.trim() ? Number(value) : Number.NaN;
+    if (!Number.isFinite(number)) {
+      return fallback;
+    }
+    return Math.min(maximum, Math.max(0, number));
+  }
+  function normalizeDate(value, fallback) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return fallback;
+    }
+    const date = /* @__PURE__ */ new Date(`${value}T00:00:00Z`);
+    return Number.isNaN(date.getTime()) || date.toISOString().slice(0, 10) !== value ? fallback : value;
+  }
+  function normalizeTags(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const tags = [];
+    const seen = /* @__PURE__ */ new Set();
+    for (const tag of value) {
+      if (typeof tag !== "string") {
+        continue;
+      }
+      const normalized = tag.trim();
+      const key = normalized.toLocaleLowerCase();
+      if (normalized && !seen.has(key)) {
+        seen.add(key);
+        tags.push(normalized);
+      }
+    }
+    return tags;
+  }
+  function normalizeRule(value, fallback, maximum) {
+    if (!isRecord(value)) {
+      return { ...fallback };
+    }
+    return {
+      enabled: normalizeBoolean(value.enabled, fallback.enabled),
+      value: normalizeNumber(value.value, fallback.value, maximum)
+    };
+  }
+  function normalizeConfig(value) {
+    if (!isRecord(value) || value.version !== 1) {
+      return cloneDefaultConfig();
+    }
+    const fallback = DEFAULT_DISCOVERY_QUEUE_CONFIG;
+    const tags = isRecord(value.excludedTags) ? value.excludedTags : fallback.excludedTags;
+    return {
+      version: 1,
+      enabled: normalizeBoolean(value.enabled, fallback.enabled),
+      minimumPositiveRate: normalizeRule(value.minimumPositiveRate, fallback.minimumPositiveRate, 100),
+      minimumReviewCount: normalizeRule(value.minimumReviewCount, fallback.minimumReviewCount),
+      maximumPrice: normalizeRule(value.maximumPrice, fallback.maximumPrice),
+      minimumDiscount: normalizeRule(value.minimumDiscount, fallback.minimumDiscount, 100),
+      earliestReleaseDate: {
+        enabled: normalizeBoolean(value.earliestReleaseDate?.enabled, fallback.earliestReleaseDate.enabled),
+        value: normalizeDate(value.earliestReleaseDate?.value, fallback.earliestReleaseDate.value)
+      },
+      ignoreFree: normalizeBoolean(value.ignoreFree, fallback.ignoreFree),
+      ignoreUnreviewed: normalizeBoolean(value.ignoreUnreviewed, fallback.ignoreUnreviewed),
+      excludedTags: {
+        enabled: normalizeBoolean(tags.enabled, fallback.excludedTags.enabled),
+        value: normalizeTags(tags.value)
+      }
+    };
+  }
+  function loadDiscoveryQueueConfig() {
+    try {
+      const serialized = localStorage.getItem(STORAGE_KEY);
+      return serialized === null ? cloneDefaultConfig() : normalizeConfig(JSON.parse(serialized));
+    } catch {
+      return cloneDefaultConfig();
+    }
+  }
+  function saveDiscoveryQueueConfig(value) {
+    const config = normalizeConfig(value);
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
+    } catch {
+      return config;
+    }
+    return config;
+  }
+  function appendText(element, text) {
+    element.textContent = text;
+    return element;
+  }
+  function createElement(tagName, className) {
+    const element = document.createElement(tagName);
+    if (className) {
+      element.className = className;
+    }
+    return element;
+  }
+  function createSteamButton(text, className) {
+    const button = createElement("button", className);
+    button.type = "button";
+    button.append(appendText(createElement("span"), text));
+    return button;
+  }
+  function addCheckbox(parent, label, checked) {
+    const labelElement = createElement("label", "scriptcat-discovery-queue-config-option");
+    const input = createElement("input");
+    input.type = "checkbox";
+    input.checked = checked;
+    labelElement.append(input, document.createTextNode(label));
+    parent.append(labelElement);
+    return input;
+  }
+  function addRule(parent, label, config, inputType, attributes = {}) {
+    const row = createElement("div", "scriptcat-discovery-queue-config-rule");
+    const enabled = addCheckbox(row, label, config.enabled);
+    const input = createElement("input");
+    input.type = inputType;
+    input.value = config.value;
+    Object.assign(input, attributes);
+    row.append(input);
+    parent.append(row);
+    return { enabled, input };
+  }
+  function injectStyles() {
+    let style = document.getElementById(STYLE_ID);
+    if (style) {
+      return style;
+    }
+    style = createElement("style");
+    style.id = STYLE_ID;
+    style.textContent = `#${BUTTON_ID}{margin-left:auto}.scriptcat-discovery-queue-config-backdrop{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}.scriptcat-discovery-queue-config-popup{box-sizing:border-box;width:min(680px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:24px;overflow:auto;border:1px solid #000;background:linear-gradient(135deg,#1b2838 0%,#2a475e 100%);box-shadow:0 0 24px #000}.scriptcat-discovery-queue-config-popup h2{margin-top:0;color:#fff}.scriptcat-discovery-queue-config-fields{display:grid;gap:12px;margin:20px 0}.scriptcat-discovery-queue-config-rule{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.scriptcat-discovery-queue-config-rule>input{min-width:140px}.scriptcat-discovery-queue-config-option{display:flex;align-items:center;gap:6px}.scriptcat-discovery-queue-config-tags{display:flex;gap:6px;align-items:center;flex:1;flex-wrap:wrap}.scriptcat-discovery-queue-config-chip{display:inline-flex;gap:4px;align-items:center;padding:3px 6px;background:#16202d}.scriptcat-discovery-queue-config-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}`;
+    document.head.append(style);
+    return style;
+  }
+  function readNumber(input) {
+    return input.value === "" ? Number.NaN : Number(input.value);
+  }
+  function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
+    let config = loadDiscoveryQueueConfig();
+    let button;
+    let popup;
+    let backdrop;
+    let tags = [];
+    let removeKeydown = () => {
+    };
+    let removeButtonClick = () => {
+    };
+    function notifyOpenChange(isOpen) {
+      if (typeof onOpenChange === "function") {
+        onOpenChange(isOpen);
+      }
+    }
+    function closePopup() {
+      if (!popup) {
+        return;
+      }
+      removeKeydown();
+      removeKeydown = () => {
+      };
+      popup.remove();
+      backdrop.remove();
+      popup = void 0;
+      backdrop = void 0;
+      notifyOpenChange(false);
+    }
+    function syncDisconnectedPopup() {
+      if (popup && !popup.isConnected) {
+        closePopup();
+      }
+    }
+    function openPopup() {
+      syncDisconnectedPopup();
+      if (popup) {
+        return;
+      }
+      injectStyles();
+      const draft = normalizeConfig(config);
+      tags = [...draft.excludedTags.value];
+      backdrop = createElement("div", "scriptcat-discovery-queue-config-backdrop");
+      backdrop.addEventListener("click", (event) => {
+        if (event.target === backdrop) {
+          closePopup();
+        }
+      });
+      popup = createElement(
+        "section",
+        "popup_block_new popup_body popup_menu scriptcat-discovery-queue-config-popup"
+      );
+      popup.id = POPUP_ID;
+      popup.setAttribute("role", "dialog");
+      popup.setAttribute("aria-modal", "true");
+      popup.setAttribute("aria-label", "自动筛选设置");
+      const title = appendText(createElement("h2"), "自动筛选设置");
+      const description = appendText(
+        createElement("p"),
+        "多个已启用规则之间按 OR 匹配；评分、评论数、价格、折扣或发布日期缺失的项目不会自动处理。"
+      );
+      const fields = createElement("div", "scriptcat-discovery-queue-config-fields");
+      const enabled = addCheckbox(fields, "启用自动筛选", draft.enabled);
+      const positiveRate = addRule(fields, "最低好评率 (%)", draft.minimumPositiveRate, "number", { min: 0, max: 100, step: "any" });
+      const reviewCount = addRule(fields, "最低评论数", draft.minimumReviewCount, "number", { min: 0, step: "any" });
+      const maximumPrice = addRule(fields, "最高价格", draft.maximumPrice, "number", { min: 0, step: "any" });
+      const minimumDiscount = addRule(fields, "最低折扣 (%)", draft.minimumDiscount, "number", { min: 0, max: 100, step: "any" });
+      const releaseDate = addRule(fields, "最早发布日期", draft.earliestReleaseDate, "date");
+      const ignoreFree = addCheckbox(fields, "忽略免费游戏", draft.ignoreFree);
+      const ignoreUnreviewed = addCheckbox(fields, "忽略未评测游戏", draft.ignoreUnreviewed);
+      const tagRow = createElement("div", "scriptcat-discovery-queue-config-rule");
+      const tagEnabled = addCheckbox(tagRow, "排除标签", draft.excludedTags.enabled);
+      const tagContainer = createElement("div", "scriptcat-discovery-queue-config-tags");
+      const tagInput = createElement("input");
+      tagInput.type = "text";
+      tagInput.placeholder = "输入标签后按回车或逗号";
+      tagContainer.append(tagInput);
+      tagRow.append(tagContainer);
+      fields.append(tagRow);
+      const actions = createElement("div", "scriptcat-discovery-queue-config-actions");
+      const reset = createSteamButton("恢复默认", "btnv6_grey_black btn_medium");
+      const cancel = createSteamButton("取消", "btnv6_blue_hoverfade btn_medium");
+      const save = createSteamButton("保存", "btnv6_green_white_innerfade btn_medium");
+      actions.append(reset, cancel, save);
+      popup.append(title, description, fields, actions);
+      backdrop.append(popup);
+      const popupHost = button?.closest('[role="dialog"]') ?? document.body;
+      popupHost.append(backdrop);
+      function renderTags() {
+        for (const chip of [...tagContainer.children]) {
+          if (chip !== tagInput) {
+            chip.remove();
+          }
+        }
+        for (const tag of tags) {
+          const chip = createElement("span", "scriptcat-discovery-queue-config-chip");
+          chip.append(document.createTextNode(tag));
+          const remove = appendText(createElement("button"), "×");
+          remove.type = "button";
+          remove.setAttribute("aria-label", `移除标签 ${tag}`);
+          remove.addEventListener("click", () => {
+            tags = tags.filter((candidate) => candidate !== tag);
+            renderTags();
+          });
+          chip.append(remove);
+          tagContainer.insertBefore(chip, tagInput);
+        }
+      }
+      function addTags(rawValue) {
+        const candidates = rawValue.split(",").map((tag) => tag.trim()).filter(Boolean);
+        tags = normalizeTags([...tags, ...candidates]);
+        tagInput.value = "";
+        renderTags();
+      }
+      tagInput.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === ",") {
+          event.preventDefault();
+          addTags(tagInput.value);
+        }
+      });
+      tagInput.addEventListener("blur", () => addTags(tagInput.value));
+      reset.addEventListener("click", () => {
+        const defaults = cloneDefaultConfig();
+        enabled.checked = defaults.enabled;
+        positiveRate.enabled.checked = defaults.minimumPositiveRate.enabled;
+        positiveRate.input.value = defaults.minimumPositiveRate.value;
+        reviewCount.enabled.checked = defaults.minimumReviewCount.enabled;
+        reviewCount.input.value = defaults.minimumReviewCount.value;
+        maximumPrice.enabled.checked = defaults.maximumPrice.enabled;
+        maximumPrice.input.value = defaults.maximumPrice.value;
+        minimumDiscount.enabled.checked = defaults.minimumDiscount.enabled;
+        minimumDiscount.input.value = defaults.minimumDiscount.value;
+        releaseDate.enabled.checked = defaults.earliestReleaseDate.enabled;
+        releaseDate.input.value = defaults.earliestReleaseDate.value;
+        ignoreFree.checked = defaults.ignoreFree;
+        ignoreUnreviewed.checked = defaults.ignoreUnreviewed;
+        tagEnabled.checked = defaults.excludedTags.enabled;
+        tags = [];
+        renderTags();
+      });
+      cancel.addEventListener("click", closePopup);
+      save.addEventListener("click", () => {
+        config = saveDiscoveryQueueConfig({
+          version: 1,
+          enabled: enabled.checked,
+          minimumPositiveRate: { enabled: positiveRate.enabled.checked, value: readNumber(positiveRate.input) },
+          minimumReviewCount: { enabled: reviewCount.enabled.checked, value: readNumber(reviewCount.input) },
+          maximumPrice: { enabled: maximumPrice.enabled.checked, value: readNumber(maximumPrice.input) },
+          minimumDiscount: { enabled: minimumDiscount.enabled.checked, value: readNumber(minimumDiscount.input) },
+          earliestReleaseDate: { enabled: releaseDate.enabled.checked, value: releaseDate.input.value },
+          ignoreFree: ignoreFree.checked,
+          ignoreUnreviewed: ignoreUnreviewed.checked,
+          excludedTags: { enabled: tagEnabled.checked, value: tags }
+        });
+        closePopup();
+        if (typeof onSave === "function") {
+          onSave(config);
+        }
+      });
+      function handleKeydown(event) {
+        if (event.key === "Escape") {
+          closePopup();
+        }
+      }
+      document.addEventListener("keydown", handleKeydown);
+      removeKeydown = () => document.removeEventListener("keydown", handleKeydown);
+      renderTags();
+      notifyOpenChange(true);
+    }
+    function ensureButton(container) {
+      syncDisconnectedPopup();
+      if (!(container instanceof Element)) {
+        return void 0;
+      }
+      const existing = document.getElementById(BUTTON_ID);
+      if (existing instanceof HTMLButtonElement) {
+        button = existing;
+      } else if (!button) {
+        button = createSteamButton("自动筛选设置", "btnv6_blue_hoverfade btn_medium");
+        button.id = BUTTON_ID;
+        button.type = "button";
+        const handleButtonClick = () => openPopup();
+        button.addEventListener("click", handleButtonClick);
+        removeButtonClick = () => button?.removeEventListener("click", handleButtonClick);
+      }
+      if (button.parentElement !== container) {
+        container.append(button);
+      }
+      return button;
+    }
+    return {
+      ensureButton,
+      isOpen: () => Boolean(popup),
+      getConfig: () => normalizeConfig(config),
+      destroy() {
+        closePopup();
+        removeButtonClick();
+        button?.remove();
+        document.getElementById(STYLE_ID)?.remove();
+        button = void 0;
+      }
+    };
+  }
+
+  // src/lib/steam/discovery-queue-rules.js
+  var MONTHS = /* @__PURE__ */ new Map([
+    ["jan", 0],
+    ["feb", 1],
+    ["mar", 2],
+    ["apr", 3],
+    ["may", 4],
+    ["jun", 5],
+    ["jul", 6],
+    ["aug", 7],
+    ["sep", 8],
+    ["oct", 9],
+    ["nov", 10],
+    ["dec", 11]
+  ]);
+  function createEmptyData() {
+    return {
+      reviewCount: void 0,
+      positiveRate: void 0,
+      isFree: void 0,
+      price: void 0,
+      currency: void 0,
+      discount: void 0,
+      releaseDate: void 0
+    };
+  }
+  function isNonNegativeInteger(value) {
+    return Number.isSafeInteger(value) && value >= 0;
+  }
+  function parseEnglishDate(value) {
+    if (typeof value !== "string") {
+      return void 0;
+    }
+    const match = value.trim().match(/^(?:(?<month>[A-Za-z]+)\s+(?<day>\d{1,2})|(?<dayFirst>\d{1,2})\s+(?<monthFirst>[A-Za-z]+)),\s*(?<year>\d{4})$/);
+    if (!match?.groups) {
+      return void 0;
+    }
+    const monthName = (match.groups.month ?? match.groups.monthFirst).slice(0, 3).toLowerCase();
+    const month = MONTHS.get(monthName);
+    const day = Number(match.groups.day ?? match.groups.dayFirst);
+    const year = Number(match.groups.year);
+    const date = new Date(Date.UTC(year, month ?? -1, day));
+    if (month === void 0 || date.getUTCFullYear() !== year || date.getUTCMonth() !== month || date.getUTCDate() !== day) {
+      return void 0;
+    }
+    return `${year.toString().padStart(4, "0")}-${(month + 1).toString().padStart(2, "0")}-${day.toString().padStart(2, "0")}`;
+  }
+  function parseReviews(payload) {
+    const summary = payload?.query_summary;
+    if (!isNonNegativeInteger(summary?.total_positive) || !isNonNegativeInteger(summary?.total_negative) || !isNonNegativeInteger(summary?.total_reviews)) {
+      return {};
+    }
+    return {
+      reviewCount: summary.total_reviews,
+      positiveRate: summary.total_reviews === 0 ? void 0 : summary.total_positive / summary.total_reviews * 100
+    };
+  }
+  function parseDetails(payload, appId) {
+    const details = payload?.[appId];
+    if (details?.success !== true || !details.data || typeof details.data !== "object") {
+      return {};
+    }
+    const result = {};
+    if (typeof details.data.is_free === "boolean") {
+      result.isFree = details.data.is_free;
+    }
+    const priceOverview = details.data.price_overview;
+    if (isNonNegativeInteger(priceOverview?.final) && typeof priceOverview.currency === "string" && priceOverview.currency.trim()) {
+      try {
+        const currency = priceOverview.currency.trim().toUpperCase();
+        const formatter = new Intl.NumberFormat("en", { style: "currency", currency });
+        const fractionDigits = formatter.resolvedOptions().maximumFractionDigits;
+        result.price = priceOverview.final / 10 ** fractionDigits;
+        result.currency = currency;
+        if (isNonNegativeInteger(priceOverview.discount_percent)) {
+          result.discount = priceOverview.discount_percent;
+        }
+      } catch {
+        result.price = void 0;
+      }
+    }
+    if (details.data.release_date?.coming_soon !== true) {
+      result.releaseDate = parseEnglishDate(details.data.release_date?.date);
+    }
+    return result;
+  }
+  async function loadJson(url) {
+    try {
+      const response = await fetch(url);
+      return response.ok ? await response.json() : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function normalizeTags2(tags) {
+    if (!Array.isArray(tags)) {
+      return [];
+    }
+    return [...new Set(tags.filter((tag) => typeof tag === "string").map((tag) => tag.trim().toLowerCase()).filter(Boolean))];
+  }
+  function isEnabledNumber(rule) {
+    return rule?.enabled === true && typeof rule.value === "number" && Number.isFinite(rule.value);
+  }
+  function isIsoDate(value) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+      return false;
+    }
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  }
+  function createDiscoveryQueueRuleEngine() {
+    const cache = /* @__PURE__ */ new Map();
+    function load(appId) {
+      let dataPromise = cache.get(appId);
+      if (!dataPromise) {
+        let shouldRetry = false;
+        dataPromise = Promise.all([
+          loadJson(`/appreviews/${appId}?json=1&language=all&purchase_type=all&num_per_page=0`),
+          loadJson(`/api/appdetails?appids=${appId}&l=english`)
+        ]).then(([reviewsPayload, detailsPayload]) => {
+          shouldRetry = reviewsPayload === void 0 || detailsPayload === void 0;
+          return {
+            ...createEmptyData(),
+            ...parseReviews(reviewsPayload),
+            ...parseDetails(detailsPayload, appId)
+          };
+        });
+        cache.set(appId, dataPromise);
+        dataPromise.then(() => {
+          if (shouldRetry && cache.get(appId) === dataPromise) {
+            cache.delete(appId);
+          }
+        });
+      }
+      return dataPromise;
+    }
+    return {
+      async evaluate({ appId, tags, config }) {
+        if (!/^[1-9]\d*$/.test(appId)) {
+          throw new TypeError("appId must be a positive integer string");
+        }
+        if (config?.enabled === false) {
+          return { matched: false, reasons: [], data: createEmptyData() };
+        }
+        const data = await load(appId);
+        const reasons = [];
+        if (isEnabledNumber(config?.minimumPositiveRate) && data.positiveRate !== void 0 && data.positiveRate < config.minimumPositiveRate.value) {
+          reasons.push("positive-rate");
+        }
+        if (isEnabledNumber(config?.minimumReviewCount) && data.reviewCount !== void 0 && data.reviewCount < config.minimumReviewCount.value) {
+          reasons.push("review-count");
+        }
+        if (isEnabledNumber(config?.maximumPrice) && data.price !== void 0 && data.price > config.maximumPrice.value) {
+          reasons.push("price");
+        }
+        if (isEnabledNumber(config?.minimumDiscount) && data.discount !== void 0 && data.discount < config.minimumDiscount.value) {
+          reasons.push("discount");
+        }
+        if (config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value) && data.releaseDate !== void 0 && data.releaseDate < config.earliestReleaseDate.value) {
+          reasons.push("release-date");
+        }
+        if (config?.ignoreFree === true && data.isFree === true) {
+          reasons.push("free");
+        }
+        if (config?.ignoreUnreviewed === true && data.reviewCount === 0) {
+          reasons.push("unreviewed");
+        }
+        if (config?.excludedTags?.enabled === true) {
+          const excludedTags = new Set(normalizeTags2(config.excludedTags.value));
+          const matchingTags = normalizeTags2(tags).filter((tag) => excludedTags.has(tag)).sort();
+          reasons.push(...matchingTags.map((tag) => `tag:${tag}`));
+        }
+        return { matched: reasons.length > 0, reasons, data };
+      },
+      clear() {
+        cache.clear();
+      }
+    };
+  }
+
+  // src/lib/steam/discovery-queue-auto-filter.js
+  function isVisible(element) {
+    return Boolean(
+      element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
+    );
+  }
+  function getAppId(url) {
+    try {
+      return new URL(url, location.href).pathname.match(/^\/app\/(\d+)(?:\/|$)/)?.[1];
+    } catch {
+      return void 0;
+    }
+  }
+  function getModalQueueAction(target) {
+    if (!(target instanceof Element)) {
+      return void 0;
+    }
+    const button = target.closest("[aria-label]");
+    const actionGroup = button?.parentElement?.parentElement;
+    const dialog = button?.closest('[role="dialog"]');
+    const appLink = [...actionGroup?.children ?? []].find(
+      (child) => child.matches?.('a[href*="/app/"]')
+    );
+    if (!(button instanceof HTMLElement) || !(actionGroup instanceof HTMLElement) || !(dialog instanceof HTMLElement) || !(appLink instanceof HTMLAnchorElement) || !dialog.querySelector('a[href*="/explore"][href*="dq=widget"]')) {
+      return void 0;
+    }
+    const actionButtons = [...actionGroup.children].map((child) => child.querySelector("[aria-label]")).filter((element) => element instanceof HTMLElement);
+    const actionIndex = actionButtons.indexOf(button);
+    if (actionButtons.length !== 2 || actionIndex === -1) {
+      return void 0;
+    }
+    return {
+      action: actionIndex === 0 ? "wishlist" : "ignore",
+      actionGroup,
+      appId: getAppId(appLink.href),
+      button,
+      dialog,
+      initialClassName: button.className
+    };
+  }
+  function findCardRoot(actionGroup, dialog) {
+    let current = actionGroup;
+    while (current && current !== dialog) {
+      if (current.querySelector('a[href*="/tags/"]')) {
+        return current;
+      }
+      current = current.parentElement;
+    }
+    return actionGroup;
+  }
+  function getModalContext() {
+    const dialogs = [...document.querySelectorAll('[role="dialog"]')];
+    for (const dialog of dialogs) {
+      const queueLink = dialog.querySelector('a[href*="/explore"][href*="dq=widget"]');
+      const header = queueLink?.parentElement?.parentElement;
+      if (!(header instanceof HTMLElement)) {
+        continue;
+      }
+      const dialogRect = dialog.getBoundingClientRect();
+      const candidates = [...dialog.querySelectorAll("[aria-label]")].map((element) => getModalQueueAction(element)).filter((action) => action?.action === "ignore" && action.appId).filter(({ button }) => {
+        const rect = button.getBoundingClientRect();
+        return isVisible(button) && rect.left >= dialogRect.left && rect.right <= dialogRect.right;
+      }).sort((left, right) => right.button.getBoundingClientRect().left - left.button.getBoundingClientRect().left);
+      const current = candidates[0];
+      if (!current) {
+        return { buttonHost: header };
+      }
+      const cardRoot = findCardRoot(current.actionGroup, dialog);
+      const tags = [...cardRoot.querySelectorAll('a[href*="/tags/"]')].map((link) => link.textContent?.trim()).filter(Boolean);
+      return {
+        appId: current.appId,
+        buttonHost: header,
+        ignoreButton: current.button,
+        key: `modal:${current.appId}:${tags.join("\0")}`,
+        tags
+      };
+    }
+    return void 0;
+  }
+  function getClassicContext() {
+    if (new URLSearchParams(location.search).get("queue") !== "1") {
+      return void 0;
+    }
+    const appId = location.pathname.match(/^\/app\/(\d+)(?:\/|$)/)?.[1];
+    const buttonHost = document.querySelector("#queueActionsCtn");
+    if (!appId || !(buttonHost instanceof HTMLElement)) {
+      return void 0;
+    }
+    const tags = [...document.querySelectorAll(".glance_tags a.app_tag")].map((element) => element.textContent?.trim()).filter(Boolean);
+    return {
+      appId,
+      buttonHost,
+      ignoreButton: document.querySelector(".queue_btn_ignore .queue_btn_inactive"),
+      key: `classic:${appId}:${tags.join("\0")}`,
+      tags
+    };
+  }
+  function startDiscoveryQueueAutoFilter() {
+    const ruleEngine = createDiscoveryQueueRuleEngine();
+    let stopped = false;
+    let paused = false;
+    let scheduled = false;
+    let generation = 0;
+    let evaluatedKey;
+    const configUi = createDiscoveryQueueConfigUi({
+      onSave() {
+        generation += 1;
+        evaluatedKey = void 0;
+        schedule();
+      },
+      onOpenChange(open) {
+        paused = open;
+        if (!open) {
+          schedule();
+        }
+      }
+    });
+    function getContext() {
+      return getModalContext() ?? getClassicContext();
+    }
+    async function evaluateCurrent() {
+      scheduled = false;
+      const context = getContext();
+      if (!context) {
+        return;
+      }
+      configUi.ensureButton(context.buttonHost);
+      const config = configUi.getConfig();
+      if (paused || !config.enabled || !context.appId || context.key === evaluatedKey) {
+        return;
+      }
+      evaluatedKey = context.key;
+      const currentGeneration = ++generation;
+      const result = await ruleEngine.evaluate({
+        appId: context.appId,
+        tags: context.tags,
+        config
+      });
+      if (stopped || paused || currentGeneration !== generation || !result.matched) {
+        return;
+      }
+      const current = getContext();
+      if (current?.key === context.key && current.ignoreButton instanceof HTMLElement) {
+        current.ignoreButton.click();
+      }
+    }
+    function schedule() {
+      if (stopped || scheduled) {
+        return;
+      }
+      scheduled = true;
+      requestAnimationFrame(evaluateCurrent);
+    }
+    const observer = new MutationObserver((records) => {
+      const relevant = records.some((record) => {
+        if (record.target instanceof Element && record.target.closest('[role="dialog"], #queueActionsCtn')) {
+          return true;
+        }
+        return [...record.addedNodes].some(
+          (node) => node instanceof Element && (node.matches('[role="dialog"], #queueActionsCtn') || node.querySelector('[role="dialog"], #queueActionsCtn'))
+        );
+      });
+      if (relevant) {
+        schedule();
+      }
+    });
+    observer.observe(document, { childList: true, subtree: true });
+    schedule();
+    return () => {
+      stopped = true;
+      generation += 1;
+      observer.disconnect();
+      configUi.destroy();
+      ruleEngine.clear();
+    };
+  }
+
   // src/lib/steam/discovery-queue.js
   var QUEUE_TIMEOUT_MS = 1e4;
   var ADVANCE_DELAY_MS = 50;
@@ -22,7 +752,7 @@
     wishlist: "/api/addtowishlist",
     ignore: "/recommended/ignorerecommendation"
   };
-  function isVisible(element) {
+  function isVisible2(element) {
     return Boolean(
       element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
     );
@@ -67,12 +797,12 @@
     }
     function hasSucceeded(action) {
       if (action === "wishlist") {
-        return isVisible(document.querySelector("#add_to_wishlist_area_success")) && !isVisible(document.querySelector("#add_to_wishlist_area_fail"));
+        return isVisible2(document.querySelector("#add_to_wishlist_area_success")) && !isVisible2(document.querySelector("#add_to_wishlist_area_fail"));
       }
-      return isVisible(document.querySelector(".queue_btn_ignore .queue_btn_active")) && !isVisible(document.querySelector(".queue_btn_ignore .queue_btn_inactive"));
+      return isVisible2(document.querySelector(".queue_btn_ignore .queue_btn_active")) && !isVisible2(document.querySelector(".queue_btn_ignore .queue_btn_inactive"));
     }
     function hasFailed(action) {
-      return action === "wishlist" && isVisible(document.querySelector("#add_to_wishlist_area_fail"));
+      return action === "wishlist" && isVisible2(document.querySelector("#add_to_wishlist_area_fail"));
     }
     function checkResults() {
       for (const action of pendingActions) {
@@ -122,33 +852,6 @@
     window.addEventListener("pagehide", stop, { once: true });
     return stop;
   }
-  function getModalAction(target) {
-    if (!(target instanceof Element)) {
-      return void 0;
-    }
-    const button = target.closest("[aria-label]");
-    const actionGroup = button?.parentElement?.parentElement;
-    const dialog = button?.closest('[role="dialog"]');
-    if (!(button instanceof HTMLElement) || !(actionGroup instanceof HTMLElement) || !(dialog instanceof HTMLElement) || !dialog.querySelector('a[href*="/explore"][href*="dq=widget"]') || ![...actionGroup.children].some(
-      (child) => child.matches('a[href*="/app/"]')
-    )) {
-      return void 0;
-    }
-    const actionButtons = [...actionGroup.children].map((child) => child.querySelector("[aria-label]")).filter((element) => element instanceof HTMLElement);
-    if (actionButtons.length !== 2) {
-      return void 0;
-    }
-    const actionIndex = actionButtons.indexOf(button);
-    if (actionIndex === -1) {
-      return void 0;
-    }
-    return {
-      action: actionIndex === 0 ? "wishlist" : "ignore",
-      button,
-      dialog,
-      initialClassName: button.className
-    };
-  }
   function findModalNextButton(dialog) {
     const dialogRect = dialog.getBoundingClientRect();
     const dialogCenter = dialogRect.left + dialogRect.width / 2;
@@ -166,7 +869,7 @@
         continue;
       }
       for (const right of candidates) {
-        if (right.rect.left + right.rect.width / 2 <= dialogCenter || !isVisible(right.element) || Math.abs(left.rect.top - right.rect.top) > 2 || Math.abs(left.rect.width - right.rect.width) > 2 || Math.abs(left.rect.height - right.rect.height) > 2) {
+        if (right.rect.left + right.rect.width / 2 <= dialogCenter || !isVisible2(right.element) || Math.abs(left.rect.top - right.rect.top) > 2 || Math.abs(left.rect.width - right.rect.width) > 2 || Math.abs(left.rect.height - right.rect.height) > 2) {
           continue;
         }
         const score = Math.abs(left.rect.left - dialogRect.left) + Math.abs(dialogRect.right - right.rect.right);
@@ -308,7 +1011,7 @@
       }
     );
     function handleClick(event) {
-      const modalAction = getModalAction(event.target);
+      const modalAction = getModalQueueAction(event.target);
       if (!modalAction || advancing) {
         return;
       }
@@ -337,24 +1040,28 @@
     const stopModalQueue = startModalQueue();
     let stopClassicQueue = () => {
     };
+    let stopAutoFilter = () => {
+    };
     let stopped = false;
-    function startClassicQueueWhenReady() {
+    function startQueueControllersWhenReady() {
       if (!stopped) {
         stopClassicQueue = startClassicQueue();
+        stopAutoFilter = startDiscoveryQueueAutoFilter();
       }
     }
     if (document.readyState === "loading") {
-      document.addEventListener("DOMContentLoaded", startClassicQueueWhenReady, {
+      document.addEventListener("DOMContentLoaded", startQueueControllersWhenReady, {
         once: true
       });
     } else {
-      startClassicQueueWhenReady();
+      startQueueControllersWhenReady();
     }
     return () => {
       stopped = true;
-      document.removeEventListener("DOMContentLoaded", startClassicQueueWhenReady);
+      document.removeEventListener("DOMContentLoaded", startQueueControllersWhenReady);
       stopModalQueue();
       stopClassicQueue();
+      stopAutoFilter();
     };
   }
 

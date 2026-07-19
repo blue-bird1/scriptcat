@@ -1,3 +1,8 @@
+import {
+  getModalQueueAction,
+  startDiscoveryQueueAutoFilter,
+} from "./discovery-queue-auto-filter.js";
+
 const QUEUE_TIMEOUT_MS = 10_000;
 const ADVANCE_DELAY_MS = 50;
 const CLASSIC_NEXT_SELECTOR =
@@ -128,46 +133,6 @@ function startClassicQueue() {
   queueActions.addEventListener("click", handleClick, true);
   window.addEventListener("pagehide", stop, { once: true });
   return stop;
-}
-
-function getModalAction(target) {
-  if (!(target instanceof Element)) {
-    return undefined;
-  }
-
-  const button = target.closest("[aria-label]");
-  const actionGroup = button?.parentElement?.parentElement;
-  const dialog = button?.closest('[role="dialog"]');
-  if (
-    !(button instanceof HTMLElement) ||
-    !(actionGroup instanceof HTMLElement) ||
-    !(dialog instanceof HTMLElement) ||
-    !dialog.querySelector('a[href*="/explore"][href*="dq=widget"]') ||
-    ![...actionGroup.children].some((child) =>
-      child.matches('a[href*="/app/"]'),
-    )
-  ) {
-    return undefined;
-  }
-
-  const actionButtons = [...actionGroup.children]
-    .map((child) => child.querySelector("[aria-label]"))
-    .filter((element) => element instanceof HTMLElement);
-  if (actionButtons.length !== 2) {
-    return undefined;
-  }
-
-  const actionIndex = actionButtons.indexOf(button);
-  if (actionIndex === -1) {
-    return undefined;
-  }
-
-  return {
-    action: actionIndex === 0 ? "wishlist" : "ignore",
-    button,
-    dialog,
-    initialClassName: button.className,
-  };
 }
 
 function findModalNextButton(dialog) {
@@ -377,7 +342,7 @@ function startModalQueue() {
   );
 
   function handleClick(event) {
-    const modalAction = getModalAction(event.target);
+    const modalAction = getModalQueueAction(event.target);
     if (!modalAction || advancing) {
       return;
     }
@@ -409,26 +374,29 @@ function startModalQueue() {
 export function startSteamDiscoveryQueue() {
   const stopModalQueue = startModalQueue();
   let stopClassicQueue = () => {};
+  let stopAutoFilter = () => {};
   let stopped = false;
 
-  function startClassicQueueWhenReady() {
+  function startQueueControllersWhenReady() {
     if (!stopped) {
       stopClassicQueue = startClassicQueue();
+      stopAutoFilter = startDiscoveryQueueAutoFilter();
     }
   }
 
   if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", startClassicQueueWhenReady, {
+    document.addEventListener("DOMContentLoaded", startQueueControllersWhenReady, {
       once: true,
     });
   } else {
-    startClassicQueueWhenReady();
+    startQueueControllersWhenReady();
   }
 
   return () => {
     stopped = true;
-    document.removeEventListener("DOMContentLoaded", startClassicQueueWhenReady);
+    document.removeEventListener("DOMContentLoaded", startQueueControllersWhenReady);
     stopModalQueue();
     stopClassicQueue();
+    stopAutoFilter();
   };
 }

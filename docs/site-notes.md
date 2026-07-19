@@ -42,11 +42,12 @@
 
 ## Steam 商店探索队列 (store.steampowered.com)
 
-- **页面形态**：Steam 同时提供首页 React 探索队列和经典应用页队列。首页在 `https://store.steampowered.com/` 原 URL 内打开 `[role="dialog"]` 模态框；经典队列位于查询参数含 `queue=1` 的 `/app/<appid>/...` 页面。userscript 覆盖整个 Steam 商店域，再以真实队列 DOM 限定行为。
-- **首页模态框**：队列对话框包含 `dq=widget` 的 `/explore` 说明链接。当前卡片操作区由商店页面链接、愿望单按钮和忽略按钮依次组成；按钮的 `aria-label` 会随站点语言变化，因此按操作区内的位置识别，不依赖翻译文本。愿望单请求为 `POST /api/addtowishlist`，忽略请求为 `POST /recommended/ignorerecommendation`。userscript 在 `document-start` 监控这两个同源请求；响应成功且操作按钮的选中类稳定后，从尺寸和水平位置成对的轮播按钮中点击右侧按钮进入下一项。
-- **经典愿望单**：Steam 通过 `POST /api/addtowishlist` 处理 `#add_to_wishlist_area a.add_to_wishlist` 的操作。成功状态为 `#add_to_wishlist_area_success` 可见，失败状态为 `#add_to_wishlist_area_fail` 可见。
-- **经典忽略**：Steam 通过 `POST /recommended/ignorerecommendation/` 提交表单字段 `sessionid`、`appid`、`snr`、`ignore_reason`。忽略前控件为 `.queue_btn_ignore .queue_btn_inactive`，菜单项为 `#queue_ignore_menu_option_not_interested` 和 `#queue_ignore_menu_option_owned_elsewhere`，成功后 `.queue_btn_ignore .queue_btn_active` 可见。
-- **经典下一项**：`#nextInDiscoveryQueue .btn_next_in_queue_trigger` 位于 `#next_in_queue_form` 中；在愿望单或忽略成功后触发该控件的原生点击，由 Steam 表单提交并进入队列下一项。
+- **页面与启动**：Steam 同时提供首页 React 探索队列和经典应用页队列。首页在 `https://store.steampowered.com/` 原 URL 内打开 `[role="dialog"]` 模态框；经典队列位于查询参数含 `queue=1` 的 `/app/<appid>/...` 页面。脚本覆盖 Steam 商店域，但仅在真实队列 DOM 出现后工作。自动筛选默认关闭，用户主动启用后才评估当前项目并执行操作。
+- **筛选规则**：筛选器保存为规则集合；每条规则描述一个可比较字段及其条件，项目满足任一规则即命中（OR）。缺少规则所需数据的项目不命中并跳过，不以默认值、猜测值或失败响应代替数据。
+- **项目数据**：项目 AppID 确定后，脚本请求同源 `appreviews` 与 `appdetails` 数据；评论统计和评分来自 `appreviews`，商店详情字段来自 `appdetails`。标签从当前 Steam 页面中该项目的真实标签元素读取，不由接口结果推断或补齐。规则集合和自动筛选开关通过 `localStorage` 持久化，页面和队列切换后继续使用同一配置。
+- **自动动作时序**：自动筛选命中后只触发当前队列的原生忽略控件；脚本不直接伪造忽略请求。忽略成功后复用手动忽略的成功检测和下一项逻辑，进入下一项；未命中、数据缺失或忽略未成功时不推进队列。
+- **首页模态框动作**：队列对话框包含 `dq=widget` 的 `/explore` 说明链接。当前卡片操作区由商店页面链接、愿望单按钮和忽略按钮依次组成；按钮的 `aria-label` 会随站点语言变化，因此按操作区内的位置识别，不依赖翻译文本。愿望单请求为 `POST /api/addtowishlist`，忽略请求为 `POST /recommended/ignorerecommendation`。脚本在 `document-start` 监控这两个同源请求；响应成功且操作按钮的选中类稳定后，从尺寸和水平位置成对的轮播按钮中点击右侧按钮进入下一项。
+- **经典队列动作**：Steam 通过 `POST /api/addtowishlist` 处理 `#add_to_wishlist_area a.add_to_wishlist` 的操作；成功状态为 `#add_to_wishlist_area_success` 可见，失败状态为 `#add_to_wishlist_area_fail` 可见。忽略通过 `POST /recommended/ignorerecommendation/` 提交 `sessionid`、`appid`、`snr`、`ignore_reason`；忽略前控件为 `.queue_btn_ignore .queue_btn_inactive`，菜单项为 `#queue_ignore_menu_option_not_interested` 和 `#queue_ignore_menu_option_owned_elsewhere`，成功后 `.queue_btn_ignore .queue_btn_active` 可见。成功后点击 `#nextInDiscoveryQueue .btn_next_in_queue_trigger`，由其所属的 `#next_in_queue_form` 提交并进入下一项。
 
 ## SteamPy (steampy.com)
 
