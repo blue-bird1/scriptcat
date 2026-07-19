@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.0
+// @version      0.3.1
 // @description  自动筛选 Steam 探索队列，并在愿望单或忽略成功后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -504,7 +504,7 @@
       if (!dataPromise) {
         let shouldRetry = false;
         dataPromise = Promise.all([
-          loadJson(`/appreviews/${appId}?json=1&language=all&purchase_type=all&num_per_page=0`),
+          loadJson(`/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`),
           loadJson(`/api/appdetails?appids=${appId}&l=english`)
         ]).then(([reviewsPayload, detailsPayload]) => {
           shouldRetry = reviewsPayload === void 0 || detailsPayload === void 0;
