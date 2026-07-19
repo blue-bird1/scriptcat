@@ -42,10 +42,11 @@
 
 ## Steam 商店探索队列 (store.steampowered.com)
 
-- **运行条件**：仅处理应用页且查询参数含 `queue=1` 的探索队列；页面须存在 `#queueActionsCtn` 和 `#nextInDiscoveryQueue .btn_next_in_queue_trigger`。
-- **愿望单**：Steam 通过 `POST /api/addtowishlist` 处理 `#add_to_wishlist_area a.add_to_wishlist` 的操作，响应 `success: true` 表示成功。成功状态为 `#add_to_wishlist_area_success` 可见，失败状态为 `#add_to_wishlist_area_fail` 可见。
-- **忽略**：Steam 通过 `POST /recommended/ignorerecommendation/` 提交表单字段 `sessionid`、`appid`、`snr`、`ignore_reason`；响应 `success: true` 表示成功。忽略前控件为 `.queue_btn_ignore .queue_btn_inactive`，菜单项为 `#queue_ignore_menu_option_not_interested` 和 `#queue_ignore_menu_option_owned_elsewhere`，成功后 `.queue_btn_ignore .queue_btn_active` 可见。
-- **下一项**：`#nextInDiscoveryQueue .btn_next_in_queue_trigger` 位于 `#next_in_queue_form` 中；在愿望单或忽略成功后触发该控件的原生点击，由 Steam 表单提交并进入队列下一项。
+- **页面形态**：Steam 同时提供首页 React 探索队列和经典应用页队列。首页在 `https://store.steampowered.com/` 原 URL 内打开 `[role="dialog"]` 模态框；经典队列位于查询参数含 `queue=1` 的 `/app/<appid>/...` 页面。userscript 覆盖整个 Steam 商店域，再以真实队列 DOM 限定行为。
+- **首页模态框**：队列对话框包含 `dq=widget` 的 `/explore` 说明链接。当前卡片操作区由商店页面链接、愿望单按钮和忽略按钮依次组成；按钮的 `aria-label` 会随站点语言变化，因此按操作区内的位置识别，不依赖翻译文本。愿望单请求为 `POST /api/addtowishlist`，忽略请求为 `POST /recommended/ignorerecommendation`。userscript 在 `document-start` 监控这两个同源请求；响应成功且操作按钮的选中类稳定后，从尺寸和水平位置成对的轮播按钮中点击右侧按钮进入下一项。
+- **经典愿望单**：Steam 通过 `POST /api/addtowishlist` 处理 `#add_to_wishlist_area a.add_to_wishlist` 的操作。成功状态为 `#add_to_wishlist_area_success` 可见，失败状态为 `#add_to_wishlist_area_fail` 可见。
+- **经典忽略**：Steam 通过 `POST /recommended/ignorerecommendation/` 提交表单字段 `sessionid`、`appid`、`snr`、`ignore_reason`。忽略前控件为 `.queue_btn_ignore .queue_btn_inactive`，菜单项为 `#queue_ignore_menu_option_not_interested` 和 `#queue_ignore_menu_option_owned_elsewhere`，成功后 `.queue_btn_ignore .queue_btn_active` 可见。
+- **经典下一项**：`#nextInDiscoveryQueue .btn_next_in_queue_trigger` 位于 `#next_in_queue_form` 中；在愿望单或忽略成功后触发该控件的原生点击，由 Steam 表单提交并进入队列下一项。
 
 ## SteamPy (steampy.com)
 
