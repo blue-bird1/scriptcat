@@ -35,6 +35,8 @@ __pycache__/
 !src/lib/gmg/*.js
 !src/lib/sonkwo/
 !src/lib/sonkwo/*.js
+!src/lib/steam/
+!src/lib/steam/*.js
 !src/lib/zlib/
 !src/lib/zlib/*.js
 !src/lib/bilibili/

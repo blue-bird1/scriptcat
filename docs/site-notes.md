@@ -40,6 +40,13 @@
   - 书籍详情页：`.book-title`、`.bookProperty.property_isbn`、`.bookDetailsBox`、`.book-actions-container`、`.book-actions-buttons > .book-details-button`；bookmark：`.bookmarks[data-book_id]`。
   - 高亮缺失 ISBN：`z-bookcard` 无 `isbn` 或 `isbn` 为空（zlib.isbn_highlight.user.js）。
 
+## Steam 商店探索队列 (store.steampowered.com)
+
+- **运行条件**：仅处理应用页且查询参数含 `queue=1` 的探索队列；页面须存在 `#queueActionsCtn` 和 `#nextInDiscoveryQueue .btn_next_in_queue_trigger`。
+- **愿望单**：Steam 通过 `POST /api/addtowishlist` 处理 `#add_to_wishlist_area a.add_to_wishlist` 的操作，响应 `success: true` 表示成功。成功状态为 `#add_to_wishlist_area_success` 可见，失败状态为 `#add_to_wishlist_area_fail` 可见。
+- **忽略**：Steam 通过 `POST /recommended/ignorerecommendation/` 提交表单字段 `sessionid`、`appid`、`snr`、`ignore_reason`；响应 `success: true` 表示成功。忽略前控件为 `.queue_btn_ignore .queue_btn_inactive`，菜单项为 `#queue_ignore_menu_option_not_interested` 和 `#queue_ignore_menu_option_owned_elsewhere`，成功后 `.queue_btn_ignore .queue_btn_active` 可见。
+- **下一项**：`#nextInDiscoveryQueue .btn_next_in_queue_trigger` 位于 `#next_in_queue_form` 中；在愿望单或忽略成功后触发该控件的原生点击，由 Steam 表单提交并进入队列下一项。
+
 ## SteamPy (steampy.com)
 
 - **@connect**：`steampy.com`、`store.steampowered.com`（steampy.user.js、keylol_to_steampy_price.user.js、snokwo.user.js）。
