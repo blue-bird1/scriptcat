@@ -1,5 +1,5 @@
 const QUEUE_TIMEOUT_MS = 10_000;
-const ADVANCE_DELAY_MS = 250;
+const ADVANCE_DELAY_MS = 50;
 const CLASSIC_NEXT_SELECTOR =
   "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
 const MODAL_ACTION_PATHS = {
