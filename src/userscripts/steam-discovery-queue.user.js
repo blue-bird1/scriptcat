@@ -2,8 +2,8 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.1
-// @description  自动筛选 Steam 探索队列，并在愿望单或忽略成功后进入下一项
+// @version      0.3.2
+// @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
 // @grant        none

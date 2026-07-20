@@ -2,8 +2,8 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.1
-// @description  自动筛选 Steam 探索队列，并在愿望单或忽略成功后进入下一项
+// @version      0.3.2
+// @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
 // @grant        none
@@ -748,10 +748,7 @@
   var QUEUE_TIMEOUT_MS = 1e4;
   var ADVANCE_DELAY_MS = 50;
   var CLASSIC_NEXT_SELECTOR = "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
-  var MODAL_ACTION_PATHS = {
-    wishlist: "/api/addtowishlist",
-    ignore: "/recommended/ignorerecommendation"
-  };
+  var MODAL_WISHLIST_PATH = "/api/addtowishlist";
   function isVisible2(element) {
     return Boolean(
       element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
@@ -773,6 +770,7 @@
     }
     let observer;
     let timer;
+    let frame;
     const pendingActions = /* @__PURE__ */ new Set();
     let advancing = false;
     function stopWaiting() {
@@ -780,37 +778,43 @@
       observer = void 0;
       clearTimeout(timer);
       timer = void 0;
+      cancelAnimationFrame(frame);
+      frame = void 0;
       pendingActions.clear();
     }
-    function advance() {
+    function advance(delay = ADVANCE_DELAY_MS) {
       stopWaiting();
       advancing = true;
       timer = setTimeout(() => {
-        requestAnimationFrame(() => {
+        timer = void 0;
+        const triggerNext = () => {
+          frame = void 0;
           const currentNextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
           if (currentNextButton instanceof HTMLElement) {
             currentNextButton.click();
           }
           advancing = false;
-        });
-      }, ADVANCE_DELAY_MS);
+        };
+        if (delay === 0) {
+          triggerNext();
+        } else {
+          frame = requestAnimationFrame(triggerNext);
+        }
+      }, delay);
     }
-    function hasSucceeded(action) {
-      if (action === "wishlist") {
-        return isVisible2(document.querySelector("#add_to_wishlist_area_success")) && !isVisible2(document.querySelector("#add_to_wishlist_area_fail"));
-      }
-      return isVisible2(document.querySelector(".queue_btn_ignore .queue_btn_active")) && !isVisible2(document.querySelector(".queue_btn_ignore .queue_btn_inactive"));
+    function hasSucceeded() {
+      return isVisible2(document.querySelector("#add_to_wishlist_area_success")) && !isVisible2(document.querySelector("#add_to_wishlist_area_fail"));
     }
-    function hasFailed(action) {
-      return action === "wishlist" && isVisible2(document.querySelector("#add_to_wishlist_area_fail"));
+    function hasFailed() {
+      return isVisible2(document.querySelector("#add_to_wishlist_area_fail"));
     }
     function checkResults() {
       for (const action of pendingActions) {
-        if (hasSucceeded(action)) {
+        if (hasSucceeded()) {
           advance();
           return;
         }
-        if (hasFailed(action)) {
+        if (hasFailed()) {
           pendingActions.delete(action);
         }
       }
@@ -840,7 +844,7 @@
       if (matchesAction(target, "#add_to_wishlist_area a.add_to_wishlist")) {
         waitForResult("wishlist");
       } else if (matchesAction(target, ".queue_btn_ignore .queue_btn_inactive") || matchesAction(target, "#queue_ignore_menu_option_not_interested") || matchesAction(target, "#queue_ignore_menu_option_owned_elsewhere")) {
-        waitForResult("ignore");
+        advance(0);
       }
     }
     function stop() {
@@ -891,7 +895,7 @@
       return void 0;
     }
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
-    return Object.values(MODAL_ACTION_PATHS).includes(pathname) ? pathname : void 0;
+    return pathname === MODAL_WISHLIST_PATH ? pathname : void 0;
   }
   function monitorActionRequests(takePending, handleResult) {
     if (typeof window.fetch !== "function") {
@@ -935,6 +939,8 @@
   function startModalQueue() {
     const requestQueues = /* @__PURE__ */ new Map();
     const pendingActions = /* @__PURE__ */ new Set();
+    let advanceTimer;
+    let advanceFrame;
     let advancing = false;
     function removePending(pending) {
       clearTimeout(pending.timer);
@@ -955,18 +961,25 @@
         removePending(pending);
       }
     }
-    function advance(pending) {
+    function advance(pending, immediate = false) {
       if (advancing) {
         return;
       }
       advancing = true;
       clearPending();
-      requestAnimationFrame(() => {
+      const triggerNext = () => {
+        advanceTimer = void 0;
+        advanceFrame = void 0;
         if (pending.dialog.isConnected) {
           findModalNextButton(pending.dialog)?.click();
         }
         advancing = false;
-      });
+      };
+      if (immediate) {
+        advanceTimer = setTimeout(triggerNext, 0);
+      } else {
+        advanceFrame = requestAnimationFrame(triggerNext);
+      }
     }
     function waitForSelectedState(pending) {
       function checkState() {
@@ -1015,18 +1028,26 @@
       if (!modalAction || advancing) {
         return;
       }
-      const pathname = MODAL_ACTION_PATHS[modalAction.action];
+      if (modalAction.action === "ignore") {
+        advance(modalAction, true);
+        return;
+      }
       const pending = {
         ...modalAction,
-        pathname
+        pathname: MODAL_WISHLIST_PATH
       };
       pending.timer = setTimeout(() => removePending(pending), QUEUE_TIMEOUT_MS);
       pendingActions.add(pending);
-      const queue = requestQueues.get(pathname) ?? [];
+      const queue = requestQueues.get(MODAL_WISHLIST_PATH) ?? [];
       queue.push(pending);
-      requestQueues.set(pathname, queue);
+      requestQueues.set(MODAL_WISHLIST_PATH, queue);
     }
     function stop() {
+      clearTimeout(advanceTimer);
+      cancelAnimationFrame(advanceFrame);
+      advanceTimer = void 0;
+      advanceFrame = void 0;
+      advancing = false;
       stopMonitoringRequests();
       clearPending();
       document.removeEventListener("click", handleClick, true);

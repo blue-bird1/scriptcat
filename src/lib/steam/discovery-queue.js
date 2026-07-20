@@ -7,10 +7,7 @@ const QUEUE_TIMEOUT_MS = 10_000;
 const ADVANCE_DELAY_MS = 50;
 const CLASSIC_NEXT_SELECTOR =
   "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
-const MODAL_ACTION_PATHS = {
-  wishlist: "/api/addtowishlist",
-  ignore: "/recommended/ignorerecommendation",
-};
+const MODAL_WISHLIST_PATH = "/api/addtowishlist";
 
 function isVisible(element) {
   return Boolean(
@@ -37,6 +34,7 @@ function startClassicQueue() {
 
   let observer;
   let timer;
+  let frame;
   const pendingActions = new Set();
   let advancing = false;
 
@@ -45,43 +43,48 @@ function startClassicQueue() {
     observer = undefined;
     clearTimeout(timer);
     timer = undefined;
+    cancelAnimationFrame(frame);
+    frame = undefined;
     pendingActions.clear();
   }
 
-  function advance() {
+  function advance(delay = ADVANCE_DELAY_MS) {
     stopWaiting();
     advancing = true;
     timer = setTimeout(() => {
-      requestAnimationFrame(() => {
+      timer = undefined;
+      const triggerNext = () => {
+        frame = undefined;
         const currentNextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
         if (currentNextButton instanceof HTMLElement) {
           currentNextButton.click();
         }
         advancing = false;
-      });
-    }, ADVANCE_DELAY_MS);
+      };
+      if (delay === 0) {
+        triggerNext();
+      } else {
+        frame = requestAnimationFrame(triggerNext);
+      }
+    }, delay);
   }
 
-  function hasSucceeded(action) {
-    if (action === "wishlist") {
-      return isVisible(document.querySelector("#add_to_wishlist_area_success")) && !isVisible(document.querySelector("#add_to_wishlist_area_fail"));
-    }
-
-    return isVisible(document.querySelector(".queue_btn_ignore .queue_btn_active")) && !isVisible(document.querySelector(".queue_btn_ignore .queue_btn_inactive"));
+  function hasSucceeded() {
+    return isVisible(document.querySelector("#add_to_wishlist_area_success")) && !isVisible(document.querySelector("#add_to_wishlist_area_fail"));
   }
 
-  function hasFailed(action) {
-    return action === "wishlist" && isVisible(document.querySelector("#add_to_wishlist_area_fail"));
+  function hasFailed() {
+    return isVisible(document.querySelector("#add_to_wishlist_area_fail"));
   }
 
   function checkResults() {
     for (const action of pendingActions) {
-      if (hasSucceeded(action)) {
+      if (hasSucceeded()) {
         advance();
         return;
       }
 
-      if (hasFailed(action)) {
+      if (hasFailed()) {
         pendingActions.delete(action);
       }
     }
@@ -120,7 +123,7 @@ function startClassicQueue() {
       matchesAction(target, "#queue_ignore_menu_option_not_interested") ||
       matchesAction(target, "#queue_ignore_menu_option_owned_elsewhere")
     ) {
-      waitForResult("ignore");
+      advance(0);
     }
   }
 
@@ -196,9 +199,7 @@ function getMonitoredPath(input, init) {
   }
 
   const pathname = url.pathname.replace(/\/+$/, "") || "/";
-  return Object.values(MODAL_ACTION_PATHS).includes(pathname)
-    ? pathname
-    : undefined;
+  return pathname === MODAL_WISHLIST_PATH ? pathname : undefined;
 }
 
 function monitorActionRequests(takePending, handleResult) {
@@ -248,6 +249,8 @@ function monitorActionRequests(takePending, handleResult) {
 function startModalQueue() {
   const requestQueues = new Map();
   const pendingActions = new Set();
+  let advanceTimer;
+  let advanceFrame;
   let advancing = false;
 
   function removePending(pending) {
@@ -272,19 +275,26 @@ function startModalQueue() {
     }
   }
 
-  function advance(pending) {
+  function advance(pending, immediate = false) {
     if (advancing) {
       return;
     }
 
     advancing = true;
     clearPending();
-    requestAnimationFrame(() => {
+    const triggerNext = () => {
+      advanceTimer = undefined;
+      advanceFrame = undefined;
       if (pending.dialog.isConnected) {
         findModalNextButton(pending.dialog)?.click();
       }
       advancing = false;
-    });
+    };
+    if (immediate) {
+      advanceTimer = setTimeout(triggerNext, 0);
+    } else {
+      advanceFrame = requestAnimationFrame(triggerNext);
+    }
   }
 
   function waitForSelectedState(pending) {
@@ -347,19 +357,28 @@ function startModalQueue() {
       return;
     }
 
-    const pathname = MODAL_ACTION_PATHS[modalAction.action];
+    if (modalAction.action === "ignore") {
+      advance(modalAction, true);
+      return;
+    }
+
     const pending = {
       ...modalAction,
-      pathname,
+      pathname: MODAL_WISHLIST_PATH,
     };
     pending.timer = setTimeout(() => removePending(pending), QUEUE_TIMEOUT_MS);
     pendingActions.add(pending);
-    const queue = requestQueues.get(pathname) ?? [];
+    const queue = requestQueues.get(MODAL_WISHLIST_PATH) ?? [];
     queue.push(pending);
-    requestQueues.set(pathname, queue);
+    requestQueues.set(MODAL_WISHLIST_PATH, queue);
   }
 
   function stop() {
+    clearTimeout(advanceTimer);
+    cancelAnimationFrame(advanceFrame);
+    advanceTimer = undefined;
+    advanceFrame = undefined;
+    advancing = false;
     stopMonitoringRequests();
     clearPending();
     document.removeEventListener("click", handleClick, true);
