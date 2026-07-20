@@ -250,7 +250,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
   }
 
   return {
-    async evaluate({ appId, tags, config }) {
+    async evaluate({ appId, reviews: existingReviews, tags, config }) {
       if (!/^[1-9]\d*$/.test(appId)) {
         throw new TypeError("appId must be a positive integer string");
       }
@@ -258,10 +258,12 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
         return { matched: false, reasons: [], data: createEmptyData() };
       }
 
+      const needsPositiveRate = isEnabledNumber(config?.minimumPositiveRate);
+      const needsReviewCount =
+        isEnabledNumber(config?.minimumReviewCount) || config?.ignoreUnreviewed === true;
       const needsReviews =
-        isEnabledNumber(config?.minimumPositiveRate) ||
-        isEnabledNumber(config?.minimumReviewCount) ||
-        config?.ignoreUnreviewed === true;
+        (needsPositiveRate && existingReviews?.positiveRate === undefined) ||
+        (needsReviewCount && existingReviews?.reviewCount === undefined);
       const needsPrice = isEnabledNumber(config?.maximumPrice);
       const needsDiscount = isEnabledNumber(config?.minimumDiscount);
       const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
@@ -286,6 +288,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
         ...reviews,
         ...details,
         ...storeItem,
+        ...existingReviews,
       };
       const reasons = [];
       if (isEnabledNumber(config?.minimumPositiveRate) && data.positiveRate !== undefined && data.positiveRate < config.minimumPositiveRate.value) {

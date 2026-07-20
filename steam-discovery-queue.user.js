@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.3
+// @version      0.3.4
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -584,14 +584,16 @@
       }
     }
     return {
-      async evaluate({ appId, tags, config }) {
+      async evaluate({ appId, reviews: existingReviews, tags, config }) {
         if (!/^[1-9]\d*$/.test(appId)) {
           throw new TypeError("appId must be a positive integer string");
         }
         if (config?.enabled === false) {
           return { matched: false, reasons: [], data: createEmptyData() };
         }
-        const needsReviews = isEnabledNumber(config?.minimumPositiveRate) || isEnabledNumber(config?.minimumReviewCount) || config?.ignoreUnreviewed === true;
+        const needsPositiveRate = isEnabledNumber(config?.minimumPositiveRate);
+        const needsReviewCount = isEnabledNumber(config?.minimumReviewCount) || config?.ignoreUnreviewed === true;
+        const needsReviews = needsPositiveRate && existingReviews?.positiveRate === void 0 || needsReviewCount && existingReviews?.reviewCount === void 0;
         const needsPrice = isEnabledNumber(config?.maximumPrice);
         const needsDiscount = isEnabledNumber(config?.minimumDiscount);
         const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
@@ -606,7 +608,8 @@
           ...createEmptyData(),
           ...reviews,
           ...details,
-          ...storeItem
+          ...storeItem,
+          ...existingReviews
         };
         const reasons = [];
         if (isEnabledNumber(config?.minimumPositiveRate) && data.positiveRate !== void 0 && data.positiveRate < config.minimumPositiveRate.value) {
@@ -656,6 +659,43 @@
     } catch {
       return void 0;
     }
+  }
+  function parseReviewCount(value) {
+    if (typeof value !== "string" || !/^\d+$/.test(value.trim())) {
+      return void 0;
+    }
+    const count = Number(value.trim());
+    return Number.isSafeInteger(count) ? count : void 0;
+  }
+  function parsePositiveRate(value) {
+    if (typeof value !== "string") {
+      return void 0;
+    }
+    const match = value.match(/(?<![\d.,])(?<rate>\d{1,3}(?:[.,]\d+)?)\s*%/);
+    if (!match?.groups) {
+      return void 0;
+    }
+    const rate = Number(match.groups.rate.replace(",", "."));
+    return Number.isFinite(rate) && rate >= 0 && rate <= 100 ? rate : void 0;
+  }
+  function getClassicReviews() {
+    const summary = document.querySelector('.user_reviews_summary_row[itemprop="aggregateRating"]');
+    if (!(summary instanceof HTMLElement)) {
+      return void 0;
+    }
+    const reviewCount = parseReviewCount(summary.querySelector('meta[itemprop="reviewCount"]')?.content);
+    const positiveRate = parsePositiveRate(summary.dataset.tooltipHtml);
+    if (reviewCount === void 0 && positiveRate === void 0) {
+      return void 0;
+    }
+    const reviews = {};
+    if (reviewCount !== void 0) {
+      reviews.reviewCount = reviewCount;
+    }
+    if (positiveRate !== void 0) {
+      reviews.positiveRate = positiveRate;
+    }
+    return reviews;
   }
   function getModalQueueAction(target) {
     if (!(target instanceof Element)) {
@@ -733,11 +773,13 @@
       return void 0;
     }
     const tags = [...document.querySelectorAll(".glance_tags a.app_tag")].map((element) => element.textContent?.trim()).filter(Boolean);
+    const reviews = getClassicReviews();
     return {
       appId,
       buttonHost,
       ignoreButton: document.querySelector(".queue_btn_ignore .queue_btn_inactive"),
-      key: `classic:${appId}:${tags.join("\0")}`,
+      key: `classic:${appId}:${reviews?.reviewCount ?? ""}:${reviews?.positiveRate ?? ""}:${tags.join("\0")}`,
+      reviews,
       tags
     };
   }
@@ -779,6 +821,7 @@
       const currentGeneration = ++generation;
       const result = await ruleEngine.evaluate({
         appId: context.appId,
+        reviews: context.reviews,
         tags: context.tags,
         config
       });

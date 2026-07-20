@@ -17,6 +17,51 @@ function getAppId(url) {
   }
 }
 
+function parseReviewCount(value) {
+  if (typeof value !== "string" || !/^\d+$/.test(value.trim())) {
+    return undefined;
+  }
+
+  const count = Number(value.trim());
+  return Number.isSafeInteger(count) ? count : undefined;
+}
+
+function parsePositiveRate(value) {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+
+  const match = value.match(/(?<![\d.,])(?<rate>\d{1,3}(?:[.,]\d+)?)\s*%/);
+  if (!match?.groups) {
+    return undefined;
+  }
+
+  const rate = Number(match.groups.rate.replace(",", "."));
+  return Number.isFinite(rate) && rate >= 0 && rate <= 100 ? rate : undefined;
+}
+
+function getClassicReviews() {
+  const summary = document.querySelector('.user_reviews_summary_row[itemprop="aggregateRating"]');
+  if (!(summary instanceof HTMLElement)) {
+    return undefined;
+  }
+
+  const reviewCount = parseReviewCount(summary.querySelector('meta[itemprop="reviewCount"]')?.content);
+  const positiveRate = parsePositiveRate(summary.dataset.tooltipHtml);
+  if (reviewCount === undefined && positiveRate === undefined) {
+    return undefined;
+  }
+
+  const reviews = {};
+  if (reviewCount !== undefined) {
+    reviews.reviewCount = reviewCount;
+  }
+  if (positiveRate !== undefined) {
+    reviews.positiveRate = positiveRate;
+  }
+  return reviews;
+}
+
 export function getModalQueueAction(target) {
   if (!(target instanceof Element)) {
     return undefined;
@@ -117,11 +162,13 @@ function getClassicContext() {
   const tags = [...document.querySelectorAll(".glance_tags a.app_tag")]
     .map((element) => element.textContent?.trim())
     .filter(Boolean);
+  const reviews = getClassicReviews();
   return {
     appId,
     buttonHost,
     ignoreButton: document.querySelector(".queue_btn_ignore .queue_btn_inactive"),
-    key: `classic:${appId}:${tags.join("\u0000")}`,
+    key: `classic:${appId}:${reviews?.reviewCount ?? ""}:${reviews?.positiveRate ?? ""}:${tags.join("\u0000")}`,
+    reviews,
     tags,
   };
 }
@@ -168,6 +215,7 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
     const currentGeneration = ++generation;
     const result = await ruleEngine.evaluate({
       appId: context.appId,
+      reviews: context.reviews,
       tags: context.tags,
       config,
     });
