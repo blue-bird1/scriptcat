@@ -112,6 +112,82 @@ function parseDetails(payload, appId) {
   return result;
 }
 
+function parseStoreItemPrice(formattedPrice, priceInCents) {
+  if (typeof formattedPrice !== "string" || !isNonNegativeInteger(priceInCents)) {
+    return undefined;
+  }
+
+  const numericParts = formattedPrice.match(/\d[\d\s.,\u00A0\u202F]*/g);
+  if (numericParts?.length !== 1) {
+    return undefined;
+  }
+
+  const numericText = numericParts[0].trim();
+  if (!numericText || /[.,\s\u00A0\u202F]$/.test(numericText)) {
+    return undefined;
+  }
+
+  const digits = numericText.replace(/[^\d]/g, "");
+  if (!digits) {
+    return undefined;
+  }
+
+  const integerPrice = Number(digits);
+  const candidatesInCents = Number.isSafeInteger(integerPrice)
+    ? [integerPrice * 100]
+    : [];
+  const decimalMatch = numericText.match(/[.,](\d{1,2})$/);
+  if (decimalMatch) {
+    const fractionalDigits = decimalMatch[1].length;
+    const integerDigits = numericText.slice(0, -fractionalDigits - 1).replace(/[^\d]/g, "");
+    if (integerDigits) {
+      const integerPart = Number(integerDigits);
+      const fractionalPart = Number(decimalMatch[1]) * 10 ** (2 - fractionalDigits);
+      if (Number.isSafeInteger(integerPart) && Number.isSafeInteger(fractionalPart)) {
+        candidatesInCents.push(integerPart * 100 + fractionalPart);
+      }
+    }
+  }
+
+  return candidatesInCents.includes(priceInCents) ? priceInCents / 100 : undefined;
+}
+
+function parseStoreItem(storeItem, appId) {
+  if (
+    !storeItem ||
+    typeof storeItem !== "object" ||
+    storeItem.success !== 1 ||
+    String(storeItem.appId) !== appId
+  ) {
+    return {};
+  }
+
+  const result = {};
+  if (typeof storeItem.isFree === "boolean") {
+    result.isFree = storeItem.isFree;
+    if (storeItem.isFree) {
+      result.price = 0;
+    }
+  }
+  if (storeItem.comingSoon === false && Number.isSafeInteger(storeItem.releaseDateUnix) && storeItem.releaseDateUnix > 0) {
+    const date = new Date(storeItem.releaseDateUnix * 1000);
+    if (!Number.isNaN(date.getTime())) {
+      result.releaseDate = date.toISOString().slice(0, 10);
+    }
+  }
+  if (Number.isInteger(storeItem.discount) && storeItem.discount >= 0 && storeItem.discount <= 100) {
+    result.discount = storeItem.discount;
+  }
+
+  if (result.price === undefined) {
+    const price = parseStoreItemPrice(storeItem.formattedFinalPrice, storeItem.finalPriceInCents);
+    if (price !== undefined) {
+      result.price = price;
+    }
+  }
+  return result;
+}
+
 async function loadJson(url) {
   try {
     const response = await fetch(url);
@@ -143,32 +219,34 @@ function isIsoDate(value) {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
-export function createDiscoveryQueueRuleEngine() {
-  const cache = new Map();
+export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
+  const reviewsCache = new Map();
+  const detailsCache = new Map();
 
-  function load(appId) {
-    let dataPromise = cache.get(appId);
-    if (!dataPromise) {
-      let shouldRetry = false;
-      dataPromise = Promise.all([
-        loadJson(`/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`),
-        loadJson(`/api/appdetails?appids=${appId}&l=english`),
-      ]).then(([reviewsPayload, detailsPayload]) => {
-        shouldRetry = reviewsPayload === undefined || detailsPayload === undefined;
-        return {
-          ...createEmptyData(),
-          ...parseReviews(reviewsPayload),
-          ...parseDetails(detailsPayload, appId),
-        };
-      });
-      cache.set(appId, dataPromise);
-      dataPromise.then(() => {
-        if (shouldRetry && cache.get(appId) === dataPromise) {
+  function loadCached(cache, appId, url) {
+    let payloadPromise = cache.get(appId);
+    if (!payloadPromise) {
+      payloadPromise = loadJson(url);
+      cache.set(appId, payloadPromise);
+      payloadPromise.then((payload) => {
+        if (payload === undefined && cache.get(appId) === payloadPromise) {
           cache.delete(appId);
         }
       });
     }
-    return dataPromise;
+    return payloadPromise;
+  }
+
+  async function loadStoreItem(appId) {
+    if (typeof getStoreItem !== "function") {
+      return {};
+    }
+
+    try {
+      return parseStoreItem(await getStoreItem(appId), appId);
+    } catch {
+      return {};
+    }
   }
 
   return {
@@ -180,7 +258,35 @@ export function createDiscoveryQueueRuleEngine() {
         return { matched: false, reasons: [], data: createEmptyData() };
       }
 
-      const data = await load(appId);
+      const needsReviews =
+        isEnabledNumber(config?.minimumPositiveRate) ||
+        isEnabledNumber(config?.minimumReviewCount) ||
+        config?.ignoreUnreviewed === true;
+      const needsPrice = isEnabledNumber(config?.maximumPrice);
+      const needsDiscount = isEnabledNumber(config?.minimumDiscount);
+      const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
+      const needsFreeStatus = config?.ignoreFree === true;
+      const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
+
+      const reviewsPromise = needsReviews
+        ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews)
+        : Promise.resolve({});
+      const storeItem = needsDetails ? await loadStoreItem(appId) : {};
+      const missingStoreItemData =
+        (needsPrice && storeItem.price === undefined) ||
+        (needsDiscount && storeItem.discount === undefined) ||
+        (needsReleaseDate && storeItem.releaseDate === undefined) ||
+        (needsFreeStatus && storeItem.isFree === undefined);
+      const detailsPromise = missingStoreItemData
+        ? loadCached(detailsCache, appId, `/api/appdetails?appids=${appId}&l=english`).then((payload) => parseDetails(payload, appId))
+        : Promise.resolve({});
+      const [reviews, details] = await Promise.all([reviewsPromise, detailsPromise]);
+      const data = {
+        ...createEmptyData(),
+        ...reviews,
+        ...details,
+        ...storeItem,
+      };
       const reasons = [];
       if (isEnabledNumber(config?.minimumPositiveRate) && data.positiveRate !== undefined && data.positiveRate < config.minimumPositiveRate.value) {
         reasons.push("positive-rate");
@@ -217,7 +323,8 @@ export function createDiscoveryQueueRuleEngine() {
       return { matched: reasons.length > 0, reasons, data };
     },
     clear() {
-      cache.clear();
+      reviewsCache.clear();
+      detailsCache.clear();
     },
   };
 }

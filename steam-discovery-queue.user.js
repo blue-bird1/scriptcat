@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.2
+// @version      0.3.3
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -472,6 +472,66 @@
     }
     return result;
   }
+  function parseStoreItemPrice(formattedPrice, priceInCents) {
+    if (typeof formattedPrice !== "string" || !isNonNegativeInteger(priceInCents)) {
+      return void 0;
+    }
+    const numericParts = formattedPrice.match(/\d[\d\s.,\u00A0\u202F]*/g);
+    if (numericParts?.length !== 1) {
+      return void 0;
+    }
+    const numericText = numericParts[0].trim();
+    if (!numericText || /[.,\s\u00A0\u202F]$/.test(numericText)) {
+      return void 0;
+    }
+    const digits = numericText.replace(/[^\d]/g, "");
+    if (!digits) {
+      return void 0;
+    }
+    const integerPrice = Number(digits);
+    const candidatesInCents = Number.isSafeInteger(integerPrice) ? [integerPrice * 100] : [];
+    const decimalMatch = numericText.match(/[.,](\d{1,2})$/);
+    if (decimalMatch) {
+      const fractionalDigits = decimalMatch[1].length;
+      const integerDigits = numericText.slice(0, -fractionalDigits - 1).replace(/[^\d]/g, "");
+      if (integerDigits) {
+        const integerPart = Number(integerDigits);
+        const fractionalPart = Number(decimalMatch[1]) * 10 ** (2 - fractionalDigits);
+        if (Number.isSafeInteger(integerPart) && Number.isSafeInteger(fractionalPart)) {
+          candidatesInCents.push(integerPart * 100 + fractionalPart);
+        }
+      }
+    }
+    return candidatesInCents.includes(priceInCents) ? priceInCents / 100 : void 0;
+  }
+  function parseStoreItem(storeItem, appId) {
+    if (!storeItem || typeof storeItem !== "object" || storeItem.success !== 1 || String(storeItem.appId) !== appId) {
+      return {};
+    }
+    const result = {};
+    if (typeof storeItem.isFree === "boolean") {
+      result.isFree = storeItem.isFree;
+      if (storeItem.isFree) {
+        result.price = 0;
+      }
+    }
+    if (storeItem.comingSoon === false && Number.isSafeInteger(storeItem.releaseDateUnix) && storeItem.releaseDateUnix > 0) {
+      const date = new Date(storeItem.releaseDateUnix * 1e3);
+      if (!Number.isNaN(date.getTime())) {
+        result.releaseDate = date.toISOString().slice(0, 10);
+      }
+    }
+    if (Number.isInteger(storeItem.discount) && storeItem.discount >= 0 && storeItem.discount <= 100) {
+      result.discount = storeItem.discount;
+    }
+    if (result.price === void 0) {
+      const price = parseStoreItemPrice(storeItem.formattedFinalPrice, storeItem.finalPriceInCents);
+      if (price !== void 0) {
+        result.price = price;
+      }
+    }
+    return result;
+  }
   async function loadJson(url) {
     try {
       const response = await fetch(url);
@@ -497,31 +557,31 @@
     const date = new Date(Date.UTC(year, month - 1, day));
     return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
   }
-  function createDiscoveryQueueRuleEngine() {
-    const cache = /* @__PURE__ */ new Map();
-    function load(appId) {
-      let dataPromise = cache.get(appId);
-      if (!dataPromise) {
-        let shouldRetry = false;
-        dataPromise = Promise.all([
-          loadJson(`/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`),
-          loadJson(`/api/appdetails?appids=${appId}&l=english`)
-        ]).then(([reviewsPayload, detailsPayload]) => {
-          shouldRetry = reviewsPayload === void 0 || detailsPayload === void 0;
-          return {
-            ...createEmptyData(),
-            ...parseReviews(reviewsPayload),
-            ...parseDetails(detailsPayload, appId)
-          };
-        });
-        cache.set(appId, dataPromise);
-        dataPromise.then(() => {
-          if (shouldRetry && cache.get(appId) === dataPromise) {
+  function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
+    const reviewsCache = /* @__PURE__ */ new Map();
+    const detailsCache = /* @__PURE__ */ new Map();
+    function loadCached(cache, appId, url) {
+      let payloadPromise = cache.get(appId);
+      if (!payloadPromise) {
+        payloadPromise = loadJson(url);
+        cache.set(appId, payloadPromise);
+        payloadPromise.then((payload) => {
+          if (payload === void 0 && cache.get(appId) === payloadPromise) {
             cache.delete(appId);
           }
         });
       }
-      return dataPromise;
+      return payloadPromise;
+    }
+    async function loadStoreItem(appId) {
+      if (typeof getStoreItem !== "function") {
+        return {};
+      }
+      try {
+        return parseStoreItem(await getStoreItem(appId), appId);
+      } catch {
+        return {};
+      }
     }
     return {
       async evaluate({ appId, tags, config }) {
@@ -531,7 +591,23 @@
         if (config?.enabled === false) {
           return { matched: false, reasons: [], data: createEmptyData() };
         }
-        const data = await load(appId);
+        const needsReviews = isEnabledNumber(config?.minimumPositiveRate) || isEnabledNumber(config?.minimumReviewCount) || config?.ignoreUnreviewed === true;
+        const needsPrice = isEnabledNumber(config?.maximumPrice);
+        const needsDiscount = isEnabledNumber(config?.minimumDiscount);
+        const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
+        const needsFreeStatus = config?.ignoreFree === true;
+        const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
+        const reviewsPromise = needsReviews ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews) : Promise.resolve({});
+        const storeItem = needsDetails ? await loadStoreItem(appId) : {};
+        const missingStoreItemData = needsPrice && storeItem.price === void 0 || needsDiscount && storeItem.discount === void 0 || needsReleaseDate && storeItem.releaseDate === void 0 || needsFreeStatus && storeItem.isFree === void 0;
+        const detailsPromise = missingStoreItemData ? loadCached(detailsCache, appId, `/api/appdetails?appids=${appId}&l=english`).then((payload) => parseDetails(payload, appId)) : Promise.resolve({});
+        const [reviews, details] = await Promise.all([reviewsPromise, detailsPromise]);
+        const data = {
+          ...createEmptyData(),
+          ...reviews,
+          ...details,
+          ...storeItem
+        };
         const reasons = [];
         if (isEnabledNumber(config?.minimumPositiveRate) && data.positiveRate !== void 0 && data.positiveRate < config.minimumPositiveRate.value) {
           reasons.push("positive-rate");
@@ -562,7 +638,8 @@
         return { matched: reasons.length > 0, reasons, data };
       },
       clear() {
-        cache.clear();
+        reviewsCache.clear();
+        detailsCache.clear();
       }
     };
   }
@@ -664,8 +741,8 @@
       tags
     };
   }
-  function startDiscoveryQueueAutoFilter() {
-    const ruleEngine = createDiscoveryQueueRuleEngine();
+  function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
+    const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
     let stopped = false;
     let paused = false;
     let scheduled = false;
@@ -741,6 +818,112 @@
       observer.disconnect();
       configUi.destroy();
       ruleEngine.clear();
+    };
+  }
+
+  // src/lib/steam/discovery-queue-store-items.js
+  var STORE_ITEM_REQUEST = {
+    include_release: true,
+    include_tag_count: 20
+  };
+  var CACHE_WAIT_MS = 50;
+  function getStoreItemCache() {
+    const cache = window.StoreItemCache;
+    return cache && typeof cache.GetApp === "function" && typeof cache.QueueAppRequest === "function" ? cache : void 0;
+  }
+  async function waitForStoreItemCache() {
+    const existing = getStoreItemCache();
+    if (existing) {
+      return existing;
+    }
+    const deadline = performance.now() + CACHE_WAIT_MS;
+    while (performance.now() < deadline) {
+      await new Promise((resolve) => requestAnimationFrame(resolve));
+      const cache = getStoreItemCache();
+      if (cache) {
+        return cache;
+      }
+    }
+    return void 0;
+  }
+  function toSafeNonNegativeInteger(value) {
+    const number = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
+    return Number.isSafeInteger(number) && number >= 0 ? number : void 0;
+  }
+  function readArray(getter) {
+    try {
+      const value = getter();
+      return Array.isArray(value) ? value.filter((entry) => Number.isSafeInteger(entry) && entry > 0) : [];
+    } catch {
+      return [];
+    }
+  }
+  function readStoreItem(item, appId) {
+    if (!item || typeof item !== "object") {
+      return void 0;
+    }
+    try {
+      if (typeof item.GetID === "function" && item.GetID() !== appId) {
+        return void 0;
+      }
+      const purchase = item.GetBestPurchaseOption?.();
+      const comingSoon = item.BIsComingSoon?.();
+      const storeItem = {
+        appId,
+        success: 1,
+        isFree: item.BIsFree?.(),
+        comingSoon,
+        tagIds: readArray(() => item.GetTagIDs?.()),
+        categoryIds: {
+          supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.()),
+          features: readArray(() => item.GetStoreCategories_Features?.()),
+          controllers: readArray(() => item.GetStoreCategories_Controller?.())
+        }
+      };
+      if (comingSoon === false) {
+        storeItem.releaseDateUnix = toSafeNonNegativeInteger(item.GetReleaseDateRTime?.(true));
+      }
+      if (purchase && typeof purchase === "object") {
+        storeItem.finalPriceInCents = toSafeNonNegativeInteger(purchase.final_price_in_cents);
+        storeItem.originalPriceInCents = toSafeNonNegativeInteger(purchase.original_price_in_cents);
+        storeItem.formattedFinalPrice = purchase.formatted_final_price;
+        storeItem.formattedOriginalPrice = purchase.formatted_original_price;
+        storeItem.discount = toSafeNonNegativeInteger(purchase.discount_pct);
+      }
+      return storeItem;
+    } catch {
+      return void 0;
+    }
+  }
+  function createDiscoveryQueueStoreItemReader() {
+    let stopped = false;
+    return {
+      async get(appId) {
+        if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
+          return void 0;
+        }
+        const numericAppId = Number(appId);
+        if (!Number.isSafeInteger(numericAppId)) {
+          return void 0;
+        }
+        const cache = await waitForStoreItemCache();
+        if (!cache || stopped) {
+          return void 0;
+        }
+        try {
+          let item = cache.GetApp(numericAppId);
+          if (!item?.BContainDataRequest?.(STORE_ITEM_REQUEST)) {
+            await cache.QueueAppRequest(numericAppId, STORE_ITEM_REQUEST);
+            item = cache.GetApp(numericAppId);
+          }
+          return readStoreItem(item, numericAppId);
+        } catch {
+          return void 0;
+        }
+      },
+      stop() {
+        stopped = true;
+      }
     };
   }
 
@@ -1058,6 +1241,7 @@
     return stop;
   }
   function startSteamDiscoveryQueue() {
+    const storeItemReader = createDiscoveryQueueStoreItemReader();
     const stopModalQueue = startModalQueue();
     let stopClassicQueue = () => {
     };
@@ -1067,7 +1251,9 @@
     function startQueueControllersWhenReady() {
       if (!stopped) {
         stopClassicQueue = startClassicQueue();
-        stopAutoFilter = startDiscoveryQueueAutoFilter();
+        stopAutoFilter = startDiscoveryQueueAutoFilter({
+          getStoreItem: storeItemReader.get
+        });
       }
     }
     if (document.readyState === "loading") {
@@ -1083,6 +1269,7 @@
       stopModalQueue();
       stopClassicQueue();
       stopAutoFilter();
+      storeItemReader.stop();
     };
   }
 

@@ -2,6 +2,7 @@ import {
   getModalQueueAction,
   startDiscoveryQueueAutoFilter,
 } from "./discovery-queue-auto-filter.js";
+import { createDiscoveryQueueStoreItemReader } from "./discovery-queue-store-items.js";
 
 const QUEUE_TIMEOUT_MS = 10_000;
 const ADVANCE_DELAY_MS = 50;
@@ -391,6 +392,7 @@ function startModalQueue() {
 }
 
 export function startSteamDiscoveryQueue() {
+  const storeItemReader = createDiscoveryQueueStoreItemReader();
   const stopModalQueue = startModalQueue();
   let stopClassicQueue = () => {};
   let stopAutoFilter = () => {};
@@ -399,7 +401,9 @@ export function startSteamDiscoveryQueue() {
   function startQueueControllersWhenReady() {
     if (!stopped) {
       stopClassicQueue = startClassicQueue();
-      stopAutoFilter = startDiscoveryQueueAutoFilter();
+      stopAutoFilter = startDiscoveryQueueAutoFilter({
+        getStoreItem: storeItemReader.get,
+      });
     }
   }
 
@@ -417,5 +421,6 @@ export function startSteamDiscoveryQueue() {
     stopModalQueue();
     stopClassicQueue();
     stopAutoFilter();
+    storeItemReader.stop();
   };
 }

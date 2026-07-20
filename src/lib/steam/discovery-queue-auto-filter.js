@@ -126,8 +126,8 @@ function getClassicContext() {
   };
 }
 
-export function startDiscoveryQueueAutoFilter() {
-  const ruleEngine = createDiscoveryQueueRuleEngine();
+export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
+  const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
   let stopped = false;
   let paused = false;
   let scheduled = false;
