@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.4
+// @version      0.3.5
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -509,6 +509,12 @@
       return {};
     }
     const result = {};
+    if (isNonNegativeInteger(storeItem.reviewCount)) {
+      result.reviewCount = storeItem.reviewCount;
+    }
+    if (typeof storeItem.positiveRate === "number" && Number.isFinite(storeItem.positiveRate) && storeItem.positiveRate >= 0 && storeItem.positiveRate <= 100) {
+      result.positiveRate = storeItem.positiveRate;
+    }
     if (typeof storeItem.isFree === "boolean") {
       result.isFree = storeItem.isFree;
       if (storeItem.isFree) {
@@ -599,8 +605,9 @@
         const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
         const needsFreeStatus = config?.ignoreFree === true;
         const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
-        const reviewsPromise = needsReviews ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews) : Promise.resolve({});
-        const storeItem = needsDetails ? await loadStoreItem(appId) : {};
+        const storeItem = needsReviews || needsDetails ? await loadStoreItem(appId) : {};
+        const missingStoreItemReviews = needsPositiveRate && storeItem.positiveRate === void 0 || needsReviewCount && storeItem.reviewCount === void 0;
+        const reviewsPromise = missingStoreItemReviews ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews) : Promise.resolve({});
         const missingStoreItemData = needsPrice && storeItem.price === void 0 || needsDiscount && storeItem.discount === void 0 || needsReleaseDate && storeItem.releaseDate === void 0 || needsFreeStatus && storeItem.isFree === void 0;
         const detailsPromise = missingStoreItemData ? loadCached(detailsCache, appId, `/api/appdetails?appids=${appId}&l=english`).then((payload) => parseDetails(payload, appId)) : Promise.resolve({});
         const [reviews, details] = await Promise.all([reviewsPromise, detailsPromise]);
@@ -867,6 +874,7 @@
   // src/lib/steam/discovery-queue-store-items.js
   var STORE_ITEM_REQUEST = {
     include_release: true,
+    include_reviews: true,
     include_tag_count: 20
   };
   var CACHE_WAIT_MS = 50;
@@ -901,6 +909,22 @@
       return [];
     }
   }
+  function readReviewSummary(item) {
+    const preferUnfiltered = window.GDynamicStore?.s_preferences?.review_score_preference === 1;
+    const summaryGetter = preferUnfiltered ? item.GetUnfilteredReviewSummary : item.GetFilteredReviewSummary;
+    let summary;
+    try {
+      summary = summaryGetter?.call(item);
+    } catch {
+      return {};
+    }
+    const reviewCount = toSafeNonNegativeInteger(summary?.review_count);
+    const positiveRate = summary?.percent_positive;
+    return {
+      reviewCount,
+      positiveRate: reviewCount !== 0 && typeof positiveRate === "number" && Number.isFinite(positiveRate) && positiveRate >= 0 && positiveRate <= 100 ? positiveRate : void 0
+    };
+  }
   function readStoreItem(item, appId) {
     if (!item || typeof item !== "object") {
       return void 0;
@@ -911,6 +935,7 @@
       }
       const purchase = item.GetBestPurchaseOption?.();
       const comingSoon = item.BIsComingSoon?.();
+      const reviews = readReviewSummary(item);
       const storeItem = {
         appId,
         success: 1,
@@ -921,7 +946,8 @@
           supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.()),
           features: readArray(() => item.GetStoreCategories_Features?.()),
           controllers: readArray(() => item.GetStoreCategories_Controller?.())
-        }
+        },
+        ...reviews
       };
       if (comingSoon === false) {
         storeItem.releaseDateUnix = toSafeNonNegativeInteger(item.GetReleaseDateRTime?.(true));

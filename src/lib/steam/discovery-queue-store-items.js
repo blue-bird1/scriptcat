@@ -1,5 +1,6 @@
 const STORE_ITEM_REQUEST = {
   include_release: true,
+  include_reviews: true,
   include_tag_count: 20,
 };
 const CACHE_WAIT_MS = 50;
@@ -46,6 +47,35 @@ function readArray(getter) {
   }
 }
 
+function readReviewSummary(item) {
+  const preferUnfiltered =
+    window.GDynamicStore?.s_preferences?.review_score_preference === 1;
+  const summaryGetter = preferUnfiltered
+    ? item.GetUnfilteredReviewSummary
+    : item.GetFilteredReviewSummary;
+
+  let summary;
+  try {
+    summary = summaryGetter?.call(item);
+  } catch {
+    return {};
+  }
+
+  const reviewCount = toSafeNonNegativeInteger(summary?.review_count);
+  const positiveRate = summary?.percent_positive;
+  return {
+    reviewCount,
+    positiveRate:
+      reviewCount !== 0 &&
+      typeof positiveRate === "number" &&
+      Number.isFinite(positiveRate) &&
+      positiveRate >= 0 &&
+      positiveRate <= 100
+        ? positiveRate
+        : undefined,
+  };
+}
+
 function readStoreItem(item, appId) {
   if (!item || typeof item !== "object") {
     return undefined;
@@ -58,6 +88,7 @@ function readStoreItem(item, appId) {
 
     const purchase = item.GetBestPurchaseOption?.();
     const comingSoon = item.BIsComingSoon?.();
+    const reviews = readReviewSummary(item);
     const storeItem = {
       appId,
       success: 1,
@@ -69,6 +100,7 @@ function readStoreItem(item, appId) {
         features: readArray(() => item.GetStoreCategories_Features?.()),
         controllers: readArray(() => item.GetStoreCategories_Controller?.()),
       },
+      ...reviews,
     };
 
     if (comingSoon === false) {

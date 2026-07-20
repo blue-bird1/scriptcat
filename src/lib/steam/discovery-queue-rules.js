@@ -163,6 +163,17 @@ function parseStoreItem(storeItem, appId) {
   }
 
   const result = {};
+  if (isNonNegativeInteger(storeItem.reviewCount)) {
+    result.reviewCount = storeItem.reviewCount;
+  }
+  if (
+    typeof storeItem.positiveRate === "number" &&
+    Number.isFinite(storeItem.positiveRate) &&
+    storeItem.positiveRate >= 0 &&
+    storeItem.positiveRate <= 100
+  ) {
+    result.positiveRate = storeItem.positiveRate;
+  }
   if (typeof storeItem.isFree === "boolean") {
     result.isFree = storeItem.isFree;
     if (storeItem.isFree) {
@@ -270,10 +281,13 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
       const needsFreeStatus = config?.ignoreFree === true;
       const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
 
-      const reviewsPromise = needsReviews
+      const storeItem = needsReviews || needsDetails ? await loadStoreItem(appId) : {};
+      const missingStoreItemReviews =
+        (needsPositiveRate && storeItem.positiveRate === undefined) ||
+        (needsReviewCount && storeItem.reviewCount === undefined);
+      const reviewsPromise = missingStoreItemReviews
         ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews)
         : Promise.resolve({});
-      const storeItem = needsDetails ? await loadStoreItem(appId) : {};
       const missingStoreItemData =
         (needsPrice && storeItem.price === undefined) ||
         (needsDiscount && storeItem.discount === undefined) ||
