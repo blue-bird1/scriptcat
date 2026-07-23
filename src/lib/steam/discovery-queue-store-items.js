@@ -1,10 +1,5 @@
-const STORE_ITEM_REQUEST = {
-  include_release: true,
-  include_reviews: true,
-  include_supported_languages: true,
-  include_tag_count: 20,
-};
 const CACHE_WAIT_MS = 50;
+const CHINESE_LANGUAGE_IDS = new Set([6, 7]);
 
 function getStoreItemCache() {
   const cache = window.StoreItemCache;
@@ -69,6 +64,42 @@ function readSupportedLanguages(item) {
   }
 }
 
+function readDescriptionHasChinese(item) {
+  if (typeof item.GetShortDescription !== "function") {
+    return undefined;
+  }
+
+  try {
+    const description = item.GetShortDescription();
+    return typeof description === "string"
+      ? /\p{Script=Han}/u.test(description)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function buildStoreItemRequest(requirements, descriptionHasChinese) {
+  const request = {};
+  if (requirements?.needsReviews === true) {
+    request.include_reviews = true;
+  }
+  if (requirements?.needsReleaseDate === true) {
+    request.include_release = true;
+  }
+
+  const requiredLanguages = Array.isArray(requirements?.requiredLanguages)
+    ? requirements.requiredLanguages
+    : [];
+  const acceptsChineseDescription = requiredLanguages.some((language) =>
+    CHINESE_LANGUAGE_IDS.has(language),
+  );
+  if (requiredLanguages.length > 0 && !(acceptsChineseDescription && descriptionHasChinese)) {
+    request.include_supported_languages = true;
+  }
+  return request;
+}
+
 function readReviewSummary(item) {
   const preferUnfiltered =
     window.GDynamicStore?.s_preferences?.review_score_preference === 1;
@@ -116,6 +147,7 @@ function readStoreItem(item, appId) {
       success: 1,
       isFree: item.BIsFree?.(),
       comingSoon,
+      descriptionHasChinese: readDescriptionHasChinese(item),
       supportedLanguages: readSupportedLanguages(item),
       tagIds: readArray(() => item.GetTagIDs?.()),
       categoryIds: {
@@ -146,7 +178,7 @@ export function createDiscoveryQueueStoreItemReader() {
   let stopped = false;
 
   return {
-    async get(appId) {
+    async get(appId, requirements) {
       if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
         return undefined;
       }
@@ -163,8 +195,15 @@ export function createDiscoveryQueueStoreItemReader() {
 
       try {
         let item = cache.GetApp(numericAppId);
-        if (!item?.BContainDataRequest?.(STORE_ITEM_REQUEST)) {
-          await cache.QueueAppRequest(numericAppId, STORE_ITEM_REQUEST);
+        const request = buildStoreItemRequest(
+          requirements,
+          readDescriptionHasChinese(item),
+        );
+        if (
+          Object.keys(request).length > 0 &&
+          !item?.BContainDataRequest?.(request)
+        ) {
+          await cache.QueueAppRequest(numericAppId, request);
           item = cache.GetApp(numericAppId);
         }
         return readStoreItem(item, numericAppId);

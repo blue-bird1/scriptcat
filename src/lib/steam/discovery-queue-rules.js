@@ -22,6 +22,7 @@ function createEmptyData() {
     currency: undefined,
     discount: undefined,
     releaseDate: undefined,
+    descriptionHasChinese: undefined,
     supportedLanguages: undefined,
   };
 }
@@ -164,6 +165,9 @@ function parseStoreItem(storeItem, appId) {
   }
 
   const result = {};
+  if (typeof storeItem.descriptionHasChinese === "boolean") {
+    result.descriptionHasChinese = storeItem.descriptionHasChinese;
+  }
   if (Array.isArray(storeItem.supportedLanguages)) {
     result.supportedLanguages = [
       ...new Set(
@@ -242,6 +246,10 @@ function getRequiredLanguages(rule) {
     : [];
 }
 
+function hasRequiredChineseLanguage(requiredLanguages) {
+  return requiredLanguages.includes(6) || requiredLanguages.includes(7);
+}
+
 function isIsoDate(value) {
   if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     return false;
@@ -270,13 +278,13 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
     return payloadPromise;
   }
 
-  async function loadStoreItem(appId) {
+  async function loadStoreItem(appId, requirements) {
     if (typeof getStoreItem !== "function") {
       return {};
     }
 
     try {
-      return parseStoreItem(await getStoreItem(appId), appId);
+      return parseStoreItem(await getStoreItem(appId, requirements), appId);
     } catch {
       return {};
     }
@@ -307,7 +315,11 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
 
       const storeItem =
         needsReviews || needsDetails || needsSupportedLanguages
-          ? await loadStoreItem(appId)
+          ? await loadStoreItem(appId, {
+              needsReviews,
+              needsReleaseDate,
+              requiredLanguages,
+            })
           : {};
       const missingStoreItemReviews =
         (needsPositiveRate && storeItem.positiveRate === undefined) ||
@@ -331,6 +343,9 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
         ...storeItem,
         ...existingReviews,
       };
+      const descriptionMatchesRequiredLanguage =
+        data.descriptionHasChinese === true &&
+        hasRequiredChineseLanguage(requiredLanguages);
       const reasons = [];
       if (isEnabledNumber(config?.minimumPositiveRate) && data.positiveRate !== undefined && data.positiveRate < config.minimumPositiveRate.value) {
         reasons.push("positive-rate");
@@ -360,6 +375,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
       }
       if (
         needsSupportedLanguages &&
+        !descriptionMatchesRequiredLanguage &&
         Array.isArray(data.supportedLanguages) &&
         !requiredLanguages.some((language) =>
           data.supportedLanguages.includes(language),
