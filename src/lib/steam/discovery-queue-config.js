@@ -3,6 +3,39 @@ const BUTTON_ID = "scriptcat-steam-discovery-queue-config-button";
 const POPUP_ID = "scriptcat-steam-discovery-queue-config-popup";
 const STYLE_ID = "scriptcat-steam-discovery-queue-config-style";
 
+export const STEAM_LANGUAGE_OPTIONS = [
+  { value: 0, label: "英语" },
+  { value: 1, label: "德语" },
+  { value: 2, label: "法语" },
+  { value: 3, label: "意大利语" },
+  { value: 4, label: "韩语" },
+  { value: 5, label: "西班牙语" },
+  { value: 6, label: "简体中文" },
+  { value: 7, label: "繁体中文" },
+  { value: 8, label: "俄语" },
+  { value: 9, label: "泰语" },
+  { value: 10, label: "日语" },
+  { value: 11, label: "葡萄牙语" },
+  { value: 12, label: "波兰语" },
+  { value: 13, label: "丹麦语" },
+  { value: 14, label: "荷兰语" },
+  { value: 15, label: "芬兰语" },
+  { value: 16, label: "挪威语" },
+  { value: 17, label: "瑞典语" },
+  { value: 18, label: "匈牙利语" },
+  { value: 19, label: "捷克语" },
+  { value: 20, label: "罗马尼亚语" },
+  { value: 21, label: "土耳其语" },
+  { value: 22, label: "巴西葡萄牙语" },
+  { value: 23, label: "保加利亚语" },
+  { value: 24, label: "阿拉伯语" },
+  { value: 25, label: "乌克兰语" },
+  { value: 26, label: "越南语" },
+  { value: 27, label: "拉丁美洲西班牙语" },
+  { value: 28, label: "希腊语" },
+  { value: 29, label: "印度尼西亚语" },
+];
+
 export const DEFAULT_DISCOVERY_QUEUE_CONFIG = {
   version: 1,
   enabled: false,
@@ -14,6 +47,7 @@ export const DEFAULT_DISCOVERY_QUEUE_CONFIG = {
   ignoreFree: false,
   ignoreUnreviewed: false,
   excludedTags: { enabled: false, value: [] },
+  requiredLanguages: { enabled: false, value: [6, 7] },
 };
 
 function cloneDefaultConfig() {
@@ -25,6 +59,10 @@ function cloneDefaultConfig() {
     minimumDiscount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumDiscount },
     earliestReleaseDate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.earliestReleaseDate },
     excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] },
+    requiredLanguages: {
+      ...DEFAULT_DISCOVERY_QUEUE_CONFIG.requiredLanguages,
+      value: [...DEFAULT_DISCOVERY_QUEUE_CONFIG.requiredLanguages.value],
+    },
   };
 }
 
@@ -79,6 +117,16 @@ function normalizeTags(value) {
   return tags;
 }
 
+function normalizeLanguages(value) {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const selected = new Set(value.filter((language) => Number.isInteger(language)));
+  return STEAM_LANGUAGE_OPTIONS.filter((language) => selected.has(language.value)).map(
+    (language) => language.value,
+  );
+}
+
 function normalizeRule(value, fallback, maximum) {
   if (!isRecord(value)) {
     return { ...fallback };
@@ -95,6 +143,8 @@ function normalizeConfig(value) {
   }
   const fallback = DEFAULT_DISCOVERY_QUEUE_CONFIG;
   const tags = isRecord(value.excludedTags) ? value.excludedTags : fallback.excludedTags;
+  const languages = isRecord(value.requiredLanguages) ? value.requiredLanguages : fallback.requiredLanguages;
+  const requiredLanguages = normalizeLanguages(languages.value);
   return {
     version: 1,
     enabled: normalizeBoolean(value.enabled, fallback.enabled),
@@ -111,6 +161,12 @@ function normalizeConfig(value) {
     excludedTags: {
       enabled: normalizeBoolean(tags.enabled, fallback.excludedTags.enabled),
       value: normalizeTags(tags.value),
+    },
+    requiredLanguages: {
+      enabled:
+        requiredLanguages.length > 0 &&
+        normalizeBoolean(languages.enabled, fallback.requiredLanguages.enabled),
+      value: requiredLanguages,
     },
   };
 }
@@ -183,7 +239,7 @@ function injectStyles() {
   }
   style = createElement("style");
   style.id = STYLE_ID;
-  style.textContent = `#${BUTTON_ID}{margin-left:auto}.scriptcat-discovery-queue-config-backdrop{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}.scriptcat-discovery-queue-config-popup{box-sizing:border-box;width:min(680px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:24px;overflow:auto;border:1px solid #000;background:linear-gradient(135deg,#1b2838 0%,#2a475e 100%);box-shadow:0 0 24px #000}.scriptcat-discovery-queue-config-popup h2{margin-top:0;color:#fff}.scriptcat-discovery-queue-config-fields{display:grid;gap:12px;margin:20px 0}.scriptcat-discovery-queue-config-rule{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.scriptcat-discovery-queue-config-rule>input{min-width:140px}.scriptcat-discovery-queue-config-option{display:flex;align-items:center;gap:6px}.scriptcat-discovery-queue-config-tags{display:flex;gap:6px;align-items:center;flex:1;flex-wrap:wrap}.scriptcat-discovery-queue-config-chip{display:inline-flex;gap:4px;align-items:center;padding:3px 6px;background:#16202d}.scriptcat-discovery-queue-config-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}`;
+  style.textContent = `#${BUTTON_ID}{margin-left:auto}.scriptcat-discovery-queue-config-backdrop{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}.scriptcat-discovery-queue-config-popup{box-sizing:border-box;width:min(680px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:24px;overflow:auto;border:1px solid #000;background:linear-gradient(135deg,#1b2838 0%,#2a475e 100%);box-shadow:0 0 24px #000}.scriptcat-discovery-queue-config-popup h2{margin-top:0;color:#fff}.scriptcat-discovery-queue-config-fields{display:grid;gap:12px;margin:20px 0}.scriptcat-discovery-queue-config-rule{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.scriptcat-discovery-queue-config-rule>input{min-width:140px}.scriptcat-discovery-queue-config-option{display:flex;align-items:center;gap:6px}.scriptcat-discovery-queue-config-tags{display:flex;gap:6px;align-items:center;flex:1;flex-wrap:wrap}.scriptcat-discovery-queue-config-chip{display:inline-flex;gap:4px;align-items:center;padding:3px 6px;background:#16202d}.scriptcat-discovery-queue-config-languages{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));width:100%;max-height:180px;padding:10px;overflow:auto;border:1px solid #000;background:rgba(0,0,0,.24);box-sizing:border-box}.scriptcat-discovery-queue-config-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}`;
   document.head.append(style);
   return style;
 }
@@ -193,11 +249,12 @@ function readNumber(input) {
 }
 
 export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
-  let config = loadDiscoveryQueueConfig();
+    let config = loadDiscoveryQueueConfig();
   let button;
   let popup;
   let backdrop;
   let tags = [];
+  let selectedLanguages = new Set();
   let removeKeydown = () => {};
   let removeButtonClick = () => {};
 
@@ -234,6 +291,7 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
     injectStyles();
     const draft = normalizeConfig(config);
     tags = [...draft.excludedTags.value];
+    selectedLanguages = new Set(draft.requiredLanguages.value);
     backdrop = createElement("div", "scriptcat-discovery-queue-config-backdrop");
     backdrop.addEventListener("click", (event) => {
       if (event.target === backdrop) {
@@ -271,6 +329,20 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
     tagContainer.append(tagInput);
     tagRow.append(tagContainer);
     fields.append(tagRow);
+    const languageRow = createElement("div", "scriptcat-discovery-queue-config-rule");
+    const languageEnabled = addCheckbox(languageRow, "必须包含任一所选语言", draft.requiredLanguages.enabled);
+    const languageContainer = createElement("div", "scriptcat-discovery-queue-config-languages");
+    const languageInputs = new Map();
+    for (const language of STEAM_LANGUAGE_OPTIONS) {
+      const input = addCheckbox(
+        languageContainer,
+        language.label,
+        selectedLanguages.has(language.value),
+      );
+      languageInputs.set(language.value, input);
+    }
+    languageRow.append(languageContainer);
+    fields.append(languageRow);
     const actions = createElement("div", "scriptcat-discovery-queue-config-actions");
     const reset = createSteamButton("恢复默认", "btnv6_grey_black btn_medium");
     const cancel = createSteamButton("取消", "btnv6_blue_hoverfade btn_medium");
@@ -309,6 +381,21 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
       renderTags();
     }
 
+    function syncLanguageRule() {
+      selectedLanguages = new Set(
+        [...languageInputs]
+          .filter(([, input]) => input.checked)
+          .map(([language]) => language),
+      );
+      if (selectedLanguages.size === 0) {
+        languageEnabled.checked = false;
+      }
+      languageEnabled.disabled = selectedLanguages.size === 0;
+    }
+
+    for (const input of languageInputs.values()) {
+      input.addEventListener("change", syncLanguageRule);
+    }
     tagInput.addEventListener("keydown", (event) => {
       if (event.key === "Enter" || event.key === ",") {
         event.preventDefault();
@@ -334,6 +421,11 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
       tagEnabled.checked = defaults.excludedTags.enabled;
       tags = [];
       renderTags();
+      for (const [language, input] of languageInputs) {
+        input.checked = defaults.requiredLanguages.value.includes(language);
+      }
+      languageEnabled.checked = defaults.requiredLanguages.enabled;
+      syncLanguageRule();
     });
     cancel.addEventListener("click", closePopup);
     save.addEventListener("click", () => {
@@ -348,6 +440,10 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
         ignoreFree: ignoreFree.checked,
         ignoreUnreviewed: ignoreUnreviewed.checked,
         excludedTags: { enabled: tagEnabled.checked, value: tags },
+        requiredLanguages: {
+          enabled: languageEnabled.checked,
+          value: [...selectedLanguages],
+        },
       });
       closePopup();
       if (typeof onSave === "function") {
@@ -362,6 +458,7 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
     document.addEventListener("keydown", handleKeydown);
     removeKeydown = () => document.removeEventListener("keydown", handleKeydown);
     renderTags();
+    syncLanguageRule();
     notifyOpenChange(true);
   }
 
