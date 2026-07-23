@@ -142,6 +142,9 @@ function startClassicQueue() {
 function findModalNextButton(dialog) {
   const dialogRect = dialog.getBoundingClientRect();
   const dialogCenter = dialogRect.left + dialogRect.width / 2;
+  const dialogMiddle = dialogRect.top + dialogRect.height / 2;
+  const maximumEdgeGap = Math.min(320, dialogRect.width * 0.15);
+  const maximumMiddleGap = Math.min(240, dialogRect.height * 0.2);
   const candidates = [
     ...dialog.querySelectorAll('[role="button"][aria-label]'),
   ]
@@ -155,35 +158,25 @@ function findModalNextButton(dialog) {
         rect.width <= 96 &&
         rect.height >= 40 &&
         rect.height <= 96,
+    )
+    .filter(
+      ({ element, rect }) =>
+        isVisible(element) &&
+        rect.left + rect.width / 2 > dialogCenter &&
+        dialogRect.right - rect.right <= maximumEdgeGap &&
+        Math.abs(rect.top + rect.height / 2 - dialogMiddle) <=
+          maximumMiddleGap,
+    )
+    .sort(
+      (left, right) =>
+        dialogRect.right -
+          left.rect.right -
+          (dialogRect.right - right.rect.right) ||
+        Math.abs(left.rect.top + left.rect.height / 2 - dialogMiddle) -
+          Math.abs(right.rect.top + right.rect.height / 2 - dialogMiddle),
     );
 
-  let bestPair;
-  for (const left of candidates) {
-    if (left.rect.left + left.rect.width / 2 >= dialogCenter) {
-      continue;
-    }
-
-    for (const right of candidates) {
-      if (
-        right.rect.left + right.rect.width / 2 <= dialogCenter ||
-        !isVisible(right.element) ||
-        Math.abs(left.rect.top - right.rect.top) > 2 ||
-        Math.abs(left.rect.width - right.rect.width) > 2 ||
-        Math.abs(left.rect.height - right.rect.height) > 2
-      ) {
-        continue;
-      }
-
-      const score =
-        Math.abs(left.rect.left - dialogRect.left) +
-        Math.abs(dialogRect.right - right.rect.right);
-      if (!bestPair || score < bestPair.score) {
-        bestPair = { element: right.element, score };
-      }
-    }
-  }
-
-  return bestPair?.element;
+  return candidates[0]?.element;
 }
 
 function getMonitoredPath(input, init) {
@@ -250,7 +243,6 @@ function monitorActionRequests(takePending, handleResult) {
 function startModalQueue() {
   const requestQueues = new Map();
   const pendingActions = new Set();
-  let advanceTimer;
   let advanceFrame;
   let advancing = false;
 
@@ -283,16 +275,30 @@ function startModalQueue() {
 
     advancing = true;
     clearPending();
+    const deadline = performance.now() + QUEUE_TIMEOUT_MS;
+
     const triggerNext = () => {
-      advanceTimer = undefined;
       advanceFrame = undefined;
-      if (pending.dialog.isConnected) {
-        findModalNextButton(pending.dialog)?.click();
+      if (!pending.dialog.isConnected) {
+        advancing = false;
+        return;
       }
-      advancing = false;
+
+      const nextButton = findModalNextButton(pending.dialog);
+      if (nextButton) {
+        nextButton.click();
+        advancing = false;
+        return;
+      }
+
+      if (performance.now() >= deadline) {
+        advancing = false;
+        return;
+      }
+      advanceFrame = requestAnimationFrame(triggerNext);
     };
     if (immediate) {
-      advanceTimer = setTimeout(triggerNext, 0);
+      triggerNext();
     } else {
       advanceFrame = requestAnimationFrame(triggerNext);
     }
@@ -375,9 +381,7 @@ function startModalQueue() {
   }
 
   function stop() {
-    clearTimeout(advanceTimer);
     cancelAnimationFrame(advanceFrame);
-    advanceTimer = undefined;
     advanceFrame = undefined;
     advancing = false;
     stopMonitoringRequests();

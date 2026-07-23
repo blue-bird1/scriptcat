@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.5
+// @version      0.3.6
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -1111,6 +1111,9 @@
   function findModalNextButton(dialog) {
     const dialogRect = dialog.getBoundingClientRect();
     const dialogCenter = dialogRect.left + dialogRect.width / 2;
+    const dialogMiddle = dialogRect.top + dialogRect.height / 2;
+    const maximumEdgeGap = Math.min(320, dialogRect.width * 0.15);
+    const maximumMiddleGap = Math.min(240, dialogRect.height * 0.2);
     const candidates = [
       ...dialog.querySelectorAll('[role="button"][aria-label]')
     ].map((element) => {
@@ -1118,23 +1121,12 @@
       return { element, rect };
     }).filter(
       ({ rect }) => rect.width >= 40 && rect.width <= 96 && rect.height >= 40 && rect.height <= 96
+    ).filter(
+      ({ element, rect }) => isVisible2(element) && rect.left + rect.width / 2 > dialogCenter && dialogRect.right - rect.right <= maximumEdgeGap && Math.abs(rect.top + rect.height / 2 - dialogMiddle) <= maximumMiddleGap
+    ).sort(
+      (left, right) => dialogRect.right - left.rect.right - (dialogRect.right - right.rect.right) || Math.abs(left.rect.top + left.rect.height / 2 - dialogMiddle) - Math.abs(right.rect.top + right.rect.height / 2 - dialogMiddle)
     );
-    let bestPair;
-    for (const left of candidates) {
-      if (left.rect.left + left.rect.width / 2 >= dialogCenter) {
-        continue;
-      }
-      for (const right of candidates) {
-        if (right.rect.left + right.rect.width / 2 <= dialogCenter || !isVisible2(right.element) || Math.abs(left.rect.top - right.rect.top) > 2 || Math.abs(left.rect.width - right.rect.width) > 2 || Math.abs(left.rect.height - right.rect.height) > 2) {
-          continue;
-        }
-        const score = Math.abs(left.rect.left - dialogRect.left) + Math.abs(dialogRect.right - right.rect.right);
-        if (!bestPair || score < bestPair.score) {
-          bestPair = { element: right.element, score };
-        }
-      }
-    }
-    return bestPair?.element;
+    return candidates[0]?.element;
   }
   function getMonitoredPath(input, init) {
     const method = init?.method ?? (input instanceof Request ? input.method : "GET");
@@ -1191,7 +1183,6 @@
   function startModalQueue() {
     const requestQueues = /* @__PURE__ */ new Map();
     const pendingActions = /* @__PURE__ */ new Set();
-    let advanceTimer;
     let advanceFrame;
     let advancing = false;
     function removePending(pending) {
@@ -1219,16 +1210,27 @@
       }
       advancing = true;
       clearPending();
+      const deadline = performance.now() + QUEUE_TIMEOUT_MS;
       const triggerNext = () => {
-        advanceTimer = void 0;
         advanceFrame = void 0;
-        if (pending.dialog.isConnected) {
-          findModalNextButton(pending.dialog)?.click();
+        if (!pending.dialog.isConnected) {
+          advancing = false;
+          return;
         }
-        advancing = false;
+        const nextButton = findModalNextButton(pending.dialog);
+        if (nextButton) {
+          nextButton.click();
+          advancing = false;
+          return;
+        }
+        if (performance.now() >= deadline) {
+          advancing = false;
+          return;
+        }
+        advanceFrame = requestAnimationFrame(triggerNext);
       };
       if (immediate) {
-        advanceTimer = setTimeout(triggerNext, 0);
+        triggerNext();
       } else {
         advanceFrame = requestAnimationFrame(triggerNext);
       }
@@ -1295,9 +1297,7 @@
       requestQueues.set(MODAL_WISHLIST_PATH, queue);
     }
     function stop() {
-      clearTimeout(advanceTimer);
       cancelAnimationFrame(advanceFrame);
-      advanceTimer = void 0;
       advanceFrame = void 0;
       advancing = false;
       stopMonitoringRequests();
