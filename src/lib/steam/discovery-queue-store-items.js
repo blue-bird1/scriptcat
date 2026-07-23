@@ -1,6 +1,7 @@
 const STORE_ITEM_REQUEST = {
   include_release: true,
   include_reviews: true,
+  include_supported_languages: true,
   include_tag_count: 20,
 };
 const CACHE_WAIT_MS = 50;
@@ -44,6 +45,27 @@ function readArray(getter) {
       : [];
   } catch {
     return [];
+  }
+}
+
+function readSupportedLanguages(item) {
+  if (typeof item.GetAllLanguagesWithSomeSupport !== "function") {
+    return undefined;
+  }
+
+  try {
+    const languages = item.GetAllLanguagesWithSomeSupport();
+    return Array.isArray(languages)
+      ? [
+          ...new Set(
+            languages.filter(
+              (language) => Number.isSafeInteger(language) && language >= 0,
+            ),
+          ),
+        ]
+      : undefined;
+  } catch {
+    return undefined;
   }
 }
 
@@ -94,6 +116,7 @@ function readStoreItem(item, appId) {
       success: 1,
       isFree: item.BIsFree?.(),
       comingSoon,
+      supportedLanguages: readSupportedLanguages(item),
       tagIds: readArray(() => item.GetTagIDs?.()),
       categoryIds: {
         supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.()),

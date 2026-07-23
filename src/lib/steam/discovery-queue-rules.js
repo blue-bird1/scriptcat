@@ -22,6 +22,7 @@ function createEmptyData() {
     currency: undefined,
     discount: undefined,
     releaseDate: undefined,
+    supportedLanguages: undefined,
   };
 }
 
@@ -163,6 +164,15 @@ function parseStoreItem(storeItem, appId) {
   }
 
   const result = {};
+  if (Array.isArray(storeItem.supportedLanguages)) {
+    result.supportedLanguages = [
+      ...new Set(
+        storeItem.supportedLanguages.filter(
+          (language) => Number.isSafeInteger(language) && language >= 0,
+        ),
+      ),
+    ];
+  }
   if (isNonNegativeInteger(storeItem.reviewCount)) {
     result.reviewCount = storeItem.reviewCount;
   }
@@ -218,6 +228,18 @@ function normalizeTags(tags) {
 
 function isEnabledNumber(rule) {
   return rule?.enabled === true && typeof rule.value === "number" && Number.isFinite(rule.value);
+}
+
+function getRequiredLanguages(rule) {
+  return rule?.enabled === true && Array.isArray(rule.value)
+    ? [
+        ...new Set(
+          rule.value.filter(
+            (language) => Number.isSafeInteger(language) && language >= 0,
+          ),
+        ),
+      ]
+    : [];
 }
 
 function isIsoDate(value) {
@@ -280,8 +302,13 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
       const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
       const needsFreeStatus = config?.ignoreFree === true;
       const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
+      const requiredLanguages = getRequiredLanguages(config?.requiredLanguages);
+      const needsSupportedLanguages = requiredLanguages.length > 0;
 
-      const storeItem = needsReviews || needsDetails ? await loadStoreItem(appId) : {};
+      const storeItem =
+        needsReviews || needsDetails || needsSupportedLanguages
+          ? await loadStoreItem(appId)
+          : {};
       const missingStoreItemReviews =
         (needsPositiveRate && storeItem.positiveRate === undefined) ||
         (needsReviewCount && storeItem.reviewCount === undefined);
@@ -330,6 +357,15 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
       }
       if (config?.ignoreUnreviewed === true && data.reviewCount === 0) {
         reasons.push("unreviewed");
+      }
+      if (
+        needsSupportedLanguages &&
+        Array.isArray(data.supportedLanguages) &&
+        !requiredLanguages.some((language) =>
+          data.supportedLanguages.includes(language),
+        )
+      ) {
+        reasons.push("required-language");
       }
       if (config?.excludedTags?.enabled === true) {
         const excludedTags = new Set(normalizeTags(config.excludedTags.value));
