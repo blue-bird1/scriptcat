@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.6
+// @version      0.3.7
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -14,6 +14,42 @@
 // ==/UserScript==
 
 (() => {
+  // src/lib/steam/discovery-queue-languages.js
+  var STEAM_LANGUAGE_OPTIONS = [
+    { value: 0, label: "英语" },
+    { value: 1, label: "德语" },
+    { value: 2, label: "法语" },
+    { value: 3, label: "意大利语" },
+    { value: 4, label: "韩语" },
+    { value: 5, label: "西班牙语" },
+    { value: 6, label: "简体中文" },
+    { value: 7, label: "繁体中文" },
+    { value: 8, label: "俄语" },
+    { value: 9, label: "泰语" },
+    { value: 10, label: "日语" },
+    { value: 11, label: "葡萄牙语" },
+    { value: 12, label: "波兰语" },
+    { value: 13, label: "丹麦语" },
+    { value: 14, label: "荷兰语" },
+    { value: 15, label: "芬兰语" },
+    { value: 16, label: "挪威语" },
+    { value: 17, label: "瑞典语" },
+    { value: 18, label: "匈牙利语" },
+    { value: 19, label: "捷克语" },
+    { value: 20, label: "罗马尼亚语" },
+    { value: 21, label: "土耳其语" },
+    { value: 22, label: "巴西葡萄牙语" },
+    { value: 23, label: "保加利亚语" },
+    { value: 24, label: "阿拉伯语" },
+    { value: 25, label: "乌克兰语" },
+    { value: 26, label: "越南语" },
+    { value: 27, label: "拉丁美洲西班牙语" },
+    { value: 28, label: "希腊语" },
+    { value: 29, label: "Steam 中国简体中文" },
+    { value: 30, label: "印度尼西亚语" },
+    { value: 31, label: "马来语" }
+  ];
+
   // src/lib/steam/discovery-queue-config.js
   var STORAGE_KEY = "scriptcat:steam-discovery-queue:config:v1";
   var BUTTON_ID = "scriptcat-steam-discovery-queue-config-button";
@@ -29,7 +65,8 @@
     earliestReleaseDate: { enabled: false, value: "2015-01-01" },
     ignoreFree: false,
     ignoreUnreviewed: false,
-    excludedTags: { enabled: false, value: [] }
+    excludedTags: { enabled: false, value: [] },
+    requiredLanguages: { enabled: false, value: [6, 7] }
   };
   function cloneDefaultConfig() {
     return {
@@ -39,7 +76,11 @@
       maximumPrice: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.maximumPrice },
       minimumDiscount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumDiscount },
       earliestReleaseDate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.earliestReleaseDate },
-      excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] }
+      excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] },
+      requiredLanguages: {
+        ...DEFAULT_DISCOVERY_QUEUE_CONFIG.requiredLanguages,
+        value: [...DEFAULT_DISCOVERY_QUEUE_CONFIG.requiredLanguages.value]
+      }
     };
   }
   function isRecord(value) {
@@ -81,6 +122,15 @@
     }
     return tags;
   }
+  function normalizeLanguages(value) {
+    if (!Array.isArray(value)) {
+      return [];
+    }
+    const selected = new Set(value.filter((language) => Number.isInteger(language)));
+    return STEAM_LANGUAGE_OPTIONS.filter((language) => selected.has(language.value)).map(
+      (language) => language.value
+    );
+  }
   function normalizeRule(value, fallback, maximum) {
     if (!isRecord(value)) {
       return { ...fallback };
@@ -96,6 +146,8 @@
     }
     const fallback = DEFAULT_DISCOVERY_QUEUE_CONFIG;
     const tags = isRecord(value.excludedTags) ? value.excludedTags : fallback.excludedTags;
+    const languages = isRecord(value.requiredLanguages) ? value.requiredLanguages : fallback.requiredLanguages;
+    const requiredLanguages = normalizeLanguages(languages.value);
     return {
       version: 1,
       enabled: normalizeBoolean(value.enabled, fallback.enabled),
@@ -112,6 +164,10 @@
       excludedTags: {
         enabled: normalizeBoolean(tags.enabled, fallback.excludedTags.enabled),
         value: normalizeTags(tags.value)
+      },
+      requiredLanguages: {
+        enabled: requiredLanguages.length > 0 && normalizeBoolean(languages.enabled, fallback.requiredLanguages.enabled),
+        value: requiredLanguages
       }
     };
   }
@@ -176,7 +232,7 @@
     }
     style = createElement("style");
     style.id = STYLE_ID;
-    style.textContent = `#${BUTTON_ID}{margin-left:auto}.scriptcat-discovery-queue-config-backdrop{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}.scriptcat-discovery-queue-config-popup{box-sizing:border-box;width:min(680px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:24px;overflow:auto;border:1px solid #000;background:linear-gradient(135deg,#1b2838 0%,#2a475e 100%);box-shadow:0 0 24px #000}.scriptcat-discovery-queue-config-popup h2{margin-top:0;color:#fff}.scriptcat-discovery-queue-config-fields{display:grid;gap:12px;margin:20px 0}.scriptcat-discovery-queue-config-rule{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.scriptcat-discovery-queue-config-rule>input{min-width:140px}.scriptcat-discovery-queue-config-option{display:flex;align-items:center;gap:6px}.scriptcat-discovery-queue-config-tags{display:flex;gap:6px;align-items:center;flex:1;flex-wrap:wrap}.scriptcat-discovery-queue-config-chip{display:inline-flex;gap:4px;align-items:center;padding:3px 6px;background:#16202d}.scriptcat-discovery-queue-config-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}`;
+    style.textContent = `#${BUTTON_ID}{margin-left:auto}.scriptcat-discovery-queue-config-backdrop{position:fixed;inset:0;z-index:100000;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.72)}.scriptcat-discovery-queue-config-popup{box-sizing:border-box;width:min(680px,calc(100vw - 32px));max-height:calc(100vh - 32px);padding:24px;overflow:auto;border:1px solid #000;background:linear-gradient(135deg,#1b2838 0%,#2a475e 100%);box-shadow:0 0 24px #000}.scriptcat-discovery-queue-config-popup h2{margin-top:0;color:#fff}.scriptcat-discovery-queue-config-fields{display:grid;gap:12px;margin:20px 0}.scriptcat-discovery-queue-config-rule{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.scriptcat-discovery-queue-config-rule>input{min-width:140px}.scriptcat-discovery-queue-config-option{display:flex;align-items:center;gap:6px}.scriptcat-discovery-queue-config-tags{display:flex;gap:6px;align-items:center;flex:1;flex-wrap:wrap}.scriptcat-discovery-queue-config-chip{display:inline-flex;gap:4px;align-items:center;padding:3px 6px;background:#16202d}.scriptcat-discovery-queue-config-languages{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));width:100%;max-height:180px;padding:10px;overflow:auto;border:1px solid #000;background:rgba(0,0,0,.24);box-sizing:border-box}.scriptcat-discovery-queue-config-actions{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}`;
     document.head.append(style);
     return style;
   }
@@ -189,6 +245,7 @@
     let popup;
     let backdrop;
     let tags = [];
+    let selectedLanguages = /* @__PURE__ */ new Set();
     let removeKeydown = () => {
     };
     let removeButtonClick = () => {
@@ -224,6 +281,7 @@
       injectStyles();
       const draft = normalizeConfig(config);
       tags = [...draft.excludedTags.value];
+      selectedLanguages = new Set(draft.requiredLanguages.value);
       backdrop = createElement("div", "scriptcat-discovery-queue-config-backdrop");
       backdrop.addEventListener("click", (event) => {
         if (event.target === backdrop) {
@@ -261,6 +319,20 @@
       tagContainer.append(tagInput);
       tagRow.append(tagContainer);
       fields.append(tagRow);
+      const languageRow = createElement("div", "scriptcat-discovery-queue-config-rule");
+      const languageEnabled = addCheckbox(languageRow, "必须包含任一所选语言", draft.requiredLanguages.enabled);
+      const languageContainer = createElement("div", "scriptcat-discovery-queue-config-languages");
+      const languageInputs = /* @__PURE__ */ new Map();
+      for (const language of STEAM_LANGUAGE_OPTIONS) {
+        const input = addCheckbox(
+          languageContainer,
+          language.label,
+          selectedLanguages.has(language.value)
+        );
+        languageInputs.set(language.value, input);
+      }
+      languageRow.append(languageContainer);
+      fields.append(languageRow);
       const actions = createElement("div", "scriptcat-discovery-queue-config-actions");
       const reset = createSteamButton("恢复默认", "btnv6_grey_black btn_medium");
       const cancel = createSteamButton("取消", "btnv6_blue_hoverfade btn_medium");
@@ -296,6 +368,18 @@
         tagInput.value = "";
         renderTags();
       }
+      function syncLanguageRule() {
+        selectedLanguages = new Set(
+          [...languageInputs].filter(([, input]) => input.checked).map(([language]) => language)
+        );
+        if (selectedLanguages.size === 0) {
+          languageEnabled.checked = false;
+        }
+        languageEnabled.disabled = selectedLanguages.size === 0;
+      }
+      for (const input of languageInputs.values()) {
+        input.addEventListener("change", syncLanguageRule);
+      }
       tagInput.addEventListener("keydown", (event) => {
         if (event.key === "Enter" || event.key === ",") {
           event.preventDefault();
@@ -321,6 +405,11 @@
         tagEnabled.checked = defaults.excludedTags.enabled;
         tags = [];
         renderTags();
+        for (const [language, input] of languageInputs) {
+          input.checked = defaults.requiredLanguages.value.includes(language);
+        }
+        languageEnabled.checked = defaults.requiredLanguages.enabled;
+        syncLanguageRule();
       });
       cancel.addEventListener("click", closePopup);
       save.addEventListener("click", () => {
@@ -334,7 +423,11 @@
           earliestReleaseDate: { enabled: releaseDate.enabled.checked, value: releaseDate.input.value },
           ignoreFree: ignoreFree.checked,
           ignoreUnreviewed: ignoreUnreviewed.checked,
-          excludedTags: { enabled: tagEnabled.checked, value: tags }
+          excludedTags: { enabled: tagEnabled.checked, value: tags },
+          requiredLanguages: {
+            enabled: languageEnabled.checked,
+            value: [...selectedLanguages]
+          }
         });
         closePopup();
         if (typeof onSave === "function") {
@@ -349,6 +442,7 @@
       document.addEventListener("keydown", handleKeydown);
       removeKeydown = () => document.removeEventListener("keydown", handleKeydown);
       renderTags();
+      syncLanguageRule();
       notifyOpenChange(true);
     }
     function ensureButton(container) {
@@ -409,7 +503,9 @@
       price: void 0,
       currency: void 0,
       discount: void 0,
-      releaseDate: void 0
+      releaseDate: void 0,
+      descriptionHasChinese: void 0,
+      supportedLanguages: void 0
     };
   }
   function isNonNegativeInteger(value) {
@@ -509,6 +605,18 @@
       return {};
     }
     const result = {};
+    if (typeof storeItem.descriptionHasChinese === "boolean") {
+      result.descriptionHasChinese = storeItem.descriptionHasChinese;
+    }
+    if (Array.isArray(storeItem.supportedLanguages)) {
+      result.supportedLanguages = [
+        ...new Set(
+          storeItem.supportedLanguages.filter(
+            (language) => Number.isSafeInteger(language) && language >= 0
+          )
+        )
+      ];
+    }
     if (isNonNegativeInteger(storeItem.reviewCount)) {
       result.reviewCount = storeItem.reviewCount;
     }
@@ -555,6 +663,18 @@
   function isEnabledNumber(rule) {
     return rule?.enabled === true && typeof rule.value === "number" && Number.isFinite(rule.value);
   }
+  function getRequiredLanguages(rule) {
+    return rule?.enabled === true && Array.isArray(rule.value) ? [
+      ...new Set(
+        rule.value.filter(
+          (language) => Number.isSafeInteger(language) && language >= 0
+        )
+      )
+    ] : [];
+  }
+  function hasRequiredChineseLanguage(requiredLanguages) {
+    return requiredLanguages.includes(6) || requiredLanguages.includes(7) || requiredLanguages.includes(29);
+  }
   function isIsoDate(value) {
     if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) {
       return false;
@@ -579,12 +699,12 @@
       }
       return payloadPromise;
     }
-    async function loadStoreItem(appId) {
+    async function loadStoreItem(appId, requirements) {
       if (typeof getStoreItem !== "function") {
         return {};
       }
       try {
-        return parseStoreItem(await getStoreItem(appId), appId);
+        return parseStoreItem(await getStoreItem(appId, requirements), appId);
       } catch {
         return {};
       }
@@ -605,7 +725,13 @@
         const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
         const needsFreeStatus = config?.ignoreFree === true;
         const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
-        const storeItem = needsReviews || needsDetails ? await loadStoreItem(appId) : {};
+        const requiredLanguages = getRequiredLanguages(config?.requiredLanguages);
+        const needsSupportedLanguages = requiredLanguages.length > 0;
+        const storeItem = needsReviews || needsDetails || needsSupportedLanguages ? await loadStoreItem(appId, {
+          needsReviews,
+          needsReleaseDate,
+          requiredLanguages
+        }) : {};
         const missingStoreItemReviews = needsPositiveRate && storeItem.positiveRate === void 0 || needsReviewCount && storeItem.reviewCount === void 0;
         const reviewsPromise = missingStoreItemReviews ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews) : Promise.resolve({});
         const missingStoreItemData = needsPrice && storeItem.price === void 0 || needsDiscount && storeItem.discount === void 0 || needsReleaseDate && storeItem.releaseDate === void 0 || needsFreeStatus && storeItem.isFree === void 0;
@@ -618,6 +744,7 @@
           ...storeItem,
           ...existingReviews
         };
+        const descriptionMatchesRequiredLanguage = data.descriptionHasChinese === true && hasRequiredChineseLanguage(requiredLanguages);
         const reasons = [];
         if (isEnabledNumber(config?.minimumPositiveRate) && data.positiveRate !== void 0 && data.positiveRate < config.minimumPositiveRate.value) {
           reasons.push("positive-rate");
@@ -639,6 +766,11 @@
         }
         if (config?.ignoreUnreviewed === true && data.reviewCount === 0) {
           reasons.push("unreviewed");
+        }
+        if (needsSupportedLanguages && !descriptionMatchesRequiredLanguage && Array.isArray(data.supportedLanguages) && !requiredLanguages.some(
+          (language) => data.supportedLanguages.includes(language)
+        )) {
+          reasons.push("required-language");
         }
         if (config?.excludedTags?.enabled === true) {
           const excludedTags = new Set(normalizeTags2(config.excludedTags.value));
@@ -872,12 +1004,8 @@
   }
 
   // src/lib/steam/discovery-queue-store-items.js
-  var STORE_ITEM_REQUEST = {
-    include_release: true,
-    include_reviews: true,
-    include_tag_count: 20
-  };
   var CACHE_WAIT_MS = 50;
+  var CHINESE_LANGUAGE_IDS = /* @__PURE__ */ new Set([6, 7, 29]);
   function getStoreItemCache() {
     const cache = window.StoreItemCache;
     return cache && typeof cache.GetApp === "function" && typeof cache.QueueAppRequest === "function" ? cache : void 0;
@@ -908,6 +1036,51 @@
     } catch {
       return [];
     }
+  }
+  function readSupportedLanguages(item) {
+    if (typeof item.GetAllLanguagesWithSomeSupport !== "function") {
+      return void 0;
+    }
+    try {
+      const languages = item.GetAllLanguagesWithSomeSupport();
+      return Array.isArray(languages) ? [
+        ...new Set(
+          languages.filter(
+            (language) => Number.isSafeInteger(language) && language >= 0
+          )
+        )
+      ] : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function readDescriptionHasChinese(item) {
+    if (typeof item.GetShortDescription !== "function") {
+      return void 0;
+    }
+    try {
+      const description = item.GetShortDescription();
+      return typeof description === "string" ? /\p{Script=Han}/u.test(description) : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function buildStoreItemRequest(requirements, descriptionHasChinese) {
+    const request = {};
+    if (requirements?.needsReviews === true) {
+      request.include_reviews = true;
+    }
+    if (requirements?.needsReleaseDate === true) {
+      request.include_release = true;
+    }
+    const requiredLanguages = Array.isArray(requirements?.requiredLanguages) ? requirements.requiredLanguages : [];
+    const acceptsChineseDescription = requiredLanguages.some(
+      (language) => CHINESE_LANGUAGE_IDS.has(language)
+    );
+    if (requiredLanguages.length > 0 && !(acceptsChineseDescription && descriptionHasChinese)) {
+      request.include_supported_languages = true;
+    }
+    return request;
   }
   function readReviewSummary(item) {
     const preferUnfiltered = window.GDynamicStore?.s_preferences?.review_score_preference === 1;
@@ -941,6 +1114,8 @@
         success: 1,
         isFree: item.BIsFree?.(),
         comingSoon,
+        descriptionHasChinese: readDescriptionHasChinese(item),
+        supportedLanguages: readSupportedLanguages(item),
         tagIds: readArray(() => item.GetTagIDs?.()),
         categoryIds: {
           supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.()),
@@ -967,7 +1142,7 @@
   function createDiscoveryQueueStoreItemReader() {
     let stopped = false;
     return {
-      async get(appId) {
+      async get(appId, requirements) {
         if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
           return void 0;
         }
@@ -981,8 +1156,12 @@
         }
         try {
           let item = cache.GetApp(numericAppId);
-          if (!item?.BContainDataRequest?.(STORE_ITEM_REQUEST)) {
-            await cache.QueueAppRequest(numericAppId, STORE_ITEM_REQUEST);
+          const request = buildStoreItemRequest(
+            requirements,
+            readDescriptionHasChinese(item)
+          );
+          if (Object.keys(request).length > 0 && !item?.BContainDataRequest?.(request)) {
+            await cache.QueueAppRequest(numericAppId, request);
             item = cache.GetApp(numericAppId);
           }
           return readStoreItem(item, numericAppId);
