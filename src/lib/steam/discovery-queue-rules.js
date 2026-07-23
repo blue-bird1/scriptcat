@@ -247,7 +247,11 @@ function getRequiredLanguages(rule) {
 }
 
 function hasRequiredChineseLanguage(requiredLanguages) {
-  return requiredLanguages.includes(6) || requiredLanguages.includes(7);
+  return (
+    requiredLanguages.includes(6) ||
+    requiredLanguages.includes(7) ||
+    requiredLanguages.includes(29)
+  );
 }
 
 function isIsoDate(value) {

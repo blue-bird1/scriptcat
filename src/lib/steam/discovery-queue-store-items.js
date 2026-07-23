@@ -1,5 +1,5 @@
 const CACHE_WAIT_MS = 50;
-const CHINESE_LANGUAGE_IDS = new Set([6, 7]);
+const CHINESE_LANGUAGE_IDS = new Set([6, 7, 29]);
 
 function getStoreItemCache() {
   const cache = window.StoreItemCache;
