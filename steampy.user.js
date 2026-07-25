@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.9.7
+// @version         5.9.8
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -1036,10 +1036,10 @@
   var CACHE_DURATION_MS = 12 * 60 * 60 * 1e3;
   function createSteamPySaleListClient({ ajax: ajax2 }) {
     const requestApi = createSteampyApiRequest(ajax2);
-    function getSaleList(gameId) {
+    function getSaleList(gameId, { fresh = false } = {}) {
       const cache = GM_getValue(CACHE_KEY, {});
       const cached = cache[gameId];
-      if (cached?.expireTime > Date.now()) return Promise.resolve(cached.data);
+      if (!fresh && cached?.expireTime > Date.now()) return Promise.resolve(cached.data);
       return requestApi(`${STEAMPY_BASE_URL}${STEAMPY_LIST_SALE_PATH}`, "GET", {
         gameId,
         pageNumber: 1,
@@ -1059,14 +1059,24 @@
   // src/lib/steampy/steampy-plus-seller.js
   function createSteamPySellerController({ elmGetter: elmGetter2, jQuery, getSaleList }) {
     let initialized = false;
-    function addHistoricalPrice(modal, gameData, vm) {
+    function addHistoricalPrice(modal, gameData) {
       const label = modal.find(".mt-15.f15.fw500 .color-red.f12-rem");
       if (!label.length || gameData?.hisPrice === null || modal.find(".his-price-tag").length) return;
       const historyPrice = document.createElement("span");
       historyPrice.className = "his-price-tag color-blue f12-rem ml-10";
       historyPrice.textContent = ` 历史最低价格: ￥${gameData.hisPrice.toFixed(2)}`;
       label.after(historyPrice);
-      vm.cdkPrice = (Math.round(Number(gameData.keyPrice) * 10) - 1) / 10;
+    }
+    async function updateModalSalePrice(gameData, vm) {
+      try {
+        const saleData = await getSaleList(gameData.id, { fresh: true });
+        const lowestPrice = Number(saleData.result?.content?.[0]?.keyPrice);
+        if (saleData.code !== 200 || !Number.isFinite(lowestPrice) || lowestPrice <= 0 || vm.gameId !== gameData.id) return;
+        vm.keyPricePy = lowestPrice;
+        vm.cdkPrice = Math.max(0.1, (Math.round(lowestPrice * 10) - 1) / 10);
+      } catch (error) {
+        console.error("[SteamPy Plus] 查询当前最低挂单价失败", error);
+      }
     }
     async function startModalListener() {
       await elmGetter2.get("#main > div.main > div.single-page-con > div > div");
@@ -1077,7 +1087,11 @@
       vm.__steamPyPlusGoToChoosePatched = true;
       vm.goToChoose = function patchedGoToChoose(index) {
         originalGoToChoose.call(this, index);
-        this.$nextTick(() => addHistoricalPrice(jQuery(".ivu-modal").filter(":visible"), this.modalGamList[index], this));
+        const gameData = this.modalGamList[index];
+        this.$nextTick(() => {
+          addHistoricalPrice(jQuery(".ivu-modal").filter(":visible"), gameData);
+          updateModalSalePrice(gameData, this);
+        });
       };
     }
     async function updateSellRows(vm) {

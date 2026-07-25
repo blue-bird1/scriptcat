@@ -1,14 +1,25 @@
 export function createSteamPySellerController({ elmGetter, jQuery, getSaleList }) {
   let initialized = false;
 
-  function addHistoricalPrice(modal, gameData, vm) {
+  function addHistoricalPrice(modal, gameData) {
     const label = modal.find(".mt-15.f15.fw500 .color-red.f12-rem");
     if (!label.length || gameData?.hisPrice === null || modal.find(".his-price-tag").length) return;
     const historyPrice = document.createElement("span");
     historyPrice.className = "his-price-tag color-blue f12-rem ml-10";
     historyPrice.textContent = ` 历史最低价格: ￥${gameData.hisPrice.toFixed(2)}`;
     label.after(historyPrice);
-    vm.cdkPrice = (Math.round(Number(gameData.keyPrice) * 10) - 1) / 10;
+  }
+
+  async function updateModalSalePrice(gameData, vm) {
+    try {
+      const saleData = await getSaleList(gameData.id, { fresh: true });
+      const lowestPrice = Number(saleData.result?.content?.[0]?.keyPrice);
+      if (saleData.code !== 200 || !Number.isFinite(lowestPrice) || lowestPrice <= 0 || vm.gameId !== gameData.id) return;
+      vm.keyPricePy = lowestPrice;
+      vm.cdkPrice = Math.max(0.1, (Math.round(lowestPrice * 10) - 1) / 10);
+    } catch (error) {
+      console.error("[SteamPy Plus] 查询当前最低挂单价失败", error);
+    }
   }
 
   async function startModalListener() {
@@ -20,7 +31,11 @@ export function createSteamPySellerController({ elmGetter, jQuery, getSaleList }
     vm.__steamPyPlusGoToChoosePatched = true;
     vm.goToChoose = function patchedGoToChoose(index) {
       originalGoToChoose.call(this, index);
-      this.$nextTick(() => addHistoricalPrice(jQuery(".ivu-modal").filter(":visible"), this.modalGamList[index], this));
+      const gameData = this.modalGamList[index];
+      this.$nextTick(() => {
+        addHistoricalPrice(jQuery(".ivu-modal").filter(":visible"), gameData);
+        updateModalSalePrice(gameData, this);
+      });
     };
   }
 

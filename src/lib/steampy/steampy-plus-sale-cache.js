@@ -6,10 +6,10 @@ const CACHE_DURATION_MS = 12 * 60 * 60 * 1000;
 export function createSteamPySaleListClient({ ajax }) {
   const requestApi = createSteampyApiRequest(ajax);
 
-  function getSaleList(gameId) {
+  function getSaleList(gameId, { fresh = false } = {}) {
     const cache = GM_getValue(CACHE_KEY, {});
     const cached = cache[gameId];
-    if (cached?.expireTime > Date.now()) return Promise.resolve(cached.data);
+    if (!fresh && cached?.expireTime > Date.now()) return Promise.resolve(cached.data);
 
     return requestApi(`${STEAMPY_BASE_URL}${STEAMPY_LIST_SALE_PATH}`, "GET", {
       gameId,
