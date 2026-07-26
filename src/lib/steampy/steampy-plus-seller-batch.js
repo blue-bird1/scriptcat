@@ -1,4 +1,9 @@
 const STEAM_APP_URL = "https://store.steampowered.com/app/";
+export const KEY_SALE_REQUEST_INTERVAL_MS = 10_500;
+
+function waitFor(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
 
 function errorRecord(row, message, column = null, code = "invalid") {
   return {
@@ -183,19 +188,40 @@ export async function preflightBatch(rows, {
 
 export async function submitBatch(groups, {
   client,
+  minimumIntervalMs = KEY_SALE_REQUEST_INTERVAL_MS,
+  now = () => Date.now(),
+  onSubmitting,
+  onWaiting,
   region = "cn",
+  shouldContinue = () => true,
+  wait = waitFor,
 } = {}) {
   if (!client?.startKeySale) throw new TypeError("submitBatch 需要 startKeySale");
   const results = [];
   let stopped = false;
   let pendingGroups = [];
+  let lastRequestStartedAt = null;
   for (let index = 0; index < groups.length; index += 1) {
     const group = groups[index];
-    if (client.isTokenInvalid?.()) {
+    if (!shouldContinue() || client.isTokenInvalid?.()) {
       stopped = true;
       pendingGroups = groups.slice(index);
       break;
     }
+    if (lastRequestStartedAt !== null) {
+      const waitMs = Math.max(0, lastRequestStartedAt + minimumIntervalMs - now());
+      if (waitMs > 0) {
+        onWaiting?.({ group, index, total: groups.length, waitMs });
+        await wait(waitMs);
+      }
+      if (!shouldContinue() || client.isTokenInvalid?.()) {
+        stopped = true;
+        pendingGroups = groups.slice(index);
+        break;
+      }
+    }
+    onSubmitting?.({ group, index, total: groups.length });
+    lastRequestStartedAt = now();
     try {
       const result = await client.startKeySale({
         region,

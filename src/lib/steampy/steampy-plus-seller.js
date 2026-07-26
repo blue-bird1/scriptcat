@@ -422,7 +422,7 @@ export function createSteamPySellerController({
 
       const submissionGeneration = lifecycleGeneration;
       const { groups } = state.preflightResult;
-      const allResults = [];
+      let allResults = [];
       let stoppedAt = null;
       setSubmissionActive(true);
       setRunning(true);
@@ -430,50 +430,44 @@ export function createSteamPySellerController({
       status.className = "";
       status.textContent = `开始在“${state.regionSnapshot.label}”串行上架，运行期间不可编辑或关闭。`;
 
-      for (let index = 0; index < groups.length; index += 1) {
-        if (submissionGeneration !== lifecycleGeneration || !started || !isSellerPage()) {
-          stoppedAt = index;
-          break;
-        }
-        const group = groups[index];
-        progressPanel.replaceChildren(
-          createElement("p", {
-            className: "sp-batch-progress",
-            text: `正在提交 ${index + 1}/${groups.length}：gameId ${group.gameId}，${group.rows.length} 个 Key`,
-          }),
-        );
-        let batchResult;
-        try {
-          batchResult = await submitBatch([group], {
-            client,
-            region: state.regionSnapshot.region,
-            sellPrice: String(group.keyPrice),
-          });
-        } catch (error) {
-          batchResult = {
-            results: [{
-              error,
-              gameId: group.gameId,
-              message: errorMessage(error),
-              ok: false,
-              rows: group.rows,
-            }],
-            stopped: client?.isTokenInvalid?.() === true,
-          };
-        }
-        allResults.push(...(batchResult.results || []));
-        if (submissionGeneration !== lifecycleGeneration || !started || !isSellerPage()) {
-          stoppedAt = index + 1;
-          break;
-        }
-        if (!batchResult.results?.length) {
-          stoppedAt = index;
-          break;
-        }
-        if (batchResult.stopped) {
-          stoppedAt = index + 1;
-          break;
-        }
+      let batchResult;
+      try {
+        batchResult = await submitBatch(groups, {
+          client,
+          region: state.regionSnapshot.region,
+          shouldContinue: () => (
+            submissionGeneration === lifecycleGeneration
+            && started
+            && isSellerPage()
+          ),
+          onWaiting: ({ index, total, waitMs }) => {
+            progressPanel.replaceChildren(
+              createElement("p", {
+                className: "sp-batch-progress",
+                text: `已处理 ${index}/${total} 组，等待 ${Math.ceil(waitMs / 1000)} 秒后提交下一组`,
+              }),
+            );
+          },
+          onSubmitting: ({ group, index, total }) => {
+            progressPanel.replaceChildren(
+              createElement("p", {
+                className: "sp-batch-progress",
+                text: `正在提交 ${index + 1}/${total}：gameId ${group.gameId}，${group.rows.length} 个 Key`,
+              }),
+            );
+          },
+        });
+      } catch (error) {
+        batchResult = {
+          results: [],
+          stopped: true,
+          pendingGroups: groups,
+        };
+        console.error("[SteamPy Plus] 批量上架队列异常", error);
+      }
+      allResults = batchResult.results || [];
+      if (batchResult.stopped) {
+        stoppedAt = groups.length - (batchResult.pendingGroups?.length || 0);
       }
 
       const failedRows = collectFailedRows(allResults, groups, stoppedAt);

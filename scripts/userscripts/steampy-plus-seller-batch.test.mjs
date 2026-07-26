@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  KEY_SALE_REQUEST_INTERVAL_MS,
   parseBatchCsv,
   preflightBatch,
   submitBatch,
@@ -200,6 +201,9 @@ test("preflight rejects an appId and explicit gameId mismatch", async () => {
 
 test("submission uses each group price, continues ordinary failures, and stops on token invalidation", async () => {
   const calls = [];
+  const requestStartedAt = [];
+  const waits = [];
+  let currentTime = 0;
   let tokenInvalid = false;
   const groups = [
     {
@@ -227,13 +231,22 @@ test("submission uses each group price, continues ordinary failures, and stops o
     },
     async startKeySale(payload) {
       calls.push(payload);
+      requestStartedAt.push(currentTime);
       if (payload.gameId === groups[0].gameId) throw new Error("ordinary rejection");
       tokenInvalid = true;
       throw new Error("token expired");
     },
   };
 
-  const result = await submitBatch(groups, { client, region: "us" });
+  const result = await submitBatch(groups, {
+    client,
+    now: () => currentTime,
+    region: "us",
+    wait: async (milliseconds) => {
+      waits.push(milliseconds);
+      currentTime += milliseconds;
+    },
+  });
 
   assert.deepEqual(calls, [
     {
@@ -253,6 +266,8 @@ test("submission uses each group price, continues ordinary failures, and stops o
     { ok: false, gameId: "111111111111111111", rawLines: ["Game A,KEY-A"] },
     { ok: false, gameId: "222222222222222222", rawLines: ["Game B,KEY-B"] },
   ]);
+  assert.deepEqual(requestStartedAt, [0, KEY_SALE_REQUEST_INTERVAL_MS]);
+  assert.deepEqual(waits, [KEY_SALE_REQUEST_INTERVAL_MS]);
   assert.equal(result.stopped, true);
   assert.deepEqual(result.pendingGroups, [groups[2]]);
 });
