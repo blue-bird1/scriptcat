@@ -2,6 +2,7 @@ import { gmXhr } from "../userscript/gm-xhr.js";
 
 const STEAMPY_ORIGIN = "https://steampy.com";
 const NEED_LOGIN_PATH = "/xboot/common/needLogin";
+export const STEAMPY_XBOOT_LOG_PREFIX = "[SteamPy Plus][XBoot]";
 const KEY_SALE_ENDPOINTS = {
   cn: {
     game: "/xboot/steamGame",
@@ -59,8 +60,16 @@ export function buildStartKeySalePayload({
   return data;
 }
 
+export function encodeSteampyFormPayload(data) {
+  return Object.keys(data)
+    .map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(String(data[key]))}`)
+    .join("&");
+}
+
 export function createSteampyXbootClient(options = {}) {
   const getAccessToken = options.getAccessToken || (() => "");
+  const logger = options.logger || console;
+  const sendRequest = options.sendRequest || gmXhr;
   let tokenInvalid = false;
 
   function markTokenInvalid(reason) {
@@ -78,9 +87,8 @@ export function createSteampyXbootClient(options = {}) {
     if (tokenInvalid) {
       throw new Error("AccessToken 已失效，已停止后续请求。请重新登录 steampy.com 后刷新页面。");
     }
-
     const xhrOverrides = requestOptions.xhrOverrides || {};
-    const response = await gmXhr({
+    const request = {
       method: requestOptions.method || "GET",
       url: url.toString(),
       withCredentials: true,
@@ -93,7 +101,24 @@ export function createSteampyXbootClient(options = {}) {
         ...requestOptions.headers,
         ...xhrOverrides.headers,
       },
-    });
+    };
+    const logRequest = requestOptions.logRequest === true;
+    if (logRequest) {
+      logger.log(`${STEAMPY_XBOOT_LOG_PREFIX} request`, request);
+    }
+
+    let response;
+    try {
+      response = await sendRequest(request);
+    } catch (error) {
+      if (logRequest) {
+        logger.error(`${STEAMPY_XBOOT_LOG_PREFIX} transport error`, { request, error });
+      }
+      throw error;
+    }
+    if (logRequest) {
+      logger.log(`${STEAMPY_XBOOT_LOG_PREFIX} response`, { request, response });
+    }
 
     const finalPathname = response.finalUrl
       ? new URL(response.finalUrl, STEAMPY_ORIGIN).pathname
@@ -211,8 +236,9 @@ export function createSteampyXbootClient(options = {}) {
 
     return requestJson(`${STEAMPY_ORIGIN}${endpoints.keySale}/startSell`, {
       method: "POST",
-      data: JSON.stringify(data),
-      headers: { "Content-Type": "application/json" },
+      data: encodeSteampyFormPayload(data),
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      logRequest: true,
     });
   }
 

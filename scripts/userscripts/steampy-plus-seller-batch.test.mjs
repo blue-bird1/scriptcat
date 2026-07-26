@@ -6,20 +6,60 @@ import {
   preflightBatch,
   submitBatch,
 } from "../../src/lib/steampy/steampy-plus-seller-batch.js";
-import { buildStartKeySalePayload } from "../../src/lib/steampy/xboot-client.js";
+import {
+  createSteampyXbootClient,
+  STEAMPY_XBOOT_LOG_PREFIX,
+} from "../../src/lib/steampy/xboot-client.js";
 
-test("startSell payload includes required no-sync defaults", () => {
-  assert.deepEqual(buildStartKeySalePayload({
-    gameId: "748400107661037568",
-    keys: "469PB-BXXBM-8E3TN",
-    sellPrice: 8.08,
-  }), {
-    gameId: "748400107661037568",
-    keys: "469PB-BXXBM-8E3TN",
-    keyWord: "",
-    sellPrice: "8.08",
-    syncUs: "0",
+test("startSell sends one native form request and logs the complete failed exchange", async () => {
+  const requests = [];
+  const logs = [];
+  const response = {
+    status: 200,
+    finalUrl: "https://steampy.com/xboot/steamKeySale/startSell",
+    responseHeaders: "content-type: application/json",
+    responseText: '{"success":false,"code":500,"message":"failed"}',
+    response: { success: false, code: 500, message: "failed" },
+  };
+  const client = createSteampyXbootClient({
+    getAccessToken: () => "local-access-token",
+    logger: {
+      log(...args) {
+        logs.push(args);
+      },
+      error(...args) {
+        logs.push(args);
+      },
+    },
+    async sendRequest(request) {
+      requests.push(request);
+      return response;
+    },
   });
+
+  await assert.rejects(
+    client.startKeySale({
+      gameId: "748400107661037568",
+      keys: "469PB-BXXBM-8E3TN",
+      sellPrice: 8.08,
+    }),
+    { message: "业务请求失败：failed" },
+  );
+
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].method, "POST");
+  assert.equal(requests[0].url, "https://steampy.com/xboot/steamKeySale/startSell");
+  assert.equal(requests[0].headers["Content-Type"], "application/x-www-form-urlencoded");
+  assert.equal(requests[0].headers.accesstoken, "local-access-token");
+  assert.equal(
+    requests[0].data,
+    "gameId=748400107661037568&keys=469PB-BXXBM-8E3TN&keyWord=&sellPrice=8.08&syncUs=0",
+  );
+  assert.equal(logs[0][0], `${STEAMPY_XBOOT_LOG_PREFIX} request`);
+  assert.equal(logs[0][1], requests[0]);
+  assert.equal(logs[1][0], `${STEAMPY_XBOOT_LOG_PREFIX} response`);
+  assert.equal(logs[1][1].request, requests[0]);
+  assert.equal(logs[1][1].response, response);
 });
 
 test("CSV contract rejects key-only rows and preserves quoted fields and large IDs", () => {

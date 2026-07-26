@@ -61,6 +61,7 @@
   // src/lib/steampy/xboot-client.js
   var STEAMPY_ORIGIN = "https://steampy.com";
   var NEED_LOGIN_PATH = "/xboot/common/needLogin";
+  var STEAMPY_XBOOT_LOG_PREFIX = "[SteamPy Plus][XBoot]";
   var KEY_SALE_ENDPOINTS = {
     cn: {
       game: "/xboot/steamGame",
@@ -115,8 +116,13 @@
     }
     return data;
   }
+  function encodeSteampyFormPayload(data) {
+    return Object.keys(data).map((key) => `${encodeURIComponent(key)}=${encodeURIComponent(String(data[key]))}`).join("&");
+  }
   function createSteampyXbootClient(options = {}) {
     const getAccessToken = options.getAccessToken || (() => "");
+    const logger = options.logger || console;
+    const sendRequest = options.sendRequest || gmXhr;
     let tokenInvalid = false;
     function markTokenInvalid(reason) {
       tokenInvalid = true;
@@ -132,7 +138,7 @@
         throw new Error("AccessToken 已失效，已停止后续请求。请重新登录 steampy.com 后刷新页面。");
       }
       const xhrOverrides = requestOptions.xhrOverrides || {};
-      const response = await gmXhr({
+      const request = {
         method: requestOptions.method || "GET",
         url: url.toString(),
         withCredentials: true,
@@ -145,7 +151,23 @@
           ...requestOptions.headers,
           ...xhrOverrides.headers
         }
-      });
+      };
+      const logRequest = requestOptions.logRequest === true;
+      if (logRequest) {
+        logger.log(`${STEAMPY_XBOOT_LOG_PREFIX} request`, request);
+      }
+      let response;
+      try {
+        response = await sendRequest(request);
+      } catch (error) {
+        if (logRequest) {
+          logger.error(`${STEAMPY_XBOOT_LOG_PREFIX} transport error`, { request, error });
+        }
+        throw error;
+      }
+      if (logRequest) {
+        logger.log(`${STEAMPY_XBOOT_LOG_PREFIX} response`, { request, response });
+      }
       const finalPathname = response.finalUrl ? new URL(response.finalUrl, STEAMPY_ORIGIN).pathname : "";
       const redirectedToNeedLogin = response.status === 302 && finalPathname === NEED_LOGIN_PATH;
       if (redirectedToNeedLogin) {
@@ -245,8 +267,9 @@
       });
       return requestJson(`${STEAMPY_ORIGIN}${endpoints.keySale}/startSell`, {
         method: "POST",
-        data: JSON.stringify(data),
-        headers: { "Content-Type": "application/json" }
+        data: encodeSteampyFormPayload(data),
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        logRequest: true
       });
     }
     return {
