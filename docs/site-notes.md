@@ -61,9 +61,11 @@
   - 商品筛选元数据来自 `GET https://steampy.com/xboot/pyFilter/list`。接口返回 15 组筛选字段：`lowAmt`/`highAmt`、`lowDis`/`highDis`、`hisFlag`、`lowVs`/`highVs`、`kd`、`genre`、`releaseDay`、`reviewScoreDesc`、`lowRating`/`highRating`、`lowReview`/`highReview`、`lang`、`familySharing`、`deckVerified`、`cards`、`publisher`。每组记录包含 `name`、`code`、`highCode`、`type`、`sortOrder`、`showFlag`、`options`；`options[]` 包含 `label`、`lowValue`、`highValue`、`strValue`、`sortOrder`、`showFlag`。`type` 只有 `decRange`、`intRange`、`str`、`int` 四种：前两种表示成对范围，后两种表示单值筛选。`showFlag` 控制字段或选项是否展示，`sortOrder` 控制同层级显示顺序。
   - 商品列表使用 `GET https://steampy.com/xboot/steamApp/list`。请求包含上述 15 组筛选字段、`pageNumber`、`pageSize`、`sort`、`order`；没有选择的字段传空字符串。`decRange` 值保留两位小数，`intRange` 与 `int` 值使用整数字符串，排序固定为 `sort=sp.keyDaily`、`order=desc`。响应是 Spring 分页对象，`result.content[]` 含 `appId`、`miniPrice`、`oriPrice`，但不含 `steamApp.type`。SteamPy Plus 浅拷贝每条记录，映射 `keyPrice=miniPrice`，并仅在 `miniPrice` 与正数 `oriPrice` 都有效时映射 `keyDiscount=miniPrice/oriPrice`；不伪造 `keyTxAmt`、`keySales`、`gameUrl` 或 `id`。高级筛选生效期间暂停并禁用依赖 `steamApp.type` 的隐藏 DLC 条件，退出后恢复原勾选状态与控件状态；价格、拥有和忽略过滤继续生效。
   - 商品卡片的 `appId` 不能直接作为 CD-Key 详情参数。点击高级筛选结果时调用 `GET https://steampy.com/xboot/steamGame/searchByAppId?appId=...`，取 `result.content[0].id` 作为 `steamGame.id`，再进入现有 `cdkDetail` 路由并传递 `name=<areas>`、`gameId=<steamGame.id>`；该链路不预请求 `steamGame/getOne`。例如 `appId=1332010` 对应 `steamGame.id=544943379352391680`。`steamApp/getDetail` 返回的 `result.steamAppDetail.id` 属于 `steamApp`（示例值 `455666546174332928`），不属于 `steamGame`，不能替代详情链中的 `steamGame.id`。
-- **卖家选品价格契约（SteamPy Plus）**
-  - “添加 CDKey”选品接口返回的 `steamGame.keyTxAmt` 是最近成交价，`steamGame.keyPrice` 是可能滞后的商品摘要价；新版页面将摘要价复制到 Vue 字段 `keyPricePy` 并显示为“近期最低挂单价格”。选中商品后，SteamPy Plus 以 `gameId` 实时请求 `GET https://steampy.com/xboot/steamKeySale/listSale?pageNumber=1&pageSize=20&sort=keyPrice&order=asc`，取 `result.content[0].keyPrice` 更新 `keyPricePy`，并基于该实时最低价生成低一档的建议报价。该请求跳过卖家列表的持久缓存，避免摘要字段或旧挂单被显示为当前最低价。
-  - 普通 CD-Key 上架使用 JSON `POST` 的 `startSell` 接口：`cn` 为 `/xboot/steamKeySale/startSell`，`ru` 为 `/xboot/ruKeySale/startSell`，`us` 为 `/xboot/usKeySale/startSell`，`tl` 为 `/xboot/tlKeySale/startSell`。请求体核心字段为 `gameId`、`keys`、`sellPrice`，可选 `keyWord`、`syncUs`、`osflag`；`gameId` 使用 `steamGame.id`，不是 Steam AppID，`keys` 保留原文并按每行一个 Key 传递。鉴权沿用 SteamPy XBoot 请求头中的 `accesstoken` 与 `app_token`（APP_TOKEN）。响应沿用统一 envelope，客户端校验后解包 `result`；错误枚举和成功 `result` 结构未在此约定。
+- **新版卖家批量上架（SteamPy Plus）**
+  - 功能仅挂载于 `/pro/seller/sellerCDKey`。当前区域读取 `.area-wap > .qu-li-a` 的国区、俄罗斯区、全球区、土区文本，依次映射为 `cn`、`ru`、`us`、`tl`；预检后切换区域会使预览失效。
+  - 输入是无表头 CSV `gameName,key,appId,gameId`，每行 2 至 4 列。`key` 必填，且 `gameName`、`appId`、`gameId` 至少填写一项；`appId` 和 `gameId` 按十进制正整数字符串处理。按 AppID 解析时构造 `https://store.steampowered.com/app/<appId>/` 并调用当前区域 `saleKeyByUrl`；按名称解析时调用当前区域 `saleKeyByName`，两者均只接受唯一候选。显式 `gameId` 与 AppID 解析结果不一致时整批预检失败。
+  - 四区商品搜索前缀分别是 `/xboot/steamGame`、`/xboot/ruSteamGame`、`/xboot/usSteamGame`、`/xboot/tlSteamGame`；挂单前以相同区域的 `steamKeySale`、`ruKeySale`、`usKeySale`、`tlKeySale` 下 `listSale` 查询实时价格，参数为 `pageNumber=1`、`pageSize=20`、`sort=keyPrice`、`order=asc` 和空日期范围。第一条 `keyPrice` 原值即销售价；没有挂单时预检失败。
+  - 普通 CD-Key 上架使用对应区域的 JSON `POST /startSell`。请求体核心字段为 `gameId`、`keys`、`sellPrice`；`gameId` 使用 `steamGame.id`，不是 Steam AppID，`keys` 按每行一个 Key 传递。批量功能按 `gameId` 分组并串行提交，普通分组失败后继续，AccessToken 失效后停止剩余分组。鉴权沿用 SteamPy XBoot 请求头中的 `accesstoken` 与 `app_token`，响应经统一 envelope 校验后解包 `result`。
 - **接口**
   - `GET https://steampy.com/xboot/steamGame/keyHot`：主游戏列表接口。主列表 `pageSize` 默认值为 30；响应使用 Spring 分页字段 `content`、`totalPages`、`totalElements`、`size`、`number`、`numberOfElements`、`first`、`last`、`empty`。服务端实际接受 `pageSize=100` 并返回 100 条，这是已验证值，不代表最大上限。
   - `GET https://steampy.com/xboot/steamGame/saleKeyByUrl`：按 Steam 商店链接查 Key 价格。参数：`pageNumber`、`pageSize`、`sort`、`order`、`gameUrl`、`gameName`。keylol_to_steampy_price.user.js。
@@ -74,7 +76,7 @@
   - 主分页器不提供 page-size 选择器；其他列表的独立 page-size 选项属于各自列表配置。
 - **选择器（steampy.user.js）**
   - 标签页内容：`div.ivu-tabs-content div.flex-row.jc-space-flex-start.flex-wrap.w-auto`；游戏块：`.gameblock`；`.ivu-tabs-tabpane`。
-  - 出售列表：`#main > div.main > div.single-page-con > div.single-page > div:has(.cdkTrade-layout)`；订单：`.orderOne.bg-white .list-item`；列表项价格：`div:nth-child(7)`。
+  - 新版卖家操作栏：`.cdkTrade-layout > .w100.tc`；原生添加按钮按直属 `button` 的“添加CDKey”文本识别；当前区域：`.area-wap > .qu-li-a`。
   - 筛选/排序：`.flex-row > .c-point.flex-row.align-items-center`；排序按钮：`.ml-5-rem.c-point.tagBtn`；`.tag.flex-row.align-items-center`。
   - 表单容器：`#main > div.main > div.single-page-con > div > div`（Vue 实例 `__vue__`）。
 

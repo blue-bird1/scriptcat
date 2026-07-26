@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.9.9
+// @version         5.10.0
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -1011,168 +1011,726 @@
     return { getSteamAppId, injectStyle, processCards, setHotGameData };
   }
 
-  // src/lib/steampy/game-manager.js
-  var STEAMPY_BASE_URL = "https://steampy.com/";
-  var STEAMPY_LIST_SALE_PATH = "xboot/steamKeySale/listSale";
-  function readSteampyPageToken() {
-    return window.localStorage.getItem("accessToken");
-  }
-  function createSteampyApiRequest(ajax2) {
-    return function requestSteampyApi(url, method, data) {
-      return ajax2(url, {
-        method,
-        data,
-        responseType: "json",
-        headers: {
-          Accesstoken: readSteampyPageToken()
-        },
-        _nocatch: true
-      });
+  // src/lib/steampy/steampy-plus-seller-batch.js
+  var STEAM_APP_URL = "https://store.steampowered.com/app/";
+  function errorRecord(row, message, column = null, code = "invalid") {
+    return {
+      code,
+      column,
+      lineNumber: row?.lineNumber ?? null,
+      rawLine: row?.rawLine ?? "",
+      message
     };
   }
-
-  // src/lib/steampy/steampy-plus-sale-cache.js
-  var CACHE_KEY = `${STEAMPY_LIST_SALE_PATH}_listSaleCache`;
-  var CACHE_DURATION_MS = 12 * 60 * 60 * 1e3;
-  function createSteamPySaleListClient({ ajax: ajax2 }) {
-    const requestApi = createSteampyApiRequest(ajax2);
-    function getSaleList(gameId, { fresh = false } = {}) {
-      const cache = GM_getValue(CACHE_KEY, {});
-      const cached = cache[gameId];
-      if (!fresh && cached?.expireTime > Date.now()) return Promise.resolve(cached.data);
-      return requestApi(`${STEAMPY_BASE_URL}${STEAMPY_LIST_SALE_PATH}`, "GET", {
-        gameId,
-        pageNumber: 1,
-        pageSize: 20,
-        sort: "keyPrice",
-        order: "asc",
-        startDate: "",
-        endDate: ""
-      }).then((data) => {
-        GM_setValue(CACHE_KEY, { ...cache, [gameId]: { data, expireTime: Date.now() + CACHE_DURATION_MS } });
-        return data;
-      });
+  function parseCsvLine(line, lineNumber) {
+    const fields = [];
+    let field = "";
+    let quoted = false;
+    let afterQuote = false;
+    for (let index = 0; index < line.length; index += 1) {
+      const character = line[index];
+      if (quoted) {
+        if (character === '"') {
+          if (line[index + 1] === '"') {
+            field += '"';
+            index += 1;
+          } else {
+            quoted = false;
+            afterQuote = true;
+          }
+        } else {
+          field += character;
+        }
+        continue;
+      }
+      if (afterQuote) {
+        if (character === ",") {
+          fields.push(field.trim());
+          field = "";
+          afterQuote = false;
+        } else if (/\s/.test(character)) {
+          continue;
+        } else {
+          return { error: `第 ${lineNumber} 行：引号后只能出现逗号或行尾`, column: fields.length + 1 };
+        }
+        continue;
+      }
+      if (character === ",") {
+        fields.push(field.trim());
+        field = "";
+      } else if (character === '"' && field.trim() === "") {
+        field = "";
+        quoted = true;
+      } else {
+        field += character;
+      }
     }
-    return { getSaleList };
+    if (quoted) return { error: `第 ${lineNumber} 行：引号未闭合（不支持跨行字段）`, column: fields.length + 1 };
+    fields.push(field.trim());
+    return { fields };
+  }
+  function parseBatchCsv(input) {
+    const text = String(input ?? "").replace(/^\uFEFF/, "");
+    const rows = [];
+    const errors = [];
+    const seenKeys = /* @__PURE__ */ new Map();
+    const lines = text.split(/\r?\n/);
+    lines.forEach((rawLine, lineIndex) => {
+      const lineNumber = lineIndex + 1;
+      if (rawLine.trim() === "") return;
+      const parsed = parseCsvLine(rawLine, lineNumber);
+      if (parsed.error) {
+        errors.push({ code: "csv", column: parsed.column, lineNumber, rawLine, message: parsed.error });
+        return;
+      }
+      const fields = parsed.fields;
+      if (fields.length < 2 || fields.length > 4) {
+        errors.push({ code: "field-count", column: null, lineNumber, rawLine, message: `第 ${lineNumber} 行：CSV 必须有 2 至 4 列` });
+        return;
+      }
+      const [gameName = "", key = "", appId = "", gameId = ""] = fields;
+      const row = { lineNumber, rawLine, gameName, key, appId, gameId };
+      if (!key) errors.push(errorRecord(row, "key 不能为空", 2, "required-key"));
+      if (!gameName && !appId && !gameId) errors.push(errorRecord(row, "至少提供 gameName、appId 或 gameId", null, "missing-locator"));
+      if (appId && !/^[1-9][0-9]*$/.test(appId)) errors.push(errorRecord(row, "appId 必须是正整数文本", 3, "invalid-app-id"));
+      if (gameId && !/^[1-9][0-9]*$/.test(gameId)) errors.push(errorRecord(row, "gameId 必须是正整数文本", 4, "invalid-game-id"));
+      if (key) {
+        const previous = seenKeys.get(key);
+        if (previous) errors.push(errorRecord(row, `key 与第 ${previous} 行重复`, 2, "duplicate-key"));
+        else seenKeys.set(key, lineNumber);
+      }
+      rows.push(row);
+    });
+    return { rows, errors };
+  }
+  function contentOf(response) {
+    return response?.result?.content ?? response?.content ?? response?.result ?? response;
+  }
+  function uniqueGame(response) {
+    const content = contentOf(response);
+    const list = Array.isArray(content) ? content : [];
+    if (list.length !== 1) return null;
+    const item = list[0];
+    const id = item?.id ?? item?.gameId;
+    if (id === void 0 || id === null) return null;
+    return {
+      appId: item?.appId === void 0 || item?.appId === null ? "" : String(item.appId),
+      gameId: String(id),
+      gameName: String(item?.gameName ?? item?.name ?? "")
+    };
+  }
+  async function preflightBatch(rows, {
+    client,
+    region = "cn",
+    fetchKeySaleList = client?.fetchKeySaleList
+  } = {}) {
+    if (!client?.fetchSaleKeyByUrl || !client?.fetchSaleKeyByName || !fetchKeySaleList) {
+      throw new TypeError("preflightBatch 需要 fetchSaleKeyByUrl、fetchSaleKeyByName 和 fetchKeySaleList");
+    }
+    const errors = [];
+    const resolved = [];
+    for (const row of rows) {
+      try {
+        let gameId = row.gameId || "";
+        let matchedGame = null;
+        if (row.appId) {
+          matchedGame = uniqueGame(await client.fetchSaleKeyByUrl(`${STEAM_APP_URL}${row.appId}/`, region));
+          if (!matchedGame) throw new Error("appId 未唯一解析到 SteamPy 商品");
+          if (gameId && gameId !== matchedGame.gameId) {
+            throw new Error(`appId 解析到 gameId=${matchedGame.gameId}，与显式 gameId=${gameId} 冲突`);
+          }
+          gameId ||= matchedGame.gameId;
+        }
+        if (!gameId) {
+          matchedGame = uniqueGame(await client.fetchSaleKeyByName(row.gameName, region));
+          if (!matchedGame) throw new Error("gameName 未唯一解析到 SteamPy 商品");
+          gameId = matchedGame.gameId;
+        }
+        resolved.push({
+          ...row,
+          appId: row.appId || matchedGame?.appId || "",
+          gameId,
+          resolvedGameName: matchedGame?.gameName || row.gameName
+        });
+      } catch (error) {
+        errors.push(errorRecord(row, error?.message || String(error), null, "resolve"));
+      }
+    }
+    const groups = /* @__PURE__ */ new Map();
+    for (const row of resolved) {
+      if (!groups.has(row.gameId)) {
+        groups.set(row.gameId, {
+          appId: row.appId,
+          gameId: row.gameId,
+          gameName: row.resolvedGameName || row.gameName,
+          rows: [],
+          keys: []
+        });
+      }
+      const group = groups.get(row.gameId);
+      group.rows.push(row);
+      group.keys.push(row.key);
+    }
+    for (const group of groups.values()) {
+      try {
+        const response = await fetchKeySaleList({ gameId: group.gameId, region });
+        const content = contentOf(response);
+        const list = Array.isArray(content) ? content : [];
+        if (!list.length) throw new Error("SteamPy 商品没有可用挂单价格");
+        group.keyPrice = list[0]?.keyPrice;
+        if (group.keyPrice === void 0 || group.keyPrice === null || group.keyPrice === "") throw new Error("SteamPy 商品最低挂单缺少 keyPrice");
+      } catch (error) {
+        for (const row of group.rows) errors.push(errorRecord(row, error?.message || String(error), null, "price"));
+      }
+    }
+    return { rows: resolved, groups: [...groups.values()].filter((group) => group.keyPrice !== void 0), errors };
+  }
+  async function submitBatch(groups, {
+    client,
+    region = "cn"
+  } = {}) {
+    if (!client?.startKeySale) throw new TypeError("submitBatch 需要 startKeySale");
+    const results = [];
+    let stopped = false;
+    let pendingGroups = [];
+    for (let index = 0; index < groups.length; index += 1) {
+      const group = groups[index];
+      if (client.isTokenInvalid?.()) {
+        stopped = true;
+        pendingGroups = groups.slice(index);
+        break;
+      }
+      try {
+        const result = await client.startKeySale({
+          region,
+          gameId: group.gameId,
+          keys: group.keys.join("\n"),
+          sellPrice: group.keyPrice
+        });
+        results.push({ ok: true, gameId: group.gameId, rows: group.rows, rawLines: group.rows.map((row) => row.rawLine), result });
+      } catch (error) {
+        results.push({ ok: false, gameId: group.gameId, rows: group.rows, rawLines: group.rows.map((row) => row.rawLine), error, message: error?.message || String(error) });
+        if (client.isTokenInvalid?.()) {
+          stopped = true;
+          pendingGroups = groups.slice(index + 1);
+          break;
+        }
+      }
+    }
+    return { results, stopped, pendingGroups };
   }
 
   // src/lib/steampy/steampy-plus-seller.js
-  function createSteamPySellerController({ elmGetter: elmGetter2, jQuery, getSaleList }) {
-    let initialized = false;
-    function addHistoricalPrice(modal, gameData) {
-      const label = modal.find(".mt-15.f15.fw500 .color-red.f12-rem");
-      if (!label.length || gameData?.hisPrice === null || modal.find(".his-price-tag").length) return;
-      const historyPrice = document.createElement("span");
-      historyPrice.className = "his-price-tag color-blue f12-rem ml-10";
-      historyPrice.textContent = ` 历史最低价格: ￥${gameData.hisPrice.toFixed(2)}`;
-      label.after(historyPrice);
-    }
-    async function updateModalSalePrice(gameData, vm) {
-      try {
-        const saleData = await getSaleList(gameData.id, { fresh: true });
-        const lowestPrice = Number(saleData.result?.content?.[0]?.keyPrice);
-        if (saleData.code !== 200 || !Number.isFinite(lowestPrice) || lowestPrice <= 0 || vm.gameId !== gameData.id) return;
-        vm.keyPricePy = lowestPrice;
-        vm.cdkPrice = Math.max(0.1, (Math.round(lowestPrice * 10) - 1) / 10);
-      } catch (error) {
-        console.error("[SteamPy Plus] 查询当前最低挂单价失败", error);
-      }
-    }
-    async function startModalListener() {
-      await elmGetter2.get("#main > div.main > div.single-page-con > div > div");
-      const vm = jQuery("#main > div.main > div.single-page-con > div > div").get(0)?.__vue__;
-      if (!vm || vm.__steamPyPlusGoToChoosePatched) return;
-      const originalGoToChoose = vm.goToChoose;
-      if (typeof originalGoToChoose !== "function") return;
-      vm.__steamPyPlusGoToChoosePatched = true;
-      vm.goToChoose = function patchedGoToChoose(index) {
-        originalGoToChoose.call(this, index);
-        const gameData = this.modalGamList[index];
-        this.$nextTick(() => {
-          addHistoricalPrice(jQuery(".ivu-modal").filter(":visible"), gameData);
-          updateModalSalePrice(gameData, this);
-        });
-      };
-    }
-    async function updateSellRows(vm) {
-      await elmGetter2.get(".orderOne.bg-white .list-item");
-      jQuery(".orderOne.bg-white .list-item").each(async (index, item) => {
-        const data = vm.sellList?.[index];
-        const priceElement = item.querySelector("div:nth-child(7)");
-        if (!data || !priceElement) return;
-        const selfPrice = data.keyPrice;
-        priceElement.innerText = `${selfPrice}`;
-        priceElement.classList.remove("color-red");
-        if (data.stock === 0) return;
-        try {
-          const saleData = await getSaleList(data.gameId);
-          if (saleData.code !== 200) {
-            console.error(saleData.msg);
-            return;
-          }
-          const saleList = saleData.result?.content || [];
-          const lowestPrice = saleList[0]?.keyPrice;
-          if (lowestPrice === void 0 || lowestPrice >= selfPrice) return;
-          let order = 1;
-          for (const seller of saleList) {
-            if (seller.saleId === data.sellerId) break;
-            if (seller.keyPrice < selfPrice) order += seller.stock;
-          }
-          if (order !== 1) {
-            priceElement.classList.add("color-red");
-            priceElement.innerText = `${selfPrice} 最低价${lowestPrice}`;
-            priceElement.setAttribute("data-rawtext", `${selfPrice}`);
-          }
-        } catch (error) {
-          console.error("[SteamPy Plus] 查询卖家报价失败", error);
-        }
+  var SELLER_PATH = "/pro/seller/sellerCDKey";
+  var BATCH_BUTTON_ATTRIBUTE = "data-steampy-plus-batch-add";
+  var BATCH_MODAL_ATTRIBUTE = "data-steampy-plus-batch-modal";
+  var BATCH_STYLE_ATTRIBUTE = "data-steampy-plus-batch-style";
+  var REGION_BY_LABEL = {
+    国区: "cn",
+    俄罗斯区: "ru",
+    全球区: "us",
+    土区: "tl"
+  };
+  function isSellerPage() {
+    return location.pathname.replace(/\/+$/, "") === SELLER_PATH;
+  }
+  function createElement(tagName, options = {}) {
+    const element = document.createElement(tagName);
+    if (options.className) element.className = options.className;
+    if (options.text !== void 0) element.textContent = options.text;
+    if (options.type) element.type = options.type;
+    if (options.disabled !== void 0) element.disabled = options.disabled;
+    if (options.attributes) {
+      Object.entries(options.attributes).forEach(([name, value]) => {
+        element.setAttribute(name, value);
       });
     }
-    async function startSellListListener() {
-      const elements = await elmGetter2.get("#main > div.main > div.single-page-con > div.single-page > div:has(.cdkTrade-layout)");
-      const vm = elements?.[0]?.__vue__;
-      if (!vm || vm.__steamPyPlusSellWatcher || typeof vm.$watch !== "function") return;
-      vm.__steamPyPlusSellWatcher = true;
-      vm.$watch("sellList", function onSellListChanged() {
-        if (vm.sellList === void 0) return;
-        this.$nextTick(() => updateSellRows(vm));
-      }, { immediate: true });
+    return element;
+  }
+  function errorMessage(error) {
+    return error?.message || String(error);
+  }
+  function rowLabel(row) {
+    const locator = row.gameName || (row.appId ? `AppID ${row.appId}` : `gameId ${row.gameId}`);
+    return `第 ${row.lineNumber} 行 · ${locator}`;
+  }
+  function collectFailedRows(results, groups, stoppedAt) {
+    const rows = [];
+    results.forEach((result) => {
+      if (!result?.ok) rows.push(...result?.rows || []);
+    });
+    if (stoppedAt !== null) {
+      groups.slice(stoppedAt).forEach((group) => rows.push(...group.rows));
     }
-    async function addQuantitySort() {
-      try {
-        const parent = await elmGetter2.get(".flex-row > .c-point.flex-row.align-items-center");
-        if (!parent?.length) return;
-        const buttons = parent.find(".ml-5-rem.c-point.tagBtn");
-        if (!buttons.length || parent.find("[data-steam-py-plus-quantity-sort]").length) return;
-        const attributes = {};
-        jQuery.each(buttons.first()[0].attributes, (_, attribute) => {
-          if (attribute.name.startsWith("data-v-")) attributes[attribute.name] = attribute.value;
-        });
-        const form = await elmGetter2.get("#main > div.main > div.single-page-con > div > div");
-        const formVm = form?.[0]?.__vue__;
-        if (!formVm) return;
-        const quantityButton = jQuery("<div>").addClass("ml-5-rem c-point tagBtn").attr(attributes).attr("data-steam-py-plus-quantity-sort", "true").append(jQuery("<span>").addClass("tag-title").text("数量").attr(attributes));
-        const sortByStock = function sortByStock2() {
-          parent.find(".ml-5-rem.c-point.tagBtn").removeClass("active");
-          jQuery(this).addClass("active");
-          formVm.sellForm.sort = "stock";
-          formVm.sellForm.pageNumber = 1;
-          formVm.getSellData();
-        };
-        quantityButton.on("click", sortByStock);
-        buttons.on("click", sortByStock);
-        buttons.last().after(quantityButton);
-      } catch (error) {
-        console.error('添加"数量"排序按钮失败：', error);
+    return rows;
+  }
+  function createSteamPySellerController({
+    client,
+    parseBatchCsv: parseBatchCsv2,
+    preflightBatch: preflightBatch2,
+    submitBatch: submitBatch2
+  } = {}) {
+    let started = false;
+    let observer = null;
+    let injectionScheduled = false;
+    let modal = null;
+    let removeModalKeydown = null;
+    function currentRegionSnapshot() {
+      const activeRegion = document.querySelector(".area-wap > .qu-li-a");
+      const label = activeRegion?.textContent.trim() || "";
+      const region = REGION_BY_LABEL[label];
+      if (!region) throw new Error("无法识别当前出售区域，请刷新页面后重试");
+      return { label, region };
+    }
+    function assertRegionSnapshot(snapshot) {
+      const current = currentRegionSnapshot();
+      if (current.region !== snapshot.region || current.label !== snapshot.label) {
+        throw new Error(`出售区域已从“${snapshot.label}”切换为“${current.label}”，请重新预检`);
       }
     }
-    async function start() {
-      if (initialized) return;
-      await Promise.all([startModalListener(), addQuantitySort(), startSellListListener()]);
-      initialized = true;
+    function ensureStyle() {
+      if (document.querySelector(`[${BATCH_STYLE_ATTRIBUTE}]`)) return;
+      const style = createElement("style", {
+        attributes: { [BATCH_STYLE_ATTRIBUTE]: "true" }
+      });
+      style.textContent = `
+      [${BATCH_MODAL_ATTRIBUTE}] {
+        position: fixed;
+        inset: 0;
+        z-index: 2147483000;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(0, 0, 0, 0.55);
+        box-sizing: border-box;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-dialog {
+        width: min(920px, 100%);
+        max-height: min(840px, calc(100vh - 48px));
+        display: flex;
+        flex-direction: column;
+        gap: 14px;
+        padding: 22px;
+        overflow: auto;
+        border-radius: 10px;
+        background: #fff;
+        color: #1f2329;
+        box-shadow: 0 16px 48px rgba(0, 0, 0, 0.3);
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-header,
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-actions,
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-confirm {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-header {
+        justify-content: space-between;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] h2,
+      [${BATCH_MODAL_ATTRIBUTE}] p {
+        margin: 0;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] textarea {
+        min-height: 210px;
+        padding: 10px;
+        resize: vertical;
+        border: 1px solid #c9cdd4;
+        border-radius: 6px;
+        font: 13px/1.6 ui-monospace, SFMono-Regular, Consolas, monospace;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] button {
+        min-height: 34px;
+        padding: 0 16px;
+        border: 1px solid #c9cdd4;
+        border-radius: 5px;
+        background: #fff;
+        cursor: pointer;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] button.sp-batch-primary {
+        border-color: #165dff;
+        background: #165dff;
+        color: #fff;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] button:disabled,
+      [${BATCH_MODAL_ATTRIBUTE}] textarea:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-close {
+        min-width: 34px;
+        padding: 0;
+        font-size: 22px;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-panel {
+        display: none;
+        padding: 12px;
+        border-radius: 6px;
+        background: #f2f3f5;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-panel[data-visible="true"] {
+        display: block;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-list {
+        display: grid;
+        gap: 8px;
+        margin: 10px 0 0;
+        padding: 0;
+        list-style: none;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-error {
+        color: #cb2634;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-success {
+        color: #168344;
+      }
+      [${BATCH_MODAL_ATTRIBUTE}] .sp-batch-progress {
+        font-weight: 600;
+      }
+    `;
+      document.head.append(style);
+    }
+    function closeModal() {
+      if (!modal || modal.running) return;
+      removeModalKeydown?.();
+      removeModalKeydown = null;
+      modal.root.remove();
+      modal = null;
+    }
+    function openModal() {
+      if (modal || !isSellerPage()) return;
+      ensureStyle();
+      const root = createElement("div", {
+        attributes: {
+          [BATCH_MODAL_ATTRIBUTE]: "true",
+          role: "dialog",
+          "aria-modal": "true",
+          "aria-labelledby": "steampy-plus-batch-title"
+        }
+      });
+      const dialog = createElement("section", { className: "sp-batch-dialog" });
+      const header = createElement("div", { className: "sp-batch-header" });
+      const title = createElement("h2", {
+        text: "批量添加 CDKey",
+        attributes: { id: "steampy-plus-batch-title" }
+      });
+      const closeButton = createElement("button", {
+        className: "sp-batch-close",
+        text: "×",
+        type: "button",
+        attributes: { "aria-label": "关闭批量添加窗口" }
+      });
+      header.append(title, closeButton);
+      const format = createElement("p", {
+        text: "固定无表头 CSV：gameName,key,appId,gameId。每行 2–4 列；至少填写 gameName、appId、gameId 之一，ID 始终按文本处理。"
+      });
+      const textarea = createElement("textarea", {
+        attributes: {
+          placeholder: '示例：\n"Chillquarium","AAAAA-BBBBB-CCCCC","2276930",',
+          "aria-label": "批量 CDKey CSV"
+        }
+      });
+      const status = createElement("p", {
+        text: "请先预检；预检不会提交 CDKey。",
+        attributes: { "aria-live": "polite" }
+      });
+      const errorPanel = createElement("section", {
+        className: "sp-batch-panel sp-batch-error",
+        attributes: { "data-visible": "false" }
+      });
+      const previewPanel = createElement("section", {
+        className: "sp-batch-panel",
+        attributes: { "data-visible": "false" }
+      });
+      const progressPanel = createElement("section", {
+        className: "sp-batch-panel",
+        attributes: { "data-visible": "false", "aria-live": "polite" }
+      });
+      const confirmLabel = createElement("label", { className: "sp-batch-confirm" });
+      const confirmCheckbox = createElement("input", { type: "checkbox", disabled: true });
+      const confirmText = createElement("span", { text: "我已核对预览内容和出售区域，并确认开始真实上架。" });
+      confirmLabel.append(confirmCheckbox, confirmText);
+      const actions = createElement("div", { className: "sp-batch-actions" });
+      const preflightButton = createElement("button", {
+        className: "sp-batch-primary",
+        text: "预检",
+        type: "button"
+      });
+      const submitButton = createElement("button", {
+        className: "sp-batch-primary",
+        text: "确认并串行上架",
+        type: "button",
+        disabled: true
+      });
+      const refreshButton = createElement("button", {
+        text: "刷新页面",
+        type: "button",
+        disabled: true
+      });
+      const cancelButton = createElement("button", { text: "关闭", type: "button" });
+      actions.append(preflightButton, submitButton, refreshButton, cancelButton);
+      dialog.append(
+        header,
+        format,
+        textarea,
+        status,
+        errorPanel,
+        previewPanel,
+        progressPanel,
+        confirmLabel,
+        actions
+      );
+      root.append(dialog);
+      document.body.append(root);
+      modal = {
+        confirmCheckbox,
+        preflightResult: null,
+        regionSnapshot: null,
+        root,
+        running: false
+      };
+      function clearPanel(panel) {
+        panel.replaceChildren();
+        panel.dataset.visible = "false";
+      }
+      function renderErrors(errors) {
+        clearPanel(errorPanel);
+        if (!errors.length) return;
+        errorPanel.dataset.visible = "true";
+        errorPanel.append(createElement("strong", { text: `发现 ${errors.length} 个问题` }));
+        const list = createElement("ul", { className: "sp-batch-list" });
+        errors.forEach((error) => {
+          const prefix = error.lineNumber ? `第 ${error.lineNumber} 行：` : "";
+          list.append(createElement("li", { text: `${prefix}${error.message || errorMessage(error)}` }));
+        });
+        errorPanel.append(list);
+      }
+      function renderPreview(result, snapshot) {
+        clearPanel(previewPanel);
+        previewPanel.dataset.visible = "true";
+        previewPanel.append(
+          createElement("strong", {
+            text: `出售区域：${snapshot.label}；共 ${result.rows.length} 行、${result.groups.length} 个商品`
+          })
+        );
+        const list = createElement("ul", { className: "sp-batch-list" });
+        result.groups.forEach((group) => {
+          const name = group.gameName || (group.appId ? `AppID ${group.appId}` : "未命名商品");
+          const appIdText = group.appId ? ` · AppID ${group.appId}` : "";
+          list.append(
+            createElement("li", {
+              text: `${name}${appIdText} · gameId ${group.gameId} · ${group.rows.length} 个 Key · 挂单价 ${group.keyPrice}`
+            })
+          );
+        });
+        previewPanel.append(list);
+      }
+      function resetPreflight() {
+        modal.preflightResult = null;
+        modal.regionSnapshot = null;
+        confirmCheckbox.checked = false;
+        confirmCheckbox.disabled = true;
+        submitButton.disabled = true;
+        refreshButton.disabled = true;
+        clearPanel(errorPanel);
+        clearPanel(previewPanel);
+        clearPanel(progressPanel);
+        status.className = "";
+        status.textContent = "内容已改变，请重新预检。";
+      }
+      function setRunning(running) {
+        modal.running = running;
+        textarea.disabled = running;
+        preflightButton.disabled = running;
+        confirmCheckbox.disabled = running || !modal.preflightResult;
+        submitButton.disabled = running || !confirmCheckbox.checked || !modal.preflightResult;
+        closeButton.disabled = running;
+        cancelButton.disabled = running;
+      }
+      async function runPreflight() {
+        if (typeof parseBatchCsv2 !== "function" || typeof preflightBatch2 !== "function" || !client) {
+          renderErrors([{ message: "批量功能依赖未完成接线，请刷新脚本后重试" }]);
+          return;
+        }
+        let snapshot;
+        let parsed;
+        try {
+          snapshot = currentRegionSnapshot();
+          parsed = parseBatchCsv2(textarea.value);
+        } catch (error) {
+          renderErrors([{ message: errorMessage(error) }]);
+          status.textContent = "输入或区域读取失败，不会提交任何 CDKey。";
+          return;
+        }
+        renderErrors(parsed.errors || []);
+        if (!parsed.rows?.length || parsed.errors?.length) {
+          status.textContent = parsed.rows?.length ? "请修正输入问题后重新预检。" : "没有可预检的有效行。";
+          return;
+        }
+        setRunning(true);
+        status.textContent = `正在预检 ${parsed.rows.length} 行，当前区域：${snapshot.label}…`;
+        try {
+          const result = await preflightBatch2(parsed.rows, { client, region: snapshot.region });
+          assertRegionSnapshot(snapshot);
+          renderErrors(result.errors || []);
+          renderPreview(result, snapshot);
+          if (result.errors?.length || !result.groups?.length) {
+            status.textContent = "预检未通过，不会启用提交。";
+            return;
+          }
+          modal.preflightResult = result;
+          modal.regionSnapshot = snapshot;
+          confirmCheckbox.disabled = false;
+          status.className = "sp-batch-success";
+          status.textContent = "预检通过。请核对区域、商品、Key 数量和挂单价后勾选确认。";
+        } catch (error) {
+          renderErrors([{ message: errorMessage(error) }]);
+          status.textContent = "预检失败，不会提交任何 CDKey。";
+        } finally {
+          setRunning(false);
+        }
+      }
+      async function runSubmission() {
+        if (!modal.preflightResult || typeof submitBatch2 !== "function") return;
+        try {
+          assertRegionSnapshot(modal.regionSnapshot);
+        } catch (error) {
+          resetPreflight();
+          renderErrors([{ message: errorMessage(error) }]);
+          return;
+        }
+        const { groups } = modal.preflightResult;
+        const allResults = [];
+        let stoppedAt = null;
+        setRunning(true);
+        progressPanel.dataset.visible = "true";
+        status.className = "";
+        status.textContent = `开始在“${modal.regionSnapshot.label}”串行上架，运行期间不可编辑或关闭。`;
+        for (let index = 0; index < groups.length; index += 1) {
+          const group = groups[index];
+          progressPanel.replaceChildren(
+            createElement("p", {
+              className: "sp-batch-progress",
+              text: `正在提交 ${index + 1}/${groups.length}：gameId ${group.gameId}，${group.rows.length} 个 Key`
+            })
+          );
+          let batchResult;
+          try {
+            batchResult = await submitBatch2([group], {
+              client,
+              region: modal.regionSnapshot.region,
+              sellPrice: String(group.keyPrice)
+            });
+          } catch (error) {
+            batchResult = {
+              results: [{
+                error,
+                gameId: group.gameId,
+                message: errorMessage(error),
+                ok: false,
+                rows: group.rows
+              }],
+              stopped: client?.isTokenInvalid?.() === true
+            };
+          }
+          allResults.push(...batchResult.results || []);
+          if (!batchResult.results?.length) {
+            stoppedAt = index;
+            break;
+          }
+          if (batchResult.stopped) {
+            stoppedAt = index + 1;
+            break;
+          }
+        }
+        const failedRows = collectFailedRows(allResults, groups, stoppedAt);
+        const succeeded = allResults.filter((result) => result.ok).length;
+        const failed = allResults.filter((result) => !result.ok).length + (stoppedAt === null ? 0 : groups.length - stoppedAt);
+        textarea.value = failedRows.map((row) => row.rawLine).filter(Boolean).join("\n");
+        progressPanel.replaceChildren(
+          createElement("p", {
+            className: failedRows.length ? "sp-batch-error" : "sp-batch-success",
+            text: `完成：成功 ${succeeded} 组，失败或未执行 ${failed} 组${stoppedAt === null ? "" : "，队列已提前停止"}。`
+          })
+        );
+        if (failedRows.length) {
+          const list = createElement("ul", { className: "sp-batch-list sp-batch-error" });
+          allResults.filter((result) => !result.ok).forEach((result) => {
+            const affected = (result.rows || []).map(rowLabel).join("、");
+            list.append(createElement("li", { text: `${affected}：${result.message || errorMessage(result.error)}` }));
+          });
+          progressPanel.append(list);
+          status.textContent = "失败和未执行的原始行已保留在输入框，可刷新数据后重新预检。";
+        } else {
+          status.className = "sp-batch-success";
+          status.textContent = "全部提交完成。请刷新页面查看最新挂单列表。";
+        }
+        modal.preflightResult = null;
+        modal.regionSnapshot = null;
+        confirmCheckbox.checked = false;
+        submitButton.disabled = true;
+        refreshButton.disabled = false;
+        setRunning(false);
+      }
+      textarea.addEventListener("input", resetPreflight);
+      preflightButton.addEventListener("click", runPreflight);
+      confirmCheckbox.addEventListener("change", () => {
+        submitButton.disabled = !confirmCheckbox.checked || !modal.preflightResult;
+      });
+      submitButton.addEventListener("click", runSubmission);
+      refreshButton.addEventListener("click", () => location.reload());
+      closeButton.addEventListener("click", closeModal);
+      cancelButton.addEventListener("click", closeModal);
+      root.addEventListener("click", (event) => {
+        if (event.target === root) closeModal();
+      });
+      const onKeydown = (event) => {
+        if (event.key === "Escape") closeModal();
+      };
+      document.addEventListener("keydown", onKeydown);
+      removeModalKeydown = () => document.removeEventListener("keydown", onKeydown);
+      textarea.focus();
+    }
+    function injectButton() {
+      injectionScheduled = false;
+      if (!started || !isSellerPage()) return;
+      const actionBar = document.querySelector(".cdkTrade-layout > .w100.tc");
+      if (!actionBar || actionBar.querySelector(`[${BATCH_BUTTON_ATTRIBUTE}]`)) return;
+      const addButton = [...actionBar.querySelectorAll(":scope > button")].find((button) => button.textContent.trim() === "添加CDKey");
+      if (!addButton) return;
+      const batchButton = createElement("button", {
+        className: addButton.className,
+        text: "批量添加CDKey",
+        type: "button",
+        attributes: { [BATCH_BUTTON_ATTRIBUTE]: "true" }
+      });
+      batchButton.addEventListener("click", openModal);
+      addButton.insertAdjacentElement("afterend", batchButton);
+    }
+    function scheduleInjection() {
+      if (injectionScheduled) return;
+      injectionScheduled = true;
+      queueMicrotask(injectButton);
+    }
+    function start() {
+      if (started) return;
+      started = true;
+      observer = new MutationObserver(scheduleInjection);
+      observer.observe(document.documentElement, { childList: true, subtree: true });
+      scheduleInjection();
     }
     function cleanup() {
-      initialized = false;
+      started = false;
+      injectionScheduled = false;
+      observer?.disconnect();
+      observer = null;
+      document.querySelectorAll(`[${BATCH_BUTTON_ATTRIBUTE}]`).forEach((button) => button.remove());
+      if (modal) {
+        modal.running = false;
+        closeModal();
+      }
+      document.querySelector(`[${BATCH_STYLE_ATTRIBUTE}]`)?.remove();
     }
     return { cleanup, start };
   }
@@ -1281,7 +1839,7 @@
       console.log(`${NOTIFICATION_TITLE}: ${text}`, error);
     }
   }
-  function errorMessage(error) {
+  function errorMessage2(error) {
     return error instanceof Error ? error.message : String(error);
   }
   function parseDynamicStoreData(data) {
@@ -1392,7 +1950,7 @@
         return state;
       } catch (error) {
         console.error("[SteamPy Plus] 同步Steam数据失败", error);
-        notify(`同步Steam数据失败：${errorMessage(error)}`);
+        notify(`同步Steam数据失败：${errorMessage2(error)}`);
         return null;
       }
     }
@@ -1494,13 +2052,25 @@
   // src/lib/steampy/xboot-client.js
   var STEAMPY_ORIGIN = "https://steampy.com";
   var NEED_LOGIN_PATH = "/xboot/common/needLogin";
-  var KEY_SALE_START_PATHS = {
-    cn: "/xboot/steamKeySale/startSell",
-    ru: "/xboot/ruKeySale/startSell",
-    us: "/xboot/usKeySale/startSell",
-    tl: "/xboot/tlKeySale/startSell"
+  var KEY_SALE_ENDPOINTS = {
+    cn: {
+      game: "/xboot/steamGame",
+      keySale: "/xboot/steamKeySale"
+    },
+    ru: {
+      game: "/xboot/ruSteamGame",
+      keySale: "/xboot/ruKeySale"
+    },
+    us: {
+      game: "/xboot/usSteamGame",
+      keySale: "/xboot/usKeySale"
+    },
+    tl: {
+      game: "/xboot/tlSteamGame",
+      keySale: "/xboot/tlKeySale"
+    }
   };
-  function buildSteampyXbootHeaders(accessToken, referer = `${STEAMPY_ORIGIN}/pyUserInfo/sellerCDKey`) {
+  function buildSteampyXbootHeaders(accessToken, referer = `${STEAMPY_ORIGIN}/pro/seller/sellerCDKey`) {
     return {
       accept: "application/json, text/plain, */*",
       "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -1573,8 +2143,15 @@
       });
       return requestUrl;
     }
-    async function fetchSaleKeyByUrl(gameUrl) {
-      const requestUrl = buildSearchUrl("/xboot/steamGame/saleKeyByUrl", {
+    function getKeySaleEndpoints(region) {
+      if (!Object.hasOwn(KEY_SALE_ENDPOINTS, region)) {
+        throw new Error(`不支持的上架地区：${region}`);
+      }
+      return KEY_SALE_ENDPOINTS[region];
+    }
+    async function fetchSaleKeyByUrl(gameUrl, region = "cn") {
+      const endpoints = getKeySaleEndpoints(region);
+      const requestUrl = buildSearchUrl(`${endpoints.game}/saleKeyByUrl`, {
         pageNumber: 1,
         pageSize: 10,
         sort: "id",
@@ -1585,8 +2162,9 @@
       const result = await requestJson(requestUrl);
       return { success: true, result };
     }
-    async function fetchSaleKeyByName(gameName) {
-      const requestUrl = buildSearchUrl("/xboot/steamGame/saleKeyByName", {
+    async function fetchSaleKeyByName(gameName, region = "cn") {
+      const endpoints = getKeySaleEndpoints(region);
+      const requestUrl = buildSearchUrl(`${endpoints.game}/saleKeyByName`, {
         pageNumber: 1,
         pageSize: 10,
         sort: "id",
@@ -1606,6 +2184,18 @@
     async function fetchSteamGameByAppId(appId) {
       return requestJson(buildSearchUrl("/xboot/steamGame/searchByAppId", { appId }));
     }
+    async function fetchKeySaleList({ region = "cn", gameId }) {
+      const endpoints = getKeySaleEndpoints(region);
+      return requestJson(buildSearchUrl(`${endpoints.keySale}/listSale`, {
+        pageNumber: 1,
+        pageSize: 20,
+        sort: "keyPrice",
+        order: "asc",
+        startDate: "",
+        endDate: "",
+        gameId
+      }));
+    }
     async function startKeySale({
       region = "cn",
       gameId,
@@ -1615,10 +2205,7 @@
       syncUs,
       osflag
     }) {
-      const path = Object.hasOwn(KEY_SALE_START_PATHS, region) ? KEY_SALE_START_PATHS[region] : "";
-      if (!path) {
-        throw new Error(`不支持的上架地区：${region}`);
-      }
+      const endpoints = getKeySaleEndpoints(region);
       const data = { gameId, keys, sellPrice };
       if (keyWord !== void 0) {
         data.keyWord = keyWord;
@@ -1629,7 +2216,7 @@
       if (osflag !== void 0) {
         data.osflag = osflag;
       }
-      return requestJson(`${STEAMPY_ORIGIN}${path}`, {
+      return requestJson(`${STEAMPY_ORIGIN}${endpoints.keySale}/startSell`, {
         method: "POST",
         data: JSON.stringify(data),
         headers: { "Content-Type": "application/json" }
@@ -1640,6 +2227,7 @@
       isTokenInvalid,
       fetchSaleKeyByUrl,
       fetchSaleKeyByName,
+      fetchKeySaleList,
       fetchSteamAppList,
       fetchSteamGameByAppId,
       startKeySale,
@@ -1650,9 +2238,9 @@
   // src/lib/steampy/steampy-plus.js
   var LEGACY_BUYER_PATH = "/cdKey/cdKey";
   var PRO_BUYER_PATH = "/pro/cdKey/cdKey";
-  var SELLER_PATH = "/pyUserInfo/sellerCDKey";
+  var SELLER_PATH2 = "/pro/seller/sellerCDKey";
   var DETAIL_PATH = "/cdkDetail";
-  function startSteamPyPlus({ ajax: ajax2, ajaxHooker: ajaxHooker2, elmGetter: elmGetter2, jQuery }) {
+  function startSteamPyPlus({ ajaxHooker: ajaxHooker2, elmGetter: elmGetter2, jQuery }) {
     let buyer;
     const libraryManager = createSteamLibraryManager({
       onChange() {
@@ -1674,8 +2262,12 @@
       setHideDlcSuspended: filter.setHideDlcSuspended
     });
     buyer = createSteamPyBuyerController({ advancedFilter, elmGetter: elmGetter2, jQuery, filter, rating });
-    const saleListClient = createSteamPySaleListClient({ ajax: ajax2 });
-    const seller = createSteamPySellerController({ elmGetter: elmGetter2, jQuery, getSaleList: saleListClient.getSaleList });
+    const seller = createSteamPySellerController({
+      client: xbootClient,
+      parseBatchCsv,
+      preflightBatch,
+      submitBatch
+    });
     installSteamPyAjaxHooks({ ajaxHooker: ajaxHooker2, jQuery, onHotGames: rating.setHotGameData });
     libraryManager.registerMenus();
     elmGetter2.selector(jQuery);
@@ -1709,10 +2301,10 @@
     function handlePathChange() {
       const pathname = location.pathname;
       startBuyer(pathname);
-      if (pathname.startsWith(SELLER_PATH) && !sellerActive) {
+      if (pathname.startsWith(SELLER_PATH2) && !sellerActive) {
         seller.start();
         sellerActive = true;
-      } else if (!pathname.startsWith(SELLER_PATH) && sellerActive) {
+      } else if (!pathname.startsWith(SELLER_PATH2) && sellerActive) {
         seller.cleanup();
         sellerActive = false;
       }
@@ -1742,5 +2334,5 @@
   }
 
   // src/userscripts/steampy.user.js
-  startSteamPyPlus({ ajax, ajaxHooker, elmGetter, jQuery: $ });
+  startSteamPyPlus({ ajaxHooker, elmGetter, jQuery: $ });
 })();

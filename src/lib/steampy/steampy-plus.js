@@ -4,17 +4,21 @@ import { createSteamPyAdvancedFilterController } from "./steampy-plus-advanced-f
 import { createSteamPyBuyerController } from "./steampy-plus-buyer.js";
 import { createSteamPyPriceFilter } from "./steampy-plus-filter.js";
 import { createSteamPyRatingEnhancer } from "./steampy-plus-rating.js";
-import { createSteamPySaleListClient } from "./steampy-plus-sale-cache.js";
+import {
+  parseBatchCsv,
+  preflightBatch,
+  submitBatch,
+} from "./steampy-plus-seller-batch.js";
 import { createSteamPySellerController } from "./steampy-plus-seller.js";
 import { createSteamLibraryManager } from "./steam-library.js";
 import { createSteampyXbootClient } from "./xboot-client.js";
 
 const LEGACY_BUYER_PATH = "/cdKey/cdKey";
 const PRO_BUYER_PATH = "/pro/cdKey/cdKey";
-const SELLER_PATH = "/pyUserInfo/sellerCDKey";
+const SELLER_PATH = "/pro/seller/sellerCDKey";
 const DETAIL_PATH = "/cdkDetail";
 
-export function startSteamPyPlus({ ajax, ajaxHooker, elmGetter, jQuery }) {
+export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
   let buyer;
   const libraryManager = createSteamLibraryManager({
     onChange() {
@@ -36,8 +40,12 @@ export function startSteamPyPlus({ ajax, ajaxHooker, elmGetter, jQuery }) {
     setHideDlcSuspended: filter.setHideDlcSuspended,
   });
   buyer = createSteamPyBuyerController({ advancedFilter, elmGetter, jQuery, filter, rating });
-  const saleListClient = createSteamPySaleListClient({ ajax });
-  const seller = createSteamPySellerController({ elmGetter, jQuery, getSaleList: saleListClient.getSaleList });
+  const seller = createSteamPySellerController({
+    client: xbootClient,
+    parseBatchCsv,
+    preflightBatch,
+    submitBatch,
+  });
 
   installSteamPyAjaxHooks({ ajaxHooker, jQuery, onHotGames: rating.setHotGameData });
   libraryManager.registerMenus();

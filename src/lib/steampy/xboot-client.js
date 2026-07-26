@@ -2,14 +2,26 @@ import { gmXhr } from "../userscript/gm-xhr.js";
 
 const STEAMPY_ORIGIN = "https://steampy.com";
 const NEED_LOGIN_PATH = "/xboot/common/needLogin";
-const KEY_SALE_START_PATHS = {
-  cn: "/xboot/steamKeySale/startSell",
-  ru: "/xboot/ruKeySale/startSell",
-  us: "/xboot/usKeySale/startSell",
-  tl: "/xboot/tlKeySale/startSell",
+const KEY_SALE_ENDPOINTS = {
+  cn: {
+    game: "/xboot/steamGame",
+    keySale: "/xboot/steamKeySale",
+  },
+  ru: {
+    game: "/xboot/ruSteamGame",
+    keySale: "/xboot/ruKeySale",
+  },
+  us: {
+    game: "/xboot/usSteamGame",
+    keySale: "/xboot/usKeySale",
+  },
+  tl: {
+    game: "/xboot/tlSteamGame",
+    keySale: "/xboot/tlKeySale",
+  },
 };
 
-export function buildSteampyXbootHeaders(accessToken, referer = `${STEAMPY_ORIGIN}/pyUserInfo/sellerCDKey`) {
+export function buildSteampyXbootHeaders(accessToken, referer = `${STEAMPY_ORIGIN}/pro/seller/sellerCDKey`) {
   return {
     accept: "application/json, text/plain, */*",
     "accept-language": "zh-CN,zh;q=0.9,en-US;q=0.8,en;q=0.7",
@@ -97,8 +109,16 @@ export function createSteampyXbootClient(options = {}) {
     return requestUrl;
   }
 
-  async function fetchSaleKeyByUrl(gameUrl) {
-    const requestUrl = buildSearchUrl("/xboot/steamGame/saleKeyByUrl", {
+  function getKeySaleEndpoints(region) {
+    if (!Object.hasOwn(KEY_SALE_ENDPOINTS, region)) {
+      throw new Error(`不支持的上架地区：${region}`);
+    }
+    return KEY_SALE_ENDPOINTS[region];
+  }
+
+  async function fetchSaleKeyByUrl(gameUrl, region = "cn") {
+    const endpoints = getKeySaleEndpoints(region);
+    const requestUrl = buildSearchUrl(`${endpoints.game}/saleKeyByUrl`, {
       pageNumber: 1,
       pageSize: 10,
       sort: "id",
@@ -110,8 +130,9 @@ export function createSteampyXbootClient(options = {}) {
     return { success: true, result };
   }
 
-  async function fetchSaleKeyByName(gameName) {
-    const requestUrl = buildSearchUrl("/xboot/steamGame/saleKeyByName", {
+  async function fetchSaleKeyByName(gameName, region = "cn") {
+    const endpoints = getKeySaleEndpoints(region);
+    const requestUrl = buildSearchUrl(`${endpoints.game}/saleKeyByName`, {
       pageNumber: 1,
       pageSize: 10,
       sort: "id",
@@ -135,6 +156,19 @@ export function createSteampyXbootClient(options = {}) {
     return requestJson(buildSearchUrl("/xboot/steamGame/searchByAppId", { appId }));
   }
 
+  async function fetchKeySaleList({ region = "cn", gameId }) {
+    const endpoints = getKeySaleEndpoints(region);
+    return requestJson(buildSearchUrl(`${endpoints.keySale}/listSale`, {
+      pageNumber: 1,
+      pageSize: 20,
+      sort: "keyPrice",
+      order: "asc",
+      startDate: "",
+      endDate: "",
+      gameId,
+    }));
+  }
+
   async function startKeySale({
     region = "cn",
     gameId,
@@ -144,12 +178,7 @@ export function createSteampyXbootClient(options = {}) {
     syncUs,
     osflag,
   }) {
-    const path = Object.hasOwn(KEY_SALE_START_PATHS, region)
-      ? KEY_SALE_START_PATHS[region]
-      : "";
-    if (!path) {
-      throw new Error(`不支持的上架地区：${region}`);
-    }
+    const endpoints = getKeySaleEndpoints(region);
 
     const data = { gameId, keys, sellPrice };
     if (keyWord !== undefined) {
@@ -162,7 +191,7 @@ export function createSteampyXbootClient(options = {}) {
       data.osflag = osflag;
     }
 
-    return requestJson(`${STEAMPY_ORIGIN}${path}`, {
+    return requestJson(`${STEAMPY_ORIGIN}${endpoints.keySale}/startSell`, {
       method: "POST",
       data: JSON.stringify(data),
       headers: { "Content-Type": "application/json" },
@@ -174,6 +203,7 @@ export function createSteampyXbootClient(options = {}) {
     isTokenInvalid,
     fetchSaleKeyByUrl,
     fetchSaleKeyByName,
+    fetchKeySaleList,
     fetchSteamAppList,
     fetchSteamGameByAppId,
     startKeySale,
