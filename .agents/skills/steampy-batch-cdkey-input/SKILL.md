@@ -15,11 +15,11 @@ description: Validate, repair, and enrich pasted SteamPy batch CDKey CSV. Use wh
 - `appId` 是 Steam 商店 AppID；`gameId` 是 SteamPy 商品 ID，二者不可混用。
 - ID 必须保持为十进制正整数字符串，不转换为 JavaScript Number。
 - 游戏名含逗号或双引号时使用标准 CSV 双引号规则。
-- 保持原始行序与 Key 原文；受控本地输出不得遮盖或改写 Key。
+- 保持原始行序；与现有解析器一致地去除各字段首尾空白，除此之外不得遮盖或改写 Key。
 
 ## 处理流程
 
-1. 逐行按标准 CSV 解析，检查列数、空 Key、重复 Key、非法 ID 和错位列。
+1. 逐行按现有脚本的 CSV 规则解析并修剪字段首尾空白，检查列数、空 Key、重复 Key、非法 ID 和错位列。
 2. 根据用户要求补列；未特别说明时，优先把已核实的 AppID 补到第三列，不强求第四列 gameId。
 3. 缺少 AppID 时查询并核对 Steam 官方商店页面或官方搜索结果；区分本体、DLC、原声带、试玩版和同名游戏。
 4. 只有唯一匹配时填写 AppID。存在同名、版本或商店下架歧义时不得猜测，保留空列并指出对应行。
