@@ -1,0 +1,4 @@
+interface:
+  display_name: "SteamPy 批量 CDKey 输入"
+  short_description: "检查批量 CDKey CSV，并核实补充 AppID 与 gameId"
+  default_prompt: "Use $steampy-batch-cdkey-input to check and complete this pasted SteamPy batch CDKey list."

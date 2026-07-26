@@ -112,3 +112,5 @@ scripts/remote/**/*.pyc
 !.agents/skills/
 !.agents/skills/scriptcat-script-setup/
 !.agents/skills/scriptcat-script-setup/**
+!.agents/skills/steampy-batch-cdkey-input/
+!.agents/skills/steampy-batch-cdkey-input/**
