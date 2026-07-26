@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.5
+// @version         5.10.6
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -1203,7 +1203,7 @@
     const results = [];
     let stopped = false;
     let pendingGroups = [];
-    let lastRequestStartedAt = null;
+    let lastRequestCompletedAt = null;
     for (let index = 0; index < groups.length; index += 1) {
       const group = groups[index];
       if (!shouldContinue() || client.isTokenInvalid?.()) {
@@ -1211,8 +1211,8 @@
         pendingGroups = groups.slice(index);
         break;
       }
-      if (lastRequestStartedAt !== null) {
-        const waitMs = Math.max(0, lastRequestStartedAt + minimumIntervalMs - now());
+      if (lastRequestCompletedAt !== null) {
+        const waitMs = Math.max(0, lastRequestCompletedAt + minimumIntervalMs - now());
         if (waitMs > 0) {
           onWaiting?.({ group, index, total: groups.length, waitMs });
           await wait(waitMs);
@@ -1224,7 +1224,6 @@
         }
       }
       onSubmitting?.({ group, index, total: groups.length });
-      lastRequestStartedAt = now();
       try {
         const result = await client.startKeySale({
           region,
@@ -1240,6 +1239,8 @@
           pendingGroups = groups.slice(index + 1);
           break;
         }
+      } finally {
+        lastRequestCompletedAt = now();
       }
     }
     return { results, stopped, pendingGroups };

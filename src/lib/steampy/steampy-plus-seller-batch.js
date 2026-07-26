@@ -200,7 +200,7 @@ export async function submitBatch(groups, {
   const results = [];
   let stopped = false;
   let pendingGroups = [];
-  let lastRequestStartedAt = null;
+  let lastRequestCompletedAt = null;
   for (let index = 0; index < groups.length; index += 1) {
     const group = groups[index];
     if (!shouldContinue() || client.isTokenInvalid?.()) {
@@ -208,8 +208,8 @@ export async function submitBatch(groups, {
       pendingGroups = groups.slice(index);
       break;
     }
-    if (lastRequestStartedAt !== null) {
-      const waitMs = Math.max(0, lastRequestStartedAt + minimumIntervalMs - now());
+    if (lastRequestCompletedAt !== null) {
+      const waitMs = Math.max(0, lastRequestCompletedAt + minimumIntervalMs - now());
       if (waitMs > 0) {
         onWaiting?.({ group, index, total: groups.length, waitMs });
         await wait(waitMs);
@@ -221,7 +221,6 @@ export async function submitBatch(groups, {
       }
     }
     onSubmitting?.({ group, index, total: groups.length });
-    lastRequestStartedAt = now();
     try {
       const result = await client.startKeySale({
         region,
@@ -237,6 +236,8 @@ export async function submitBatch(groups, {
         pendingGroups = groups.slice(index + 1);
         break;
       }
+    } finally {
+      lastRequestCompletedAt = now();
     }
   }
   return { results, stopped, pendingGroups };

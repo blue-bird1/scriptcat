@@ -232,6 +232,7 @@ test("submission uses each group price, continues ordinary failures, and stops o
     async startKeySale(payload) {
       calls.push(payload);
       requestStartedAt.push(currentTime);
+      currentTime += 800;
       if (payload.gameId === groups[0].gameId) throw new Error("ordinary rejection");
       tokenInvalid = true;
       throw new Error("token expired");
@@ -266,7 +267,7 @@ test("submission uses each group price, continues ordinary failures, and stops o
     { ok: false, gameId: "111111111111111111", rawLines: ["Game A,KEY-A"] },
     { ok: false, gameId: "222222222222222222", rawLines: ["Game B,KEY-B"] },
   ]);
-  assert.deepEqual(requestStartedAt, [0, KEY_SALE_REQUEST_INTERVAL_MS]);
+  assert.deepEqual(requestStartedAt, [0, 800 + KEY_SALE_REQUEST_INTERVAL_MS]);
   assert.deepEqual(waits, [KEY_SALE_REQUEST_INTERVAL_MS]);
   assert.equal(result.stopped, true);
   assert.deepEqual(result.pendingGroups, [groups[2]]);
