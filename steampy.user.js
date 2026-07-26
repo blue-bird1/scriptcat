@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.3
+// @version         5.10.4
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -2076,14 +2076,19 @@
   }
 
   // src/lib/userscript/gm-xhr.js
-  function gmXhr(options) {
+  function createGmXhrError(message, response) {
+    const error = new Error(message);
+    error.response = response;
+    return error;
+  }
+  function gmXhr(options, sendRequest = GM_xmlhttpRequest) {
     return new Promise((resolve, reject) => {
-      GM_xmlhttpRequest({
+      sendRequest({
         timeout: 2e4,
         ...options,
         onload: resolve,
-        onerror: () => reject(new Error("网络请求失败")),
-        ontimeout: () => reject(new Error("网络请求超时"))
+        onerror: (response) => reject(createGmXhrError("网络请求失败", response)),
+        ontimeout: (response) => reject(createGmXhrError("网络请求超时", response))
       });
     });
   }

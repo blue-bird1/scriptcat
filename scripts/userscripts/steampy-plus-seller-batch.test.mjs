@@ -10,6 +10,26 @@ import {
   createSteampyXbootClient,
   STEAMPY_XBOOT_LOG_PREFIX,
 } from "../../src/lib/steampy/xboot-client.js";
+import { gmXhr } from "../../src/lib/userscript/gm-xhr.js";
+
+test("GM transport failures preserve the complete callback response", async () => {
+  const transportResponse = {
+    status: 0,
+    statusText: "Network Error",
+    finalUrl: "https://steampy.com/xboot/steamKeySale/startSell",
+    responseHeaders: "",
+    responseText: "",
+  };
+
+  await assert.rejects(
+    gmXhr({}, (request) => request.onerror(transportResponse)),
+    (error) => {
+      assert.equal(error.message, "网络请求失败");
+      assert.equal(error.response, transportResponse);
+      return true;
+    },
+  );
+});
 
 test("startSell sends one native form request and logs the complete failed exchange", async () => {
   const requests = [];

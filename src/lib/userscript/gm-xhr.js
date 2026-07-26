@@ -1,11 +1,17 @@
-export function gmXhr(options) {
+function createGmXhrError(message, response) {
+  const error = new Error(message);
+  error.response = response;
+  return error;
+}
+
+export function gmXhr(options, sendRequest = GM_xmlhttpRequest) {
   return new Promise((resolve, reject) => {
-    GM_xmlhttpRequest({
+    sendRequest({
       timeout: 20000,
       ...options,
       onload: resolve,
-      onerror: () => reject(new Error("网络请求失败")),
-      ontimeout: () => reject(new Error("网络请求超时")),
+      onerror: (response) => reject(createGmXhrError("网络请求失败", response)),
+      ontimeout: (response) => reject(createGmXhrError("网络请求超时", response)),
     });
   });
 }
