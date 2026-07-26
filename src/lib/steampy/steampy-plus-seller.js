@@ -58,6 +58,9 @@ export function createSteamPySellerController({
   let injectionScheduled = false;
   let modal = null;
   let removeModalKeydown = null;
+  let lifecycleGeneration = 0;
+  let preservedDraft = "";
+  let submissionActive = false;
 
   function currentRegionSnapshot() {
     const activeRegion = document.querySelector(".area-wap > .qu-li-a");
@@ -186,8 +189,17 @@ export function createSteamPySellerController({
     modal = null;
   }
 
+  function setSubmissionActive(active) {
+    submissionActive = active;
+    const batchButton = document.querySelector(`[${BATCH_BUTTON_ATTRIBUTE}]`);
+    if (batchButton) {
+      batchButton.disabled = active;
+      batchButton.textContent = active ? "批量上架处理中" : "批量添加CDKey";
+    }
+  }
+
   function openModal() {
-    if (modal || !isSellerPage()) return;
+    if (modal || submissionActive || !isSellerPage()) return;
     ensureStyle();
 
     const root = createElement("div", {
@@ -275,13 +287,20 @@ export function createSteamPySellerController({
     root.append(dialog);
     document.body.append(root);
 
-    modal = {
+    const state = {
       confirmCheckbox,
       preflightResult: null,
       regionSnapshot: null,
       root,
       running: false,
+      textarea,
     };
+    modal = state;
+    if (preservedDraft) {
+      textarea.value = preservedDraft;
+      status.textContent = "已恢复上次离开页面时尚未完成的输入，请重新预检。";
+      preservedDraft = "";
+    }
 
     function clearPanel(panel) {
       panel.replaceChildren();
@@ -323,8 +342,8 @@ export function createSteamPySellerController({
     }
 
     function resetPreflight() {
-      modal.preflightResult = null;
-      modal.regionSnapshot = null;
+      state.preflightResult = null;
+      state.regionSnapshot = null;
       confirmCheckbox.checked = false;
       confirmCheckbox.disabled = true;
       submitButton.disabled = true;
@@ -337,11 +356,11 @@ export function createSteamPySellerController({
     }
 
     function setRunning(running) {
-      modal.running = running;
+      state.running = running;
       textarea.disabled = running;
       preflightButton.disabled = running;
-      confirmCheckbox.disabled = running || !modal.preflightResult;
-      submitButton.disabled = running || !confirmCheckbox.checked || !modal.preflightResult;
+      confirmCheckbox.disabled = running || !state.preflightResult;
+      submitButton.disabled = running || !confirmCheckbox.checked || !state.preflightResult;
       closeButton.disabled = running;
       cancelButton.disabled = running;
     }
@@ -378,8 +397,8 @@ export function createSteamPySellerController({
           status.textContent = "预检未通过，不会启用提交。";
           return;
         }
-        modal.preflightResult = result;
-        modal.regionSnapshot = snapshot;
+        state.preflightResult = result;
+        state.regionSnapshot = snapshot;
         confirmCheckbox.disabled = false;
         status.className = "sp-batch-success";
         status.textContent = "预检通过。请核对区域、商品、Key 数量和挂单价后勾选确认。";
@@ -392,24 +411,30 @@ export function createSteamPySellerController({
     }
 
     async function runSubmission() {
-      if (!modal.preflightResult || typeof submitBatch !== "function") return;
+      if (!state.preflightResult || typeof submitBatch !== "function") return;
       try {
-        assertRegionSnapshot(modal.regionSnapshot);
+        assertRegionSnapshot(state.regionSnapshot);
       } catch (error) {
         resetPreflight();
         renderErrors([{ message: errorMessage(error) }]);
         return;
       }
 
-      const { groups } = modal.preflightResult;
+      const submissionGeneration = lifecycleGeneration;
+      const { groups } = state.preflightResult;
       const allResults = [];
       let stoppedAt = null;
+      setSubmissionActive(true);
       setRunning(true);
       progressPanel.dataset.visible = "true";
       status.className = "";
-      status.textContent = `开始在“${modal.regionSnapshot.label}”串行上架，运行期间不可编辑或关闭。`;
+      status.textContent = `开始在“${state.regionSnapshot.label}”串行上架，运行期间不可编辑或关闭。`;
 
       for (let index = 0; index < groups.length; index += 1) {
+        if (submissionGeneration !== lifecycleGeneration || !started || !isSellerPage()) {
+          stoppedAt = index;
+          break;
+        }
         const group = groups[index];
         progressPanel.replaceChildren(
           createElement("p", {
@@ -421,7 +446,7 @@ export function createSteamPySellerController({
         try {
           batchResult = await submitBatch([group], {
             client,
-            region: modal.regionSnapshot.region,
+            region: state.regionSnapshot.region,
             sellPrice: String(group.keyPrice),
           });
         } catch (error) {
@@ -437,6 +462,10 @@ export function createSteamPySellerController({
           };
         }
         allResults.push(...(batchResult.results || []));
+        if (submissionGeneration !== lifecycleGeneration || !started || !isSellerPage()) {
+          stoppedAt = index + 1;
+          break;
+        }
         if (!batchResult.results?.length) {
           stoppedAt = index;
           break;
@@ -448,10 +477,17 @@ export function createSteamPySellerController({
       }
 
       const failedRows = collectFailedRows(allResults, groups, stoppedAt);
+      const failedInput = failedRows.map((row) => row.rawLine).filter(Boolean).join("\n");
+      if (submissionGeneration !== lifecycleGeneration || !started || !isSellerPage()) {
+        preservedDraft = failedInput;
+        state.running = false;
+        setSubmissionActive(false);
+        return;
+      }
       const succeeded = allResults.filter((result) => result.ok).length;
       const failed = allResults.filter((result) => !result.ok).length
         + (stoppedAt === null ? 0 : groups.length - stoppedAt);
-      textarea.value = failedRows.map((row) => row.rawLine).filter(Boolean).join("\n");
+      textarea.value = failedInput;
       progressPanel.replaceChildren(
         createElement("p", {
           className: failedRows.length ? "sp-batch-error" : "sp-batch-success",
@@ -470,18 +506,19 @@ export function createSteamPySellerController({
         status.className = "sp-batch-success";
         status.textContent = "全部提交完成。请刷新页面查看最新挂单列表。";
       }
-      modal.preflightResult = null;
-      modal.regionSnapshot = null;
+      state.preflightResult = null;
+      state.regionSnapshot = null;
       confirmCheckbox.checked = false;
       submitButton.disabled = true;
       refreshButton.disabled = false;
       setRunning(false);
+      setSubmissionActive(false);
     }
 
     textarea.addEventListener("input", resetPreflight);
     preflightButton.addEventListener("click", runPreflight);
     confirmCheckbox.addEventListener("change", () => {
-      submitButton.disabled = !confirmCheckbox.checked || !modal.preflightResult;
+      submitButton.disabled = !confirmCheckbox.checked || !state.preflightResult;
     });
     submitButton.addEventListener("click", runSubmission);
     refreshButton.addEventListener("click", () => location.reload());
@@ -508,8 +545,9 @@ export function createSteamPySellerController({
     if (!addButton) return;
     const batchButton = createElement("button", {
       className: addButton.className,
-      text: "批量添加CDKey",
+      text: submissionActive ? "批量上架处理中" : "批量添加CDKey",
       type: "button",
+      disabled: submissionActive,
       attributes: { [BATCH_BUTTON_ATTRIBUTE]: "true" },
     });
     batchButton.addEventListener("click", openModal);
@@ -532,11 +570,13 @@ export function createSteamPySellerController({
 
   function cleanup() {
     started = false;
+    lifecycleGeneration += 1;
     injectionScheduled = false;
     observer?.disconnect();
     observer = null;
     document.querySelectorAll(`[${BATCH_BUTTON_ATTRIBUTE}]`).forEach((button) => button.remove());
     if (modal) {
+      preservedDraft = modal.textarea.value;
       modal.running = false;
       closeModal();
     }
