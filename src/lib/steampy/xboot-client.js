@@ -2,6 +2,12 @@ import { gmXhr } from "../userscript/gm-xhr.js";
 
 const STEAMPY_ORIGIN = "https://steampy.com";
 const NEED_LOGIN_PATH = "/xboot/common/needLogin";
+const KEY_SALE_START_PATHS = {
+  cn: "/xboot/steamKeySale/startSell",
+  ru: "/xboot/ruKeySale/startSell",
+  us: "/xboot/usKeySale/startSell",
+  tl: "/xboot/tlKeySale/startSell",
+};
 
 export function buildSteampyXbootHeaders(accessToken, referer = `${STEAMPY_ORIGIN}/pyUserInfo/sellerCDKey`) {
   return {
@@ -40,14 +46,20 @@ export function createSteampyXbootClient(options = {}) {
       throw new Error("AccessToken 已失效，已停止后续请求。请重新登录 steampy.com 后刷新页面。");
     }
 
+    const xhrOverrides = requestOptions.xhrOverrides || {};
     const response = await gmXhr({
-      method: "GET",
+      method: requestOptions.method || "GET",
       url: url.toString(),
-      headers: buildSteampyXbootHeaders(getAccessToken(), requestOptions.referer),
       withCredentials: true,
       anonymous: false,
       responseType: requestOptions.responseType || "json",
-      ...requestOptions.xhrOverrides,
+      data: requestOptions.data,
+      ...xhrOverrides,
+      headers: {
+        ...buildSteampyXbootHeaders(getAccessToken(), requestOptions.referer),
+        ...requestOptions.headers,
+        ...xhrOverrides.headers,
+      },
     });
 
     const finalPathname = response.finalUrl
@@ -123,6 +135,40 @@ export function createSteampyXbootClient(options = {}) {
     return requestJson(buildSearchUrl("/xboot/steamGame/searchByAppId", { appId }));
   }
 
+  async function startKeySale({
+    region = "cn",
+    gameId,
+    keys,
+    sellPrice,
+    keyWord,
+    syncUs,
+    osflag,
+  }) {
+    const path = Object.hasOwn(KEY_SALE_START_PATHS, region)
+      ? KEY_SALE_START_PATHS[region]
+      : "";
+    if (!path) {
+      throw new Error(`不支持的上架地区：${region}`);
+    }
+
+    const data = { gameId, keys, sellPrice };
+    if (keyWord !== undefined) {
+      data.keyWord = keyWord;
+    }
+    if (syncUs !== undefined) {
+      data.syncUs = syncUs;
+    }
+    if (osflag !== undefined) {
+      data.osflag = osflag;
+    }
+
+    return requestJson(`${STEAMPY_ORIGIN}${path}`, {
+      method: "POST",
+      data: JSON.stringify(data),
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
   return {
     fetchFilterMetadata,
     isTokenInvalid,
@@ -130,6 +176,7 @@ export function createSteampyXbootClient(options = {}) {
     fetchSaleKeyByName,
     fetchSteamAppList,
     fetchSteamGameByAppId,
+    startKeySale,
     requestJson,
   };
 }

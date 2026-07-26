@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.9.8
+// @version         5.9.9
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -1494,6 +1494,12 @@
   // src/lib/steampy/xboot-client.js
   var STEAMPY_ORIGIN = "https://steampy.com";
   var NEED_LOGIN_PATH = "/xboot/common/needLogin";
+  var KEY_SALE_START_PATHS = {
+    cn: "/xboot/steamKeySale/startSell",
+    ru: "/xboot/ruKeySale/startSell",
+    us: "/xboot/usKeySale/startSell",
+    tl: "/xboot/tlKeySale/startSell"
+  };
   function buildSteampyXbootHeaders(accessToken, referer = `${STEAMPY_ORIGIN}/pyUserInfo/sellerCDKey`) {
     return {
       accept: "application/json, text/plain, */*",
@@ -1526,14 +1532,20 @@
       if (tokenInvalid) {
         throw new Error("AccessToken 已失效，已停止后续请求。请重新登录 steampy.com 后刷新页面。");
       }
+      const xhrOverrides = requestOptions.xhrOverrides || {};
       const response = await gmXhr({
-        method: "GET",
+        method: requestOptions.method || "GET",
         url: url.toString(),
-        headers: buildSteampyXbootHeaders(getAccessToken(), requestOptions.referer),
         withCredentials: true,
         anonymous: false,
         responseType: requestOptions.responseType || "json",
-        ...requestOptions.xhrOverrides
+        data: requestOptions.data,
+        ...xhrOverrides,
+        headers: {
+          ...buildSteampyXbootHeaders(getAccessToken(), requestOptions.referer),
+          ...requestOptions.headers,
+          ...xhrOverrides.headers
+        }
       });
       const finalPathname = response.finalUrl ? new URL(response.finalUrl, STEAMPY_ORIGIN).pathname : "";
       const redirectedToNeedLogin = response.status === 302 && finalPathname === NEED_LOGIN_PATH;
@@ -1594,6 +1606,35 @@
     async function fetchSteamGameByAppId(appId) {
       return requestJson(buildSearchUrl("/xboot/steamGame/searchByAppId", { appId }));
     }
+    async function startKeySale({
+      region = "cn",
+      gameId,
+      keys,
+      sellPrice,
+      keyWord,
+      syncUs,
+      osflag
+    }) {
+      const path = Object.hasOwn(KEY_SALE_START_PATHS, region) ? KEY_SALE_START_PATHS[region] : "";
+      if (!path) {
+        throw new Error(`不支持的上架地区：${region}`);
+      }
+      const data = { gameId, keys, sellPrice };
+      if (keyWord !== void 0) {
+        data.keyWord = keyWord;
+      }
+      if (syncUs !== void 0) {
+        data.syncUs = syncUs;
+      }
+      if (osflag !== void 0) {
+        data.osflag = osflag;
+      }
+      return requestJson(`${STEAMPY_ORIGIN}${path}`, {
+        method: "POST",
+        data: JSON.stringify(data),
+        headers: { "Content-Type": "application/json" }
+      });
+    }
     return {
       fetchFilterMetadata,
       isTokenInvalid,
@@ -1601,6 +1642,7 @@
       fetchSaleKeyByName,
       fetchSteamAppList,
       fetchSteamGameByAppId,
+      startKeySale,
       requestJson
     };
   }
