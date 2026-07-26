@@ -6,6 +6,21 @@ import {
   preflightBatch,
   submitBatch,
 } from "../../src/lib/steampy/steampy-plus-seller-batch.js";
+import { buildStartKeySalePayload } from "../../src/lib/steampy/xboot-client.js";
+
+test("startSell payload includes required no-sync defaults", () => {
+  assert.deepEqual(buildStartKeySalePayload({
+    gameId: "748400107661037568",
+    keys: "469PB-BXXBM-8E3TN",
+    sellPrice: 8.08,
+  }), {
+    gameId: "748400107661037568",
+    keys: "469PB-BXXBM-8E3TN",
+    keyWord: "",
+    sellPrice: "8.08",
+    syncUs: "0",
+  });
+});
 
 test("CSV contract rejects key-only rows and preserves quoted fields and large IDs", () => {
   const input = [

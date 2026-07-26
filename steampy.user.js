@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.1
+// @version         5.10.2
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -2125,6 +2125,26 @@
       referrer: referer
     };
   }
+  function buildStartKeySalePayload({
+    gameId,
+    keys,
+    sellPrice,
+    keyWord = "",
+    syncUs = "0",
+    osflag
+  }) {
+    const data = {
+      gameId: String(gameId),
+      keys: String(keys),
+      keyWord: String(keyWord ?? ""),
+      sellPrice: String(sellPrice),
+      syncUs: String(syncUs ?? "0")
+    };
+    if (osflag !== void 0) {
+      data.osflag = osflag;
+    }
+    return data;
+  }
   function createSteampyXbootClient(options = {}) {
     const getAccessToken = options.getAccessToken || (() => "");
     let tokenInvalid = false;
@@ -2240,21 +2260,19 @@
       gameId,
       keys,
       sellPrice,
-      keyWord,
-      syncUs,
+      keyWord = "",
+      syncUs = "0",
       osflag
     }) {
       const endpoints = getKeySaleEndpoints(region);
-      const data = { gameId, keys, sellPrice };
-      if (keyWord !== void 0) {
-        data.keyWord = keyWord;
-      }
-      if (syncUs !== void 0) {
-        data.syncUs = syncUs;
-      }
-      if (osflag !== void 0) {
-        data.osflag = osflag;
-      }
+      const data = buildStartKeySalePayload({
+        gameId,
+        keys,
+        keyWord,
+        sellPrice,
+        syncUs,
+        osflag
+      });
       return requestJson(`${STEAMPY_ORIGIN}${endpoints.keySale}/startSell`, {
         method: "POST",
         data: JSON.stringify(data),

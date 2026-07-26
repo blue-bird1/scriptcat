@@ -99,6 +99,26 @@
       referrer: referer
     };
   }
+  function buildStartKeySalePayload({
+    gameId,
+    keys,
+    sellPrice,
+    keyWord = "",
+    syncUs = "0",
+    osflag
+  }) {
+    const data = {
+      gameId: String(gameId),
+      keys: String(keys),
+      keyWord: String(keyWord ?? ""),
+      sellPrice: String(sellPrice),
+      syncUs: String(syncUs ?? "0")
+    };
+    if (osflag !== void 0) {
+      data.osflag = osflag;
+    }
+    return data;
+  }
   function createSteampyXbootClient(options = {}) {
     const getAccessToken = options.getAccessToken || (() => "");
     let tokenInvalid = false;
@@ -214,21 +234,19 @@
       gameId,
       keys,
       sellPrice,
-      keyWord,
-      syncUs,
+      keyWord = "",
+      syncUs = "0",
       osflag
     }) {
       const endpoints = getKeySaleEndpoints(region);
-      const data = { gameId, keys, sellPrice };
-      if (keyWord !== void 0) {
-        data.keyWord = keyWord;
-      }
-      if (syncUs !== void 0) {
-        data.syncUs = syncUs;
-      }
-      if (osflag !== void 0) {
-        data.osflag = osflag;
-      }
+      const data = buildStartKeySalePayload({
+        gameId,
+        keys,
+        keyWord,
+        sellPrice,
+        syncUs,
+        osflag
+      });
       return requestJson(`${STEAMPY_ORIGIN}${endpoints.keySale}/startSell`, {
         method: "POST",
         data: JSON.stringify(data),
