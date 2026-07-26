@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.6
+// @version         5.10.7
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -58,7 +58,9 @@
             }
             const target = jQuery(".market-content > .market-detail > div:nth-child(3)");
             if (!target.find("[data-steam-py-plus-sales]").length) {
-              target.append(`<div data-steam-py-plus-sales class="ht100 mt-50" style="flex-wrap: wrap;"><span class="f20-rem mt-20-rem ml-20-rem">历史销售数量 ${data.result.keyTx}</span></div>`);
+              const historicalSales = data.result.keySales;
+              const historicalSalesText = historicalSales === void 0 || historicalSales === null || historicalSales === "" ? "暂无" : String(historicalSales);
+              target.append(`<div data-steam-py-plus-sales class="ht100 mt-50" style="flex-wrap: wrap;"><span class="f20-rem mt-20-rem ml-20-rem">历史销售数量 ${historicalSalesText}</span></div>`);
             }
           } catch (error) {
             console.error("getOne接口数据处理失败：", error);

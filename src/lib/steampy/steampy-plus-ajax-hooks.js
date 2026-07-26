@@ -20,7 +20,11 @@ export function installSteamPyAjaxHooks({ ajaxHooker, jQuery, onHotGames }) {
           }
           const target = jQuery(".market-content > .market-detail > div:nth-child(3)");
           if (!target.find("[data-steam-py-plus-sales]").length) {
-            target.append(`<div data-steam-py-plus-sales class="ht100 mt-50" style="flex-wrap: wrap;"><span class="f20-rem mt-20-rem ml-20-rem">历史销售数量 ${data.result.keyTx}</span></div>`);
+            const historicalSales = data.result.keySales;
+            const historicalSalesText = historicalSales === undefined || historicalSales === null || historicalSales === ""
+              ? "暂无"
+              : String(historicalSales);
+            target.append(`<div data-steam-py-plus-sales class="ht100 mt-50" style="flex-wrap: wrap;"><span class="f20-rem mt-20-rem ml-20-rem">历史销售数量 ${historicalSalesText}</span></div>`);
           }
         } catch (error) {
           console.error("getOne接口数据处理失败：", error);
