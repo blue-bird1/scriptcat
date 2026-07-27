@@ -1024,7 +1024,7 @@
       }
       try {
         const url = new URL(link.href, location.href);
-        return url.origin === location.origin && /^\/explore\/startnew(?:\/0)?\/?$/.test(url.pathname);
+        return url.origin === location.origin && /^\/explore\/startnew\/0\/?$/.test(url.pathname);
       } catch {
         return false;
       }
