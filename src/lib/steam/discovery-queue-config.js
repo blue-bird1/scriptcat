@@ -16,7 +16,7 @@ export const DEFAULT_DISCOVERY_QUEUE_CONFIG = {
   ignoreFree: false,
   ignoreUnreviewed: false,
   ignoreDlc: false,
-  autoRestartQueue: false,
+  autoContinueQueue: false,
   excludedTags: { enabled: false, value: [] },
   requiredLanguages: { enabled: false, value: [6, 7] },
 };
@@ -30,7 +30,7 @@ function cloneDefaultConfig() {
     minimumDiscount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumDiscount },
     earliestReleaseDate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.earliestReleaseDate },
     ignoreDlc: DEFAULT_DISCOVERY_QUEUE_CONFIG.ignoreDlc,
-    autoRestartQueue: DEFAULT_DISCOVERY_QUEUE_CONFIG.autoRestartQueue,
+    autoContinueQueue: DEFAULT_DISCOVERY_QUEUE_CONFIG.autoContinueQueue,
     excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] },
     requiredLanguages: {
       ...DEFAULT_DISCOVERY_QUEUE_CONFIG.requiredLanguages,
@@ -132,7 +132,10 @@ function normalizeConfig(value) {
     ignoreFree: normalizeBoolean(value.ignoreFree, fallback.ignoreFree),
     ignoreUnreviewed: normalizeBoolean(value.ignoreUnreviewed, fallback.ignoreUnreviewed),
     ignoreDlc: normalizeBoolean(value.ignoreDlc, fallback.ignoreDlc),
-    autoRestartQueue: normalizeBoolean(value.autoRestartQueue, fallback.autoRestartQueue),
+    autoContinueQueue: normalizeBoolean(
+      value.autoContinueQueue,
+      fallback.autoContinueQueue,
+    ),
     excludedTags: {
       enabled: normalizeBoolean(tags.enabled, fallback.excludedTags.enabled),
       value: normalizeTags(tags.value),
@@ -295,8 +298,12 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
     const releaseDate = addRule(fields, "最早发布日期", draft.earliestReleaseDate, "date");
     const ignoreFree = addCheckbox(fields, "忽略免费游戏", draft.ignoreFree);
     const ignoreUnreviewed = addCheckbox(fields, "忽略未评测游戏", draft.ignoreUnreviewed);
-    const ignoreDlc = addCheckbox(fields, "忽略 DLC/扩展内容", draft.ignoreDlc);
-    const autoRestartQueue = addCheckbox(fields, "探索结束后自动继续下一次", draft.autoRestartQueue);
+    const ignoreDlc = addCheckbox(fields, "忽略 DLC / 下载内容", draft.ignoreDlc);
+    const autoContinueQueue = addCheckbox(
+      fields,
+      "探索结束后自动继续下一次",
+      draft.autoContinueQueue,
+    );
     const tagRow = createElement("div", "scriptcat-discovery-queue-config-rule");
     const tagEnabled = addCheckbox(tagRow, "排除标签", draft.excludedTags.enabled);
     const tagContainer = createElement("div", "scriptcat-discovery-queue-config-tags");
@@ -396,7 +403,7 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
       ignoreFree.checked = defaults.ignoreFree;
       ignoreUnreviewed.checked = defaults.ignoreUnreviewed;
       ignoreDlc.checked = defaults.ignoreDlc;
-      autoRestartQueue.checked = defaults.autoRestartQueue;
+      autoContinueQueue.checked = defaults.autoContinueQueue;
       tagEnabled.checked = defaults.excludedTags.enabled;
       tags = [];
       renderTags();
@@ -419,7 +426,7 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
         ignoreFree: ignoreFree.checked,
         ignoreUnreviewed: ignoreUnreviewed.checked,
         ignoreDlc: ignoreDlc.checked,
-        autoRestartQueue: autoRestartQueue.checked,
+        autoContinueQueue: autoContinueQueue.checked,
         excludedTags: { enabled: tagEnabled.checked, value: tags },
         requiredLanguages: {
           enabled: languageEnabled.checked,

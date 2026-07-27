@@ -1,6 +1,9 @@
 import { createDiscoveryQueueConfigUi } from "./discovery-queue-config.js";
 import { createDiscoveryQueueRuleEngine } from "./discovery-queue-rules.js";
 
+const QUEUE_OBSERVER_SELECTOR =
+  '[role="dialog"], #queueActionsCtn, .discover_queue_empty';
+
 function isVisible(element) {
   return Boolean(
     element &&
@@ -173,8 +176,113 @@ function getClassicContext() {
   };
 }
 
-export function startDiscoveryQueueAutoFilter({ getStoreItem, onConfigChange } = {}) {
+function findCommonAncestor(left, right, boundary) {
+  const ancestors = new Set();
+  for (let current = left; current && current !== boundary; current = current.parentElement) {
+    ancestors.add(current);
+  }
+  for (let current = right; current && current !== boundary; current = current.parentElement) {
+    if (ancestors.has(current)) {
+      return current;
+    }
+  }
+  return undefined;
+}
+
+function getModalContinueButton() {
+  const dialogs = [...document.querySelectorAll('[role="dialog"]')];
+  for (const dialog of dialogs) {
+    if (!dialog.querySelector('a[href*="/explore"][href*="dq=widget"]')) {
+      continue;
+    }
+
+    const wishlistLink = dialog.querySelector('a[href*="/wishlist"]');
+    const ignoredLink = dialog.querySelector('a[href*="/account/notinterested"]');
+    if (
+      !(wishlistLink instanceof HTMLAnchorElement) ||
+      !(ignoredLink instanceof HTMLAnchorElement)
+    ) {
+      continue;
+    }
+
+    const summaryRoot = findCommonAncestor(wishlistLink, ignoredLink, dialog);
+    if (!(summaryRoot instanceof HTMLElement)) {
+      continue;
+    }
+
+    const markerClasses = new Set(
+      [...dialog.querySelectorAll('[role="button"][aria-label]')]
+        .filter(isVisible)
+        .flatMap((element) => [...element.classList]),
+    );
+    if (markerClasses.size === 0) {
+      continue;
+    }
+
+    const actionParents = new Set(
+      [...summaryRoot.querySelectorAll("*")]
+        .filter(
+          (element) =>
+            element instanceof HTMLElement &&
+            isVisible(element) &&
+            [...element.classList].some((className) => markerClasses.has(className)),
+        )
+        .map((element) => element.parentElement)
+        .filter((element) => element instanceof HTMLElement),
+    );
+    for (const actionParent of actionParents) {
+      const actions = [...actionParent.children].filter(
+        (element) => element instanceof HTMLElement && isVisible(element),
+      );
+      if (
+        actions.length === 2 &&
+        actions.every((action) =>
+          [...action.classList].some((className) => markerClasses.has(className)),
+        ) &&
+        Boolean(
+          wishlistLink.compareDocumentPosition(actionParent) &
+            Node.DOCUMENT_POSITION_FOLLOWING,
+        )
+      ) {
+        return actions[1];
+      }
+    }
+  }
+  return undefined;
+}
+
+function getClassicContinueLink() {
+  if (new URLSearchParams(location.search).get("queue") !== "1") {
+    return undefined;
+  }
+
+  const emptyQueue = [...document.querySelectorAll(".discover_queue_empty")].find(
+    isVisible,
+  );
+  if (!(emptyQueue instanceof HTMLElement)) {
+    return undefined;
+  }
+
+  return [...emptyQueue.querySelectorAll("a[href]")].find((link) => {
+    if (!(link instanceof HTMLAnchorElement) || !isVisible(link)) {
+      return false;
+    }
+    try {
+      const url = new URL(link.href, location.href);
+      return (
+        url.origin === location.origin &&
+        /^\/explore\/startnew(?:\/0)?\/?$/.test(url.pathname)
+      );
+    } catch {
+      return false;
+    }
+  });
+}
+
+export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
   const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
+  const continuedModalButtons = new WeakSet();
+  const continuedClassicLinks = new WeakSet();
   let stopped = false;
   let paused = false;
   let scheduled = false;
@@ -185,9 +293,6 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem, onConfigChange } =
   const configUi = createDiscoveryQueueConfigUi({
     onSave() {
       activeConfig = configUi.getConfig();
-      if (typeof onConfigChange === "function") {
-        onConfigChange(activeConfig);
-      }
       generation += 1;
       evaluatedKey = undefined;
       schedule();
@@ -201,9 +306,6 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem, onConfigChange } =
   });
 
   activeConfig = configUi.getConfig();
-  if (typeof onConfigChange === "function") {
-    onConfigChange(activeConfig);
-  }
 
   function getContext() {
     return getModalContext() ?? getClassicContext();
@@ -211,13 +313,39 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem, onConfigChange } =
 
   async function evaluateCurrent() {
     scheduled = false;
+    const config = activeConfig ?? configUi.getConfig();
+    if (paused) {
+      return;
+    }
+
+    if (config.autoContinueQueue) {
+      const modalContinueButton = getModalContinueButton();
+      if (
+        modalContinueButton instanceof HTMLElement &&
+        !continuedModalButtons.has(modalContinueButton)
+      ) {
+        continuedModalButtons.add(modalContinueButton);
+        modalContinueButton.click();
+        return;
+      }
+
+      const classicContinueLink = getClassicContinueLink();
+      if (
+        classicContinueLink instanceof HTMLAnchorElement &&
+        !continuedClassicLinks.has(classicContinueLink)
+      ) {
+        continuedClassicLinks.add(classicContinueLink);
+        classicContinueLink.click();
+        return;
+      }
+    }
+
     const context = getContext();
     if (!context) {
       return;
     }
     configUi.ensureButton(context.buttonHost);
-    const config = activeConfig ?? configUi.getConfig();
-    if (paused || !config.enabled || !context.appId || context.key === evaluatedKey) {
+    if (!config.enabled || !context.appId || context.key === evaluatedKey) {
       return;
     }
 
@@ -250,22 +378,27 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem, onConfigChange } =
     const relevant = records.some((record) => {
       if (
         record.target instanceof Element &&
-        record.target.closest('[role="dialog"], #queueActionsCtn')
+        record.target.closest(QUEUE_OBSERVER_SELECTOR)
       ) {
         return true;
       }
       return [...record.addedNodes].some(
         (node) =>
           node instanceof Element &&
-          (node.matches('[role="dialog"], #queueActionsCtn') ||
-            node.querySelector('[role="dialog"], #queueActionsCtn')),
+          (node.matches(QUEUE_OBSERVER_SELECTOR) ||
+            node.querySelector(QUEUE_OBSERVER_SELECTOR)),
       );
     });
     if (relevant) {
       schedule();
     }
   });
-  observer.observe(document, { childList: true, subtree: true });
+  observer.observe(document, {
+    attributes: true,
+    attributeFilter: ["class", "style"],
+    childList: true,
+    subtree: true,
+  });
   schedule();
 
   return () => {

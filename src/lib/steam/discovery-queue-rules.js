@@ -77,16 +77,6 @@ function parseReviews(payload) {
   };
 }
 
-function parseFullGame(fullGameValue) {
-  if (fullGameValue && typeof fullGameValue === "object") {
-    return isNonNegativeInteger(fullGameValue.appid) && fullGameValue.appid > 0;
-  }
-  if (typeof fullGameValue === "number") {
-    return fullGameValue > 0;
-  }
-  return false;
-}
-
 function parseDetails(payload, appId) {
   const details = payload?.[appId];
   if (details?.success !== true || !details.data || typeof details.data !== "object") {
@@ -122,14 +112,12 @@ function parseDetails(payload, appId) {
     result.releaseDate = parseEnglishDate(details.data.release_date?.date);
   }
 
-  const type = typeof details.data.type === "string" ? details.data.type.toLowerCase() : "";
-  if (type === "dlc") {
-    result.isDlc = true;
-  }
-
-  const fullGame = parseFullGame(details.data.fullgame);
-  if (result.isDlc === undefined && fullGame === true) {
-    result.isDlc = true;
+  const type =
+    typeof details.data.type === "string"
+      ? details.data.type.trim().toLowerCase()
+      : "";
+  if (type) {
+    result.isDlc = type === "dlc";
   }
 
   return result;
@@ -347,6 +335,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
           ? await loadStoreItem(appId, {
               needsReviews,
               needsReleaseDate,
+              needsDlc,
               requiredLanguages,
             })
           : {};

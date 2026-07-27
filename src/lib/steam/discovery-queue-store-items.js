@@ -1,5 +1,6 @@
 const CACHE_WAIT_MS = 50;
 const CHINESE_LANGUAGE_IDS = new Set([6, 7, 29]);
+const DLC_APP_TYPE = 4;
 
 function getStoreItemCache() {
   const cache = window.StoreItemCache;
@@ -79,85 +80,29 @@ function readDescriptionHasChinese(item) {
   }
 }
 
-function readBooleanValue(value) {
-  if (typeof value === "boolean") {
-    return value;
+function readAppType(item) {
+  if (typeof item?.GetAppType !== "function") {
+    return undefined;
   }
-  if (typeof value === "number") {
-    return value === 1 || value === 0 ? value === 1 : Boolean(value);
+
+  try {
+    const appType = item.GetAppType();
+    return Number.isSafeInteger(appType) && appType >= 0 ? appType : undefined;
+  } catch {
+    return undefined;
   }
-  return undefined;
 }
 
-function readBooleanField(item, names) {
-  for (const name of names) {
-    const value = item?.[name];
-    try {
-      const direct = readBooleanValue(value);
-      if (direct !== undefined) {
-        return direct;
-      }
-      if (typeof value === "function") {
-        return readBooleanValue(value.call(item));
-      }
-    } catch {
-      return undefined;
-    }
-  }
-  return undefined;
-}
-
-function readStoreItemDlc(item) {
-  const candidates = [
-    "GetIsDlc",
-    "GetIsDLC",
-    "BIsDLC",
-    "BIsDlc",
-    "IsDLC",
-    "IsDlc",
-    "GetFullGame",
-    "BGetFullGame",
-    "GetFullGameAppID",
-    "IsDLCContent",
-  ];
-  const directValues = [
-    "isDlc",
-    "isDLC",
-    "isDlcContent",
-    "isDLCContent",
-    "fullgame",
-  ];
-
-  const result = readBooleanField(item, candidates);
-  if (result !== undefined) {
-    return result;
-  }
-
-  for (const field of directValues) {
-    const value = item?.[field];
-    if (typeof value === "object" && value !== null) {
-      if (
-        toSafeNonNegativeInteger(value.appid) !== undefined ||
-        toSafeNonNegativeInteger(value.id) !== undefined
-      ) {
-        return true;
-      }
-    }
-    const fromField = readBooleanValue(value);
-    if (fromField !== undefined) {
-      return fromField;
-    }
-  }
-  return undefined;
-}
-
-function buildStoreItemRequest(requirements, descriptionHasChinese) {
+function buildStoreItemRequest(requirements, descriptionHasChinese, appType) {
   const request = {};
   if (requirements?.needsReviews === true) {
     request.include_reviews = true;
   }
   if (requirements?.needsReleaseDate === true) {
     request.include_release = true;
+  }
+  if (requirements?.needsDlc === true && appType === undefined) {
+    request.include_basic_info = true;
   }
 
   const requiredLanguages = Array.isArray(requirements?.requiredLanguages)
@@ -213,6 +158,7 @@ function readStoreItem(item, appId) {
 
     const purchase = item.GetBestPurchaseOption?.();
     const comingSoon = item.BIsComingSoon?.();
+    const appType = readAppType(item);
     const reviews = readReviewSummary(item);
     const storeItem = {
       appId,
@@ -220,7 +166,7 @@ function readStoreItem(item, appId) {
       isFree: item.BIsFree?.(),
       comingSoon,
       descriptionHasChinese: readDescriptionHasChinese(item),
-      isDlc: readStoreItemDlc(item),
+      isDlc: appType === undefined ? undefined : appType === DLC_APP_TYPE,
       supportedLanguages: readSupportedLanguages(item),
       tagIds: readArray(() => item.GetTagIDs?.()),
       categoryIds: {
@@ -271,6 +217,7 @@ export function createDiscoveryQueueStoreItemReader() {
         const request = buildStoreItemRequest(
           requirements,
           readDescriptionHasChinese(item),
+          readAppType(item),
         );
         if (
           Object.keys(request).length > 0 &&

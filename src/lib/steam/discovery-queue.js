@@ -6,42 +6,9 @@ import { createDiscoveryQueueStoreItemReader } from "./discovery-queue-store-ite
 
 const QUEUE_TIMEOUT_MS = 10_000;
 const ADVANCE_DELAY_MS = 50;
-const CLASSIC_RESTART_DELAY_MS = 50;
-const MODAL_RESTART_DELAY_MS = 60;
 const CLASSIC_NEXT_SELECTOR =
   "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
 const MODAL_WISHLIST_PATH = "/api/addtowishlist";
-
-function getDiscoveryQueueDialog() {
-  return [...document.querySelectorAll('[role="dialog"]')].find((dialog) =>
-    dialog.querySelector('a[href*="/explore"][href*="dq=widget"]'),
-  );
-}
-
-function restartDiscoveryQueueIfNeeded(autoRestart) {
-  if (typeof autoRestart === "function" ? autoRestart() !== true : autoRestart !== true) {
-    return;
-  }
-
-  const dialog = getDiscoveryQueueDialog();
-  if (dialog instanceof HTMLElement) {
-    const queueLink = dialog.querySelector('a[href*="/explore"][href*="dq=widget"]');
-    if (queueLink instanceof HTMLAnchorElement) {
-      window.location.assign(queueLink.href);
-      return;
-    }
-  }
-
-  const isClassicQueue = new URLSearchParams(location.search).get("queue") === "1";
-  if (isClassicQueue) {
-    const nextQueueUrl = new URL(location.href);
-    nextQueueUrl.searchParams.set("queue", "1");
-    window.location.assign(nextQueueUrl.toString());
-    return;
-  }
-
-  window.location.assign(`${location.origin}/explore`);
-}
 
 function isVisible(element) {
   return Boolean(
@@ -55,13 +22,14 @@ function matchesAction(target, selector) {
   return target instanceof Element && target.closest(selector) !== null;
 }
 
-function startClassicQueue({ autoRestart = () => false } = {}) {
+function startClassicQueue() {
   if (new URLSearchParams(location.search).get("queue") !== "1") {
     return () => {};
   }
 
   const queueActions = document.querySelector("#queueActionsCtn");
-  if (!(queueActions instanceof HTMLElement)) {
+  const nextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
+  if (!(queueActions instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
     return () => {};
   }
 
@@ -91,12 +59,7 @@ function startClassicQueue({ autoRestart = () => false } = {}) {
         const currentNextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
         if (currentNextButton instanceof HTMLElement) {
           currentNextButton.click();
-          advancing = false;
-          return;
         }
-        setTimeout(() => {
-          restartDiscoveryQueueIfNeeded(autoRestart);
-        }, CLASSIC_RESTART_DELAY_MS);
         advancing = false;
       };
       if (delay === 0) {
@@ -277,7 +240,7 @@ function monitorActionRequests(takePending, handleResult) {
   };
 }
 
-function startModalQueue({ autoRestart = () => false } = {}) {
+function startModalQueue() {
   const requestQueues = new Map();
   const pendingActions = new Set();
   let advanceFrame;
@@ -325,13 +288,6 @@ function startModalQueue({ autoRestart = () => false } = {}) {
       if (nextButton) {
         nextButton.click();
         advancing = false;
-        return;
-      }
-
-      if (typeof autoRestart === "function" ? autoRestart() : autoRestart) {
-        advanceFrame = setTimeout(() => {
-          restartDiscoveryQueueIfNeeded(autoRestart);
-        }, MODAL_RESTART_DELAY_MS);
         return;
       }
 
@@ -426,7 +382,6 @@ function startModalQueue({ autoRestart = () => false } = {}) {
 
   function stop() {
     cancelAnimationFrame(advanceFrame);
-    clearTimeout(advanceFrame);
     advanceFrame = undefined;
     advancing = false;
     stopMonitoringRequests();
@@ -442,24 +397,16 @@ function startModalQueue({ autoRestart = () => false } = {}) {
 
 export function startSteamDiscoveryQueue() {
   const storeItemReader = createDiscoveryQueueStoreItemReader();
-  let autoRestartQueue = false;
-  const stopModalQueue = startModalQueue({
-    autoRestart: () => autoRestartQueue,
-  });
+  const stopModalQueue = startModalQueue();
   let stopClassicQueue = () => {};
   let stopAutoFilter = () => {};
   let stopped = false;
 
   function startQueueControllersWhenReady() {
     if (!stopped) {
-      stopClassicQueue = startClassicQueue({
-        autoRestart: () => autoRestartQueue,
-      });
+      stopClassicQueue = startClassicQueue();
       stopAutoFilter = startDiscoveryQueueAutoFilter({
         getStoreItem: storeItemReader.get,
-        onConfigChange(config) {
-          autoRestartQueue = Boolean(config?.autoRestartQueue);
-        },
       });
     }
   }
