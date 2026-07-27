@@ -56,6 +56,7 @@ __pycache__/
 !scripts/userscripts/install-to-scriptcat.mjs
 !scripts/userscripts/install-to-scriptcat.test.mjs
 !scripts/userscripts/steampy-plus-seller-batch.test.mjs
+!scripts/userscripts/steampy-plus-sale-start-time.test.mjs
 !scripts/userscripts/lint-built.cjs
 !scripts/userscripts/lint.cjs
 !scripts/userscripts/scriptcat-vscode-sync.mjs

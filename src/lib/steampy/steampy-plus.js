@@ -4,6 +4,7 @@ import { createSteamPyAdvancedFilterController } from "./steampy-plus-advanced-f
 import { createSteamPyBuyerController } from "./steampy-plus-buyer.js";
 import { createSteamPyPriceFilter } from "./steampy-plus-filter.js";
 import { createSteamPyRatingEnhancer } from "./steampy-plus-rating.js";
+import { createSteamPySaleStartTimeController } from "./steampy-plus-sale-start-time.js";
 import {
   parseBatchCsv,
   preflightBatch,
@@ -16,7 +17,7 @@ import { createSteampyXbootClient } from "./xboot-client.js";
 const LEGACY_BUYER_PATH = "/cdKey/cdKey";
 const PRO_BUYER_PATH = "/pro/cdKey/cdKey";
 const SELLER_PATH = "/pro/seller/sellerCDKey";
-const DETAIL_PATH = "/cdkDetail";
+const PRO_DETAIL_PATH = "/pro/cdKey/cdkDetail";
 
 export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
   let buyer;
@@ -46,6 +47,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
     preflightBatch,
     submitBatch,
   });
+  const saleStartTime = createSteamPySaleStartTimeController();
 
   installSteamPyAjaxHooks({ ajaxHooker, jQuery, onHotGames: rating.setHotGameData });
   libraryManager.registerMenus();
@@ -54,6 +56,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
   let legacyActive = false;
   let proActive = false;
   let sellerActive = false;
+  let saleStartTimeActive = false;
 
   function startBuyer(pathname) {
     if (pathname.startsWith(LEGACY_BUYER_PATH) && !legacyActive) {
@@ -91,7 +94,13 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
       seller.cleanup();
       sellerActive = false;
     }
-    if (pathname.startsWith(DETAIL_PATH)) console.log("[SteamPy Plus] 进入 CDKey 详情页");
+    if (pathname === PRO_DETAIL_PATH && !saleStartTimeActive) {
+      saleStartTime.start();
+      saleStartTimeActive = true;
+    } else if (pathname !== PRO_DETAIL_PATH && saleStartTimeActive) {
+      saleStartTime.cleanup();
+      saleStartTimeActive = false;
+    }
   }
 
   let lastPath = location.pathname + location.search;

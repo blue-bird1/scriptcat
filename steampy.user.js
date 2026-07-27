@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.7
+// @version         5.10.8
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -26,7 +26,7 @@
 // @updateURL       https://update.greasyfork.org/scripts/549676/SteamPy%20Plus.meta.js
 // ==/UserScript==
 
-/* global ajax, ajaxHooker, elmGetter, $ */
+/* global ajax, ajaxHooker, elmGetter, $, BigInt */
 
 (() => {
   // src/lib/steampy/access-token.js
@@ -1011,6 +1011,124 @@
       document.head.appendChild(style);
     }
     return { getSteamAppId, injectStyle, processCards, setHotGameData };
+  }
+
+  // src/lib/steampy/steampy-plus-sale-start-time.js
+  var PRO_DETAIL_PATH = "/pro/cdKey/cdkDetail";
+  var SALE_START_TIME_COLUMN_KEY = "steamPyPlusSaleStartedAt";
+  var STEAMPY_SNOWFLAKE_EPOCH_MS = 1524291141000n;
+  var CHINA_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
+    day: "2-digit",
+    hour: "2-digit",
+    hour12: false,
+    hourCycle: "h23",
+    minute: "2-digit",
+    month: "2-digit",
+    second: "2-digit",
+    timeZone: "Asia/Shanghai",
+    year: "numeric"
+  });
+  var SALE_START_TIME_FALLBACK = "暂无";
+  function decodeK900SaleStartedAt(saleId) {
+    if (!/^K900\d+$/.test(String(saleId ?? ""))) return null;
+    const milliseconds = (BigInt(String(saleId).slice(4)) >> 22n) + STEAMPY_SNOWFLAKE_EPOCH_MS;
+    if (milliseconds < 0n || milliseconds > BigInt(Number.MAX_SAFE_INTEGER)) return null;
+    const value = Number(milliseconds);
+    return Number.isNaN(new Date(value).getTime()) ? null : value;
+  }
+  function formatK900SaleStartedAt(saleId) {
+    const milliseconds = decodeK900SaleStartedAt(saleId);
+    if (milliseconds === null) return SALE_START_TIME_FALLBACK;
+    const parts = Object.fromEntries(
+      CHINA_TIME_FORMATTER.formatToParts(new Date(milliseconds)).filter(({ type }) => type !== "literal").map(({ type, value }) => [type, value])
+    );
+    return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}:${parts.second}`;
+  }
+  function walkVue3Component(component, visitor, seen = /* @__PURE__ */ new Set()) {
+    if (!component || seen.has(component)) return null;
+    seen.add(component);
+    return visitor(component) || walkVue3VNode2(component.subTree, visitor, seen);
+  }
+  function walkVue3VNode2(vnode, visitor, seen) {
+    if (!vnode) return null;
+    if (vnode.component) {
+      const matched = walkVue3Component(vnode.component, visitor, seen);
+      if (matched) return matched;
+    }
+    const children = vnode.children;
+    if (Array.isArray(children)) {
+      for (const child of children) {
+        const matched = walkVue3VNode2(child, visitor, seen);
+        if (matched) return matched;
+      }
+    } else if (children && typeof children === "object") {
+      for (const child of Object.values(children)) {
+        const values = Array.isArray(child) ? child : [child];
+        for (const value of values) {
+          const matched = walkVue3VNode2(value, visitor, seen);
+          if (matched) return matched;
+        }
+      }
+    }
+    return null;
+  }
+  function findDetailVm() {
+    const root = document.querySelector("#app")?._vnode?.component;
+    if (!root) return null;
+    return walkVue3Component(root, (component) => {
+      const proxy = component.proxy;
+      if (proxy?.$options?.name !== "cdkDetail") return null;
+      if (!Array.isArray(proxy.columns) || !Array.isArray(proxy.data)) return null;
+      if (typeof proxy.getDataList !== "function" || typeof proxy.handleRowClick !== "function") return null;
+      return proxy;
+    });
+  }
+  function installColumn(vm) {
+    if (vm.columns.some((column) => column?.key === SALE_START_TIME_COLUMN_KEY)) return;
+    const inventoryIndex = vm.columns.findIndex((column) => column?.title === "库存");
+    const insertIndex = inventoryIndex < 0 ? vm.columns.length : inventoryIndex + 1;
+    vm.columns.splice(insertIndex, 0, {
+      align: "center",
+      key: SALE_START_TIME_COLUMN_KEY,
+      minWidth: 170,
+      sortable: false,
+      title: "开始销售时间",
+      render: (createElement2, { row }) => createElement2("span", formatK900SaleStartedAt(row?.saleId))
+    });
+  }
+  function removeColumn(vm) {
+    const index = vm?.columns?.findIndex((column) => column?.key === SALE_START_TIME_COLUMN_KEY) ?? -1;
+    if (index >= 0) vm.columns.splice(index, 1);
+  }
+  function createSteamPySaleStartTimeController({
+    pollIntervalMs = 250,
+    maxAttempts = 60
+  } = {}) {
+    let active = false;
+    let generation = 0;
+    let detailVm = null;
+    async function start() {
+      if (active) return;
+      active = true;
+      const currentGeneration = ++generation;
+      for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
+        if (!active || currentGeneration !== generation || location.pathname !== PRO_DETAIL_PATH) return;
+        detailVm = findDetailVm();
+        if (detailVm) {
+          installColumn(detailVm);
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, pollIntervalMs));
+      }
+      console.warn("[SteamPy Plus] 新版 CDKey 详情页初始化失败：未找到销售列表 Vue 实例");
+    }
+    function cleanup() {
+      active = false;
+      generation += 1;
+      removeColumn(detailVm);
+      detailVm = null;
+    }
+    return { cleanup, start };
   }
 
   // src/lib/steampy/steampy-plus-seller-batch.js
@@ -2342,7 +2460,7 @@
   var LEGACY_BUYER_PATH = "/cdKey/cdKey";
   var PRO_BUYER_PATH = "/pro/cdKey/cdKey";
   var SELLER_PATH2 = "/pro/seller/sellerCDKey";
-  var DETAIL_PATH = "/cdkDetail";
+  var PRO_DETAIL_PATH2 = "/pro/cdKey/cdkDetail";
   function startSteamPyPlus({ ajaxHooker: ajaxHooker2, elmGetter: elmGetter2, jQuery }) {
     let buyer;
     const libraryManager = createSteamLibraryManager({
@@ -2371,12 +2489,14 @@
       preflightBatch,
       submitBatch
     });
+    const saleStartTime = createSteamPySaleStartTimeController();
     installSteamPyAjaxHooks({ ajaxHooker: ajaxHooker2, jQuery, onHotGames: rating.setHotGameData });
     libraryManager.registerMenus();
     elmGetter2.selector(jQuery);
     let legacyActive = false;
     let proActive = false;
     let sellerActive = false;
+    let saleStartTimeActive = false;
     function startBuyer(pathname) {
       if (pathname.startsWith(LEGACY_BUYER_PATH) && !legacyActive) {
         rating.injectStyle();
@@ -2411,7 +2531,13 @@
         seller.cleanup();
         sellerActive = false;
       }
-      if (pathname.startsWith(DETAIL_PATH)) console.log("[SteamPy Plus] 进入 CDKey 详情页");
+      if (pathname === PRO_DETAIL_PATH2 && !saleStartTimeActive) {
+        saleStartTime.start();
+        saleStartTimeActive = true;
+      } else if (pathname !== PRO_DETAIL_PATH2 && saleStartTimeActive) {
+        saleStartTime.cleanup();
+        saleStartTimeActive = false;
+      }
     }
     let lastPath = location.pathname + location.search;
     const { pushState, replaceState } = history;
