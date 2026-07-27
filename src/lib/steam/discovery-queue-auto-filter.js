@@ -173,16 +173,21 @@ function getClassicContext() {
   };
 }
 
-export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
+export function startDiscoveryQueueAutoFilter({ getStoreItem, onConfigChange } = {}) {
   const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
   let stopped = false;
   let paused = false;
   let scheduled = false;
   let generation = 0;
   let evaluatedKey;
+  let activeConfig;
 
   const configUi = createDiscoveryQueueConfigUi({
     onSave() {
+      activeConfig = configUi.getConfig();
+      if (typeof onConfigChange === "function") {
+        onConfigChange(activeConfig);
+      }
       generation += 1;
       evaluatedKey = undefined;
       schedule();
@@ -195,6 +200,11 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
     },
   });
 
+  activeConfig = configUi.getConfig();
+  if (typeof onConfigChange === "function") {
+    onConfigChange(activeConfig);
+  }
+
   function getContext() {
     return getModalContext() ?? getClassicContext();
   }
@@ -206,7 +216,7 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
       return;
     }
     configUi.ensureButton(context.buttonHost);
-    const config = configUi.getConfig();
+    const config = activeConfig ?? configUi.getConfig();
     if (paused || !config.enabled || !context.appId || context.key === evaluatedKey) {
       return;
     }

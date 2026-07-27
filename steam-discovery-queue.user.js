@@ -65,6 +65,8 @@
     earliestReleaseDate: { enabled: false, value: "2015-01-01" },
     ignoreFree: false,
     ignoreUnreviewed: false,
+    ignoreDlc: false,
+    autoRestartQueue: false,
     excludedTags: { enabled: false, value: [] },
     requiredLanguages: { enabled: false, value: [6, 7] }
   };
@@ -76,6 +78,8 @@
       maximumPrice: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.maximumPrice },
       minimumDiscount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumDiscount },
       earliestReleaseDate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.earliestReleaseDate },
+      ignoreDlc: DEFAULT_DISCOVERY_QUEUE_CONFIG.ignoreDlc,
+      autoRestartQueue: DEFAULT_DISCOVERY_QUEUE_CONFIG.autoRestartQueue,
       excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] },
       requiredLanguages: {
         ...DEFAULT_DISCOVERY_QUEUE_CONFIG.requiredLanguages,
@@ -161,6 +165,8 @@
       },
       ignoreFree: normalizeBoolean(value.ignoreFree, fallback.ignoreFree),
       ignoreUnreviewed: normalizeBoolean(value.ignoreUnreviewed, fallback.ignoreUnreviewed),
+      ignoreDlc: normalizeBoolean(value.ignoreDlc, fallback.ignoreDlc),
+      autoRestartQueue: normalizeBoolean(value.autoRestartQueue, fallback.autoRestartQueue),
       excludedTags: {
         enabled: normalizeBoolean(tags.enabled, fallback.excludedTags.enabled),
         value: normalizeTags(tags.value)
@@ -310,6 +316,8 @@
       const releaseDate = addRule(fields, "最早发布日期", draft.earliestReleaseDate, "date");
       const ignoreFree = addCheckbox(fields, "忽略免费游戏", draft.ignoreFree);
       const ignoreUnreviewed = addCheckbox(fields, "忽略未评测游戏", draft.ignoreUnreviewed);
+      const ignoreDlc = addCheckbox(fields, "忽略 DLC/扩展内容", draft.ignoreDlc);
+      const autoRestartQueue = addCheckbox(fields, "探索结束后自动继续下一次", draft.autoRestartQueue);
       const tagRow = createElement("div", "scriptcat-discovery-queue-config-rule");
       const tagEnabled = addCheckbox(tagRow, "排除标签", draft.excludedTags.enabled);
       const tagContainer = createElement("div", "scriptcat-discovery-queue-config-tags");
@@ -402,6 +410,8 @@
         releaseDate.input.value = defaults.earliestReleaseDate.value;
         ignoreFree.checked = defaults.ignoreFree;
         ignoreUnreviewed.checked = defaults.ignoreUnreviewed;
+        ignoreDlc.checked = defaults.ignoreDlc;
+        autoRestartQueue.checked = defaults.autoRestartQueue;
         tagEnabled.checked = defaults.excludedTags.enabled;
         tags = [];
         renderTags();
@@ -423,6 +433,8 @@
           earliestReleaseDate: { enabled: releaseDate.enabled.checked, value: releaseDate.input.value },
           ignoreFree: ignoreFree.checked,
           ignoreUnreviewed: ignoreUnreviewed.checked,
+          ignoreDlc: ignoreDlc.checked,
+          autoRestartQueue: autoRestartQueue.checked,
           excludedTags: { enabled: tagEnabled.checked, value: tags },
           requiredLanguages: {
             enabled: languageEnabled.checked,
@@ -499,6 +511,7 @@
     return {
       reviewCount: void 0,
       positiveRate: void 0,
+      isDlc: void 0,
       isFree: void 0,
       price: void 0,
       currency: void 0,
@@ -539,6 +552,15 @@
       positiveRate: summary.total_reviews === 0 ? void 0 : summary.total_positive / summary.total_reviews * 100
     };
   }
+  function parseFullGame(fullGameValue) {
+    if (fullGameValue && typeof fullGameValue === "object") {
+      return isNonNegativeInteger(fullGameValue.appid) && fullGameValue.appid > 0;
+    }
+    if (typeof fullGameValue === "number") {
+      return fullGameValue > 0;
+    }
+    return false;
+  }
   function parseDetails(payload, appId) {
     const details = payload?.[appId];
     if (details?.success !== true || !details.data || typeof details.data !== "object") {
@@ -565,6 +587,14 @@
     }
     if (details.data.release_date?.coming_soon !== true) {
       result.releaseDate = parseEnglishDate(details.data.release_date?.date);
+    }
+    const type = typeof details.data.type === "string" ? details.data.type.toLowerCase() : "";
+    if (type === "dlc") {
+      result.isDlc = true;
+    }
+    const fullGame = parseFullGame(details.data.fullgame);
+    if (result.isDlc === void 0 && fullGame === true) {
+      result.isDlc = true;
     }
     return result;
   }
@@ -628,6 +658,9 @@
       if (storeItem.isFree) {
         result.price = 0;
       }
+    }
+    if (typeof storeItem.isDlc === "boolean") {
+      result.isDlc = storeItem.isDlc;
     }
     if (storeItem.comingSoon === false && Number.isSafeInteger(storeItem.releaseDateUnix) && storeItem.releaseDateUnix > 0) {
       const date = new Date(storeItem.releaseDateUnix * 1e3);
@@ -724,7 +757,8 @@
         const needsDiscount = isEnabledNumber(config?.minimumDiscount);
         const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
         const needsFreeStatus = config?.ignoreFree === true;
-        const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
+        const needsDlc = config?.ignoreDlc === true;
+        const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus || needsDlc;
         const requiredLanguages = getRequiredLanguages(config?.requiredLanguages);
         const needsSupportedLanguages = requiredLanguages.length > 0;
         const storeItem = needsReviews || needsDetails || needsSupportedLanguages ? await loadStoreItem(appId, {
@@ -734,7 +768,7 @@
         }) : {};
         const missingStoreItemReviews = needsPositiveRate && storeItem.positiveRate === void 0 || needsReviewCount && storeItem.reviewCount === void 0;
         const reviewsPromise = missingStoreItemReviews ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews) : Promise.resolve({});
-        const missingStoreItemData = needsPrice && storeItem.price === void 0 || needsDiscount && storeItem.discount === void 0 || needsReleaseDate && storeItem.releaseDate === void 0 || needsFreeStatus && storeItem.isFree === void 0;
+        const missingStoreItemData = needsPrice && storeItem.price === void 0 || needsDiscount && storeItem.discount === void 0 || needsReleaseDate && storeItem.releaseDate === void 0 || needsFreeStatus && storeItem.isFree === void 0 || needsDlc && storeItem.isDlc === void 0;
         const detailsPromise = missingStoreItemData ? loadCached(detailsCache, appId, `/api/appdetails?appids=${appId}&l=english`).then((payload) => parseDetails(payload, appId)) : Promise.resolve({});
         const [reviews, details] = await Promise.all([reviewsPromise, detailsPromise]);
         const data = {
@@ -766,6 +800,9 @@
         }
         if (config?.ignoreUnreviewed === true && data.reviewCount === 0) {
           reasons.push("unreviewed");
+        }
+        if (config?.ignoreDlc === true && data.isDlc === true) {
+          reasons.push("dlc");
         }
         if (needsSupportedLanguages && !descriptionMatchesRequiredLanguage && Array.isArray(data.supportedLanguages) && !requiredLanguages.some(
           (language) => data.supportedLanguages.includes(language)
@@ -922,15 +959,20 @@
       tags
     };
   }
-  function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
+  function startDiscoveryQueueAutoFilter({ getStoreItem, onConfigChange } = {}) {
     const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
     let stopped = false;
     let paused = false;
     let scheduled = false;
     let generation = 0;
     let evaluatedKey;
+    let activeConfig;
     const configUi = createDiscoveryQueueConfigUi({
       onSave() {
+        activeConfig = configUi.getConfig();
+        if (typeof onConfigChange === "function") {
+          onConfigChange(activeConfig);
+        }
         generation += 1;
         evaluatedKey = void 0;
         schedule();
@@ -942,6 +984,10 @@
         }
       }
     });
+    activeConfig = configUi.getConfig();
+    if (typeof onConfigChange === "function") {
+      onConfigChange(activeConfig);
+    }
     function getContext() {
       return getModalContext() ?? getClassicContext();
     }
@@ -952,7 +998,7 @@
         return;
       }
       configUi.ensureButton(context.buttonHost);
-      const config = configUi.getConfig();
+      const config = activeConfig ?? configUi.getConfig();
       if (paused || !config.enabled || !context.appId || context.key === evaluatedKey) {
         return;
       }
@@ -1065,6 +1111,70 @@
       return void 0;
     }
   }
+  function readBooleanValue(value) {
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "number") {
+      return value === 1 || value === 0 ? value === 1 : Boolean(value);
+    }
+    return void 0;
+  }
+  function readBooleanField(item, names) {
+    for (const name of names) {
+      const value = item?.[name];
+      try {
+        const direct = readBooleanValue(value);
+        if (direct !== void 0) {
+          return direct;
+        }
+        if (typeof value === "function") {
+          return readBooleanValue(value.call(item));
+        }
+      } catch {
+        return void 0;
+      }
+    }
+    return void 0;
+  }
+  function readStoreItemDlc(item) {
+    const candidates = [
+      "GetIsDlc",
+      "GetIsDLC",
+      "BIsDLC",
+      "BIsDlc",
+      "IsDLC",
+      "IsDlc",
+      "GetFullGame",
+      "BGetFullGame",
+      "GetFullGameAppID",
+      "IsDLCContent"
+    ];
+    const directValues = [
+      "isDlc",
+      "isDLC",
+      "isDlcContent",
+      "isDLCContent",
+      "fullgame"
+    ];
+    const result = readBooleanField(item, candidates);
+    if (result !== void 0) {
+      return result;
+    }
+    for (const field of directValues) {
+      const value = item?.[field];
+      if (typeof value === "object" && value !== null) {
+        if (toSafeNonNegativeInteger(value.appid) !== void 0 || toSafeNonNegativeInteger(value.id) !== void 0) {
+          return true;
+        }
+      }
+      const fromField = readBooleanValue(value);
+      if (fromField !== void 0) {
+        return fromField;
+      }
+    }
+    return void 0;
+  }
   function buildStoreItemRequest(requirements, descriptionHasChinese) {
     const request = {};
     if (requirements?.needsReviews === true) {
@@ -1115,6 +1225,7 @@
         isFree: item.BIsFree?.(),
         comingSoon,
         descriptionHasChinese: readDescriptionHasChinese(item),
+        isDlc: readStoreItemDlc(item),
         supportedLanguages: readSupportedLanguages(item),
         tagIds: readArray(() => item.GetTagIDs?.()),
         categoryIds: {
@@ -1178,8 +1289,36 @@
   // src/lib/steam/discovery-queue.js
   var QUEUE_TIMEOUT_MS = 1e4;
   var ADVANCE_DELAY_MS = 50;
+  var CLASSIC_RESTART_DELAY_MS = 50;
+  var MODAL_RESTART_DELAY_MS = 60;
   var CLASSIC_NEXT_SELECTOR = "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
   var MODAL_WISHLIST_PATH = "/api/addtowishlist";
+  function getDiscoveryQueueDialog() {
+    return [...document.querySelectorAll('[role="dialog"]')].find(
+      (dialog) => dialog.querySelector('a[href*="/explore"][href*="dq=widget"]')
+    );
+  }
+  function restartDiscoveryQueueIfNeeded(autoRestart) {
+    if (typeof autoRestart === "function" ? autoRestart() !== true : autoRestart !== true) {
+      return;
+    }
+    const dialog = getDiscoveryQueueDialog();
+    if (dialog instanceof HTMLElement) {
+      const queueLink = dialog.querySelector('a[href*="/explore"][href*="dq=widget"]');
+      if (queueLink instanceof HTMLAnchorElement) {
+        window.location.assign(queueLink.href);
+        return;
+      }
+    }
+    const isClassicQueue = new URLSearchParams(location.search).get("queue") === "1";
+    if (isClassicQueue) {
+      const nextQueueUrl = new URL(location.href);
+      nextQueueUrl.searchParams.set("queue", "1");
+      window.location.assign(nextQueueUrl.toString());
+      return;
+    }
+    window.location.assign(`${location.origin}/explore`);
+  }
   function isVisible2(element) {
     return Boolean(
       element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
@@ -1188,14 +1327,13 @@
   function matchesAction(target, selector) {
     return target instanceof Element && target.closest(selector) !== null;
   }
-  function startClassicQueue() {
+  function startClassicQueue({ autoRestart = () => false } = {}) {
     if (new URLSearchParams(location.search).get("queue") !== "1") {
       return () => {
       };
     }
     const queueActions = document.querySelector("#queueActionsCtn");
-    const nextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
-    if (!(queueActions instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
+    if (!(queueActions instanceof HTMLElement)) {
       return () => {
       };
     }
@@ -1223,7 +1361,12 @@
           const currentNextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
           if (currentNextButton instanceof HTMLElement) {
             currentNextButton.click();
+            advancing = false;
+            return;
           }
+          setTimeout(() => {
+            restartDiscoveryQueueIfNeeded(autoRestart);
+          }, CLASSIC_RESTART_DELAY_MS);
           advancing = false;
         };
         if (delay === 0) {
@@ -1359,7 +1502,7 @@
       }
     };
   }
-  function startModalQueue() {
+  function startModalQueue({ autoRestart = () => false } = {}) {
     const requestQueues = /* @__PURE__ */ new Map();
     const pendingActions = /* @__PURE__ */ new Set();
     let advanceFrame;
@@ -1400,6 +1543,12 @@
         if (nextButton) {
           nextButton.click();
           advancing = false;
+          return;
+        }
+        if (typeof autoRestart === "function" ? autoRestart() : autoRestart) {
+          advanceFrame = setTimeout(() => {
+            restartDiscoveryQueueIfNeeded(autoRestart);
+          }, MODAL_RESTART_DELAY_MS);
           return;
         }
         if (performance.now() >= deadline) {
@@ -1477,6 +1626,7 @@
     }
     function stop() {
       cancelAnimationFrame(advanceFrame);
+      clearTimeout(advanceFrame);
       advanceFrame = void 0;
       advancing = false;
       stopMonitoringRequests();
@@ -1490,7 +1640,10 @@
   }
   function startSteamDiscoveryQueue() {
     const storeItemReader = createDiscoveryQueueStoreItemReader();
-    const stopModalQueue = startModalQueue();
+    let autoRestartQueue = false;
+    const stopModalQueue = startModalQueue({
+      autoRestart: () => autoRestartQueue
+    });
     let stopClassicQueue = () => {
     };
     let stopAutoFilter = () => {
@@ -1498,9 +1651,14 @@
     let stopped = false;
     function startQueueControllersWhenReady() {
       if (!stopped) {
-        stopClassicQueue = startClassicQueue();
+        stopClassicQueue = startClassicQueue({
+          autoRestart: () => autoRestartQueue
+        });
         stopAutoFilter = startDiscoveryQueueAutoFilter({
-          getStoreItem: storeItemReader.get
+          getStoreItem: storeItemReader.get,
+          onConfigChange(config) {
+            autoRestartQueue = Boolean(config?.autoRestartQueue);
+          }
         });
       }
     }

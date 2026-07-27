@@ -17,6 +17,7 @@ function createEmptyData() {
   return {
     reviewCount: undefined,
     positiveRate: undefined,
+    isDlc: undefined,
     isFree: undefined,
     price: undefined,
     currency: undefined,
@@ -76,6 +77,16 @@ function parseReviews(payload) {
   };
 }
 
+function parseFullGame(fullGameValue) {
+  if (fullGameValue && typeof fullGameValue === "object") {
+    return isNonNegativeInteger(fullGameValue.appid) && fullGameValue.appid > 0;
+  }
+  if (typeof fullGameValue === "number") {
+    return fullGameValue > 0;
+  }
+  return false;
+}
+
 function parseDetails(payload, appId) {
   const details = payload?.[appId];
   if (details?.success !== true || !details.data || typeof details.data !== "object") {
@@ -109,6 +120,16 @@ function parseDetails(payload, appId) {
 
   if (details.data.release_date?.coming_soon !== true) {
     result.releaseDate = parseEnglishDate(details.data.release_date?.date);
+  }
+
+  const type = typeof details.data.type === "string" ? details.data.type.toLowerCase() : "";
+  if (type === "dlc") {
+    result.isDlc = true;
+  }
+
+  const fullGame = parseFullGame(details.data.fullgame);
+  if (result.isDlc === undefined && fullGame === true) {
+    result.isDlc = true;
   }
 
   return result;
@@ -193,6 +214,9 @@ function parseStoreItem(storeItem, appId) {
     if (storeItem.isFree) {
       result.price = 0;
     }
+  }
+  if (typeof storeItem.isDlc === "boolean") {
+    result.isDlc = storeItem.isDlc;
   }
   if (storeItem.comingSoon === false && Number.isSafeInteger(storeItem.releaseDateUnix) && storeItem.releaseDateUnix > 0) {
     const date = new Date(storeItem.releaseDateUnix * 1000);
@@ -313,7 +337,8 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
       const needsDiscount = isEnabledNumber(config?.minimumDiscount);
       const needsReleaseDate = config?.earliestReleaseDate?.enabled === true && isIsoDate(config.earliestReleaseDate.value);
       const needsFreeStatus = config?.ignoreFree === true;
-      const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus;
+      const needsDlc = config?.ignoreDlc === true;
+      const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus || needsDlc;
       const requiredLanguages = getRequiredLanguages(config?.requiredLanguages);
       const needsSupportedLanguages = requiredLanguages.length > 0;
 
@@ -335,7 +360,8 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
         (needsPrice && storeItem.price === undefined) ||
         (needsDiscount && storeItem.discount === undefined) ||
         (needsReleaseDate && storeItem.releaseDate === undefined) ||
-        (needsFreeStatus && storeItem.isFree === undefined);
+        (needsFreeStatus && storeItem.isFree === undefined) ||
+        (needsDlc && storeItem.isDlc === undefined);
       const detailsPromise = missingStoreItemData
         ? loadCached(detailsCache, appId, `/api/appdetails?appids=${appId}&l=english`).then((payload) => parseDetails(payload, appId))
         : Promise.resolve({});
@@ -376,6 +402,9 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
       }
       if (config?.ignoreUnreviewed === true && data.reviewCount === 0) {
         reasons.push("unreviewed");
+      }
+      if (config?.ignoreDlc === true && data.isDlc === true) {
+        reasons.push("dlc");
       }
       if (
         needsSupportedLanguages &&
