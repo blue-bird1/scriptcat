@@ -176,85 +176,48 @@ function getClassicContext() {
   };
 }
 
-function findCommonAncestor(left, right, boundary) {
-  const ancestors = new Set();
-  for (let current = left; current && current !== boundary; current = current.parentElement) {
-    ancestors.add(current);
-  }
-  for (let current = right; current && current !== boundary; current = current.parentElement) {
-    if (ancestors.has(current)) {
-      return current;
-    }
-  }
-  return undefined;
-}
-
 function getModalContinueButton() {
-  const dialogs = [...document.querySelectorAll('[role="dialog"]')];
-  for (const dialog of dialogs) {
-    if (!dialog.querySelector('a[href*="/explore"][href*="dq=widget"]')) {
-      continue;
-    }
-
-    const wishlistLink = dialog.querySelector('a[href*="/wishlist"]');
-    const ignoredLink = dialog.querySelector('a[href*="/account/notinterested"]');
-    if (
-      !(wishlistLink instanceof HTMLAnchorElement) ||
-      !(ignoredLink instanceof HTMLAnchorElement)
-    ) {
-      continue;
-    }
-
-    const statisticsRoot = findCommonAncestor(wishlistLink, ignoredLink, dialog);
-    if (!(statisticsRoot instanceof HTMLElement)) {
-      continue;
-    }
-
-    const markerClasses = new Set(
-      [...dialog.querySelectorAll('[role="button"][aria-label]')]
-        .filter(isVisible)
-        .flatMap((element) => [...element.classList]),
-    );
-    if (markerClasses.size === 0) {
-      continue;
-    }
-
-    for (
-      let summaryRoot = statisticsRoot;
-      summaryRoot && summaryRoot !== dialog;
-      summaryRoot = summaryRoot.parentElement
-    ) {
-      const actionParents = new Set(
-        [...summaryRoot.querySelectorAll("*")]
-          .filter(
-            (element) =>
-              element instanceof HTMLElement &&
-              isVisible(element) &&
-              [...element.classList].some((className) => markerClasses.has(className)),
-          )
-          .map((element) => element.parentElement)
-          .filter((element) => element instanceof HTMLElement),
-      );
-      for (const actionParent of actionParents) {
-        const actions = [...actionParent.children].filter(
-          (element) => element instanceof HTMLElement && isVisible(element),
-        );
-        if (
-          actions.length === 2 &&
-          actions.every((action) =>
-            [...action.classList].some((className) => markerClasses.has(className)),
-          ) &&
-          Boolean(
-            wishlistLink.compareDocumentPosition(actionParent) &
-              Node.DOCUMENT_POSITION_FOLLOWING,
-          )
-        ) {
-          return actions[1];
-        }
-      }
-    }
+  const queueLink = document.querySelector(
+    '[role="dialog"] a[href*="/explore"][href*="dq=widget"]',
+  );
+  const dialog = queueLink?.closest('[role="dialog"]');
+  const wishlistLink = dialog?.querySelector('a[href*="/wishlist"]');
+  const ignoredLink = dialog?.querySelector('a[href*="/account/notinterested"]');
+  if (
+    !(dialog instanceof HTMLElement) ||
+    !(wishlistLink instanceof HTMLAnchorElement) ||
+    !(ignoredLink instanceof HTMLAnchorElement)
+  ) {
+    return undefined;
   }
-  return undefined;
+
+  const wishlistStatistic = wishlistLink.parentElement;
+  const ignoredStatistic = ignoredLink.parentElement;
+  const statisticsRoot = wishlistStatistic?.parentElement;
+  if (
+    !(statisticsRoot instanceof HTMLElement) ||
+    ignoredStatistic?.parentElement !== statisticsRoot
+  ) {
+    return undefined;
+  }
+
+  const summaryContent = statisticsRoot.parentElement;
+  const summaryCard = summaryContent?.parentElement;
+  const actionParent = statisticsRoot.nextElementSibling;
+  if (
+    !(summaryContent instanceof HTMLElement) ||
+    !(summaryCard instanceof HTMLElement) ||
+    !summaryCard.matches('[role="button"][tabindex="0"]') ||
+    !(actionParent instanceof HTMLElement) ||
+    actionParent.parentElement !== summaryContent
+  ) {
+    return undefined;
+  }
+
+  const actions = [...actionParent.children].filter(
+    (element) => element instanceof HTMLElement && isVisible(element),
+  );
+  return actions.length === 2 ? actions[1] : undefined;
 }
 
 function getClassicContinueLink() {
