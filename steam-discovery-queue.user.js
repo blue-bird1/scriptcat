@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.10
+// @version      0.3.11
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -956,10 +956,9 @@
     };
   }
   function getModalContinueButton() {
-    const queueLink = document.querySelector(
-      '[role="dialog"] a[href*="/explore"][href*="dq=widget"]'
+    const dialog = document.querySelector(
+      '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])'
     );
-    const dialog = queueLink?.closest('[role="dialog"]');
     const wishlistLink = dialog?.querySelector('a[href*="/wishlist"]');
     const ignoredLink = dialog?.querySelector('a[href*="/account/notinterested"]');
     if (!(dialog instanceof HTMLElement) || !(wishlistLink instanceof HTMLAnchorElement) || !(ignoredLink instanceof HTMLAnchorElement)) {

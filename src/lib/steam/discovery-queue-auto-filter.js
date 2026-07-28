@@ -177,10 +177,9 @@ function getClassicContext() {
 }
 
 function getModalContinueButton() {
-  const queueLink = document.querySelector(
-    '[role="dialog"] a[href*="/explore"][href*="dq=widget"]',
+  const dialog = document.querySelector(
+    '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])',
   );
-  const dialog = queueLink?.closest('[role="dialog"]');
   const wishlistLink = dialog?.querySelector('a[href*="/wishlist"]');
   const ignoredLink = dialog?.querySelector('a[href*="/account/notinterested"]');
   if (
