@@ -205,8 +205,8 @@ function getModalContinueButton() {
       continue;
     }
 
-    const summaryRoot = findCommonAncestor(wishlistLink, ignoredLink, dialog);
-    if (!(summaryRoot instanceof HTMLElement)) {
+    const statisticsRoot = findCommonAncestor(wishlistLink, ignoredLink, dialog);
+    if (!(statisticsRoot instanceof HTMLElement)) {
       continue;
     }
 
@@ -219,32 +219,38 @@ function getModalContinueButton() {
       continue;
     }
 
-    const actionParents = new Set(
-      [...summaryRoot.querySelectorAll("*")]
-        .filter(
-          (element) =>
-            element instanceof HTMLElement &&
-            isVisible(element) &&
-            [...element.classList].some((className) => markerClasses.has(className)),
-        )
-        .map((element) => element.parentElement)
-        .filter((element) => element instanceof HTMLElement),
-    );
-    for (const actionParent of actionParents) {
-      const actions = [...actionParent.children].filter(
-        (element) => element instanceof HTMLElement && isVisible(element),
+    for (
+      let summaryRoot = statisticsRoot;
+      summaryRoot && summaryRoot !== dialog;
+      summaryRoot = summaryRoot.parentElement
+    ) {
+      const actionParents = new Set(
+        [...summaryRoot.querySelectorAll("*")]
+          .filter(
+            (element) =>
+              element instanceof HTMLElement &&
+              isVisible(element) &&
+              [...element.classList].some((className) => markerClasses.has(className)),
+          )
+          .map((element) => element.parentElement)
+          .filter((element) => element instanceof HTMLElement),
       );
-      if (
-        actions.length === 2 &&
-        actions.every((action) =>
-          [...action.classList].some((className) => markerClasses.has(className)),
-        ) &&
-        Boolean(
-          wishlistLink.compareDocumentPosition(actionParent) &
-            Node.DOCUMENT_POSITION_FOLLOWING,
-        )
-      ) {
-        return actions[1];
+      for (const actionParent of actionParents) {
+        const actions = [...actionParent.children].filter(
+          (element) => element instanceof HTMLElement && isVisible(element),
+        );
+        if (
+          actions.length === 2 &&
+          actions.every((action) =>
+            [...action.classList].some((className) => markerClasses.has(className)),
+          ) &&
+          Boolean(
+            wishlistLink.compareDocumentPosition(actionParent) &
+              Node.DOCUMENT_POSITION_FOLLOWING,
+          )
+        ) {
+          return actions[1];
+        }
       }
     }
   }

@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.8
+// @version      0.3.9
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -978,8 +978,8 @@
       if (!(wishlistLink instanceof HTMLAnchorElement) || !(ignoredLink instanceof HTMLAnchorElement)) {
         continue;
       }
-      const summaryRoot = findCommonAncestor(wishlistLink, ignoredLink, dialog);
-      if (!(summaryRoot instanceof HTMLElement)) {
+      const statisticsRoot = findCommonAncestor(wishlistLink, ignoredLink, dialog);
+      if (!(statisticsRoot instanceof HTMLElement)) {
         continue;
       }
       const markerClasses = new Set(
@@ -988,21 +988,23 @@
       if (markerClasses.size === 0) {
         continue;
       }
-      const actionParents = new Set(
-        [...summaryRoot.querySelectorAll("*")].filter(
-          (element) => element instanceof HTMLElement && isVisible(element) && [...element.classList].some((className) => markerClasses.has(className))
-        ).map((element) => element.parentElement).filter((element) => element instanceof HTMLElement)
-      );
-      for (const actionParent of actionParents) {
-        const actions = [...actionParent.children].filter(
-          (element) => element instanceof HTMLElement && isVisible(element)
+      for (let summaryRoot = statisticsRoot; summaryRoot && summaryRoot !== dialog; summaryRoot = summaryRoot.parentElement) {
+        const actionParents = new Set(
+          [...summaryRoot.querySelectorAll("*")].filter(
+            (element) => element instanceof HTMLElement && isVisible(element) && [...element.classList].some((className) => markerClasses.has(className))
+          ).map((element) => element.parentElement).filter((element) => element instanceof HTMLElement)
         );
-        if (actions.length === 2 && actions.every(
-          (action) => [...action.classList].some((className) => markerClasses.has(className))
-        ) && Boolean(
-          wishlistLink.compareDocumentPosition(actionParent) & Node.DOCUMENT_POSITION_FOLLOWING
-        )) {
-          return actions[1];
+        for (const actionParent of actionParents) {
+          const actions = [...actionParent.children].filter(
+            (element) => element instanceof HTMLElement && isVisible(element)
+          );
+          if (actions.length === 2 && actions.every(
+            (action) => [...action.classList].some((className) => markerClasses.has(className))
+          ) && Boolean(
+            wishlistLink.compareDocumentPosition(actionParent) & Node.DOCUMENT_POSITION_FOLLOWING
+          )) {
+            return actions[1];
+          }
         }
       }
     }
