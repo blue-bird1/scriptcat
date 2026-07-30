@@ -19,8 +19,8 @@ export const SALE_START_TIME_FALLBACK = "暂无";
 export function decodeSteamPySaleStartedAt(saleId) {
   const value = String(saleId ?? "");
   let payload;
-  if (/^K900\d+$/.test(value)) payload = value.slice(4);
-  else if (/^900\d+$/.test(value)) payload = value.slice(3);
+  if (/^K900\d{19}$/.test(value)) payload = value.slice(4);
+  else if (/^900\d{19}$/.test(value)) payload = value.slice(3);
   else return null;
   const milliseconds = (BigInt(payload) >> 22n) + STEAMPY_SNOWFLAKE_EPOCH_MS;
   if (milliseconds < 0n || milliseconds > BigInt(Number.MAX_SAFE_INTEGER)) return null;

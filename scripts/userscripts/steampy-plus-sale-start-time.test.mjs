@@ -43,7 +43,9 @@ test("verified SteamPy sale IDs decode to their server creation times", () => {
 test("unverified SteamPy sale ID families use the fallback", () => {
   for (const saleId of [
     "K9011093910454993440768",
+    "K900123456789012345",
     "K863728378853724160",
+    "900123456789012345",
     "870831825876946944",
     null,
   ]) {
