@@ -6,11 +6,9 @@
     "build": "node scripts/build-userscripts.mjs",
     "build:check": "node scripts/build-userscripts.mjs && node scripts/userscripts/lint-built.cjs",
     "install:scriptcat": "node scripts/userscripts/install-to-scriptcat.mjs",
-    "lint:userscripts": "node scripts/userscripts/lint.cjs",
-    "test:e2e:userscripts": "node scripts/userscripts/e2e/run-playwright.mjs"
+    "lint:userscripts": "node scripts/userscripts/lint.cjs"
   },
   "devDependencies": {
-    "@playwright/test": "1.60.0",
     "esbuild": "^0.25.0",
     "eslint-linter-browserify": "9.26.0",
     "eslint-plugin-userscripts": "0.5.6"

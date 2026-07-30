@@ -23,7 +23,6 @@ __pycache__/
 # Build inputs and vendored runtime used by tracked scripts.
 !package.json
 !pnpm-lock.yaml
-!playwright.userscripts.config.mjs
 !src/
 !src/lib/
 !src/lib/douban/
@@ -58,8 +57,6 @@ __pycache__/
 !scripts/userscripts/install-to-scriptcat.test.mjs
 !scripts/userscripts/steampy-plus-seller-batch.test.mjs
 !scripts/userscripts/steampy-plus-sale-start-time.test.mjs
-!scripts/userscripts/e2e/
-!scripts/userscripts/e2e/**
 !scripts/userscripts/lint-built.cjs
 !scripts/userscripts/lint.cjs
 !scripts/userscripts/scriptcat-vscode-sync.mjs
@@ -118,7 +115,3 @@ scripts/remote/**/*.pyc
 !.agents/skills/scriptcat-script-setup/**
 !.agents/skills/steampy-batch-cdkey-input/
 !.agents/skills/steampy-batch-cdkey-input/**
-
-# Playwright failure artifacts are kept locally for diagnosis.
-test-results/
-playwright-report/
