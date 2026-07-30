@@ -43,6 +43,7 @@ class ActivationStage(StrEnum):
 
 
 ActivationCheckpoint = Callable[[ActivationStage], None]
+ActivationHandoff = Callable[[Path], None]
 
 
 @dataclass(frozen=True)
@@ -60,6 +61,7 @@ def activate_archive(
     *,
     expected_archive_sha256: str,
     expected_source_provenance: dict[str, dict[str, str]] | None = None,
+    before_switch: ActivationHandoff | None = None,
 ) -> str:
     validate_build_id(expected_build_id, "expected build_id")
     with tempfile.TemporaryDirectory(
@@ -82,7 +84,12 @@ def activate_archive(
         verify_manifest(release, manifest)
         verify_release_identity(manifest)
         with activation_lock(data_root):
-            return commit_activation(release, manifest, data_root)
+            return commit_activation(
+                release,
+                manifest,
+                data_root,
+                before_switch=before_switch,
+            )
 
 
 def verify_expected_manifest(
@@ -104,6 +111,8 @@ def commit_activation(
     manifest: ReleaseManifest,
     data_root: Path,
     checkpoint: ActivationCheckpoint | None = None,
+    *,
+    before_switch: ActivationHandoff | None = None,
 ) -> str:
     active_checkpoint = checkpoint or ignore_checkpoint
     data_root.mkdir(parents=True, exist_ok=True)
@@ -117,6 +126,9 @@ def commit_activation(
     expected_current = LinkState(True, str(final))
     if current_state == expected_current:
         return manifest.build_id
+    if current_state.exists and before_switch is not None:
+        assert current_state.target is not None
+        before_switch(resolve_link_target(current, current_state.target))
     paths = transaction_paths(data_root)
     ensure_transaction_paths_available(paths)
     write_journal(
@@ -138,6 +150,11 @@ def commit_activation(
     remove_journal(paths)
     active_checkpoint(ActivationStage.CLEANUP_FINISHED)
     return manifest.build_id
+
+
+def resolve_link_target(link: Path, target: str) -> Path:
+    path = Path(target)
+    return path if path.is_absolute() else link.parent / path
 
 
 def read_release_provenance(release: Path) -> ReleaseProvenance:

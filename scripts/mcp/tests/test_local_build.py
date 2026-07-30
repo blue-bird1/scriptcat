@@ -21,6 +21,7 @@ NODE_HELP_STDOUT = "node-help-stdout"
 NODE_HELP_STDERR = "node-help-stderr"
 NODE_HELP_FAILURE = "node-help-failure-stdout"
 SHARED_TEST_FILE = "tests/shared-browser.test.ts"
+SHARED_ENTRY_ENV = "CHROME_DEVTOOLS_MCP_SHARED_TEST_ENTRY_PATH"
 
 
 class LocalMcpBuildTest(unittest.TestCase):
@@ -31,7 +32,7 @@ class LocalMcpBuildTest(unittest.TestCase):
             build_root = base / "component-store"
             fake_bin = create_fake_toolchain(base)
             environment = fake_environment(fake_bin)
-            invocation_log = Path(environment["FAKE_NODE_INVOCATION_LOG"])
+            invocation_log = Path(environment["FAKE_INVOCATION_LOG"])
 
             completed = run_build_cli(root, lock_path, build_root, environment)
 
@@ -54,36 +55,100 @@ class LocalMcpBuildTest(unittest.TestCase):
             focused_test = next(
                 invocation
                 for invocation in invocations
-                if "scripts/test.mjs" in invocation
+                if "tests/cli.test.ts" in invocation
             )
-            self.assertIn(SHARED_TEST_FILE, focused_test)
+            shared_test = next(
+                invocation
+                for invocation in invocations
+                if SHARED_TEST_FILE in invocation
+            )
+            self.assertNotIn(SHARED_TEST_FILE, focused_test)
+            self.assertIn(
+                f"{SHARED_ENTRY_ENV}=",
+                shared_test,
+            )
+            self.assertIn(
+                "/runtime/mcp/bin/chrome-devtools-mcp.js",
+                shared_test,
+            )
+            home = Path(environment["HOME"])
             self.assertIn(
                 "CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH="
-                f"{build.SHARED_TEST_EXECUTABLE_PATH}",
-                focused_test,
+                f"{provider_executable(home)}",
+                shared_test,
             )
             self.assertIn(
                 "CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH="
-                f"{build.SHARED_TEST_MANAGED_SCRIPTCAT_PATH}",
-                focused_test,
+                f"{managed_scriptcat(home)}",
+                shared_test,
             )
             self.assertIn(
                 f"CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_REPOSITORY_ROOT={root}",
-                focused_test,
+                shared_test,
             )
             self.assertIn(
                 "CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_EXTENSION_ID="
                 f"{build.SCRIPTCAT_EXTENSION_ID}",
-                focused_test,
+                shared_test,
             )
+            install_index = invocations.index(
+                "pnpm install --frozen-lockfile --config.node-linker=hoisted"
+            )
+            build_index = invocations.index("pnpm build")
+            focused_index = invocations.index(focused_test)
+            bundle_index = invocations.index("pnpm bundle")
+            shared_index = invocations.index(shared_test)
+            self.assertLess(
+                install_index,
+                build_index,
+            )
+            self.assertLess(build_index, focused_index)
+            self.assertLess(focused_index, bundle_index)
+            self.assertLess(bundle_index, shared_index)
             help_invocations = [
                 invocation
                 for invocation in invocations
-                if "chrome-devtools-mcp.js" in invocation
+                if invocation.startswith("node /")
+                and "chrome-devtools-mcp.js"
+                in invocation.split(" CHROME_DEVTOOLS_MCP_SHARED_TEST_ENTRY_PATH=", 1)[
+                    0
+                ]
             ]
             self.assertEqual(len(help_invocations), 2)
             self.assertNotIn(" shared ", f" {help_invocations[0]} ")
             self.assertIn(" shared --help", help_invocations[1])
+
+    def test_prerequisite_failure_precedes_dependency_install(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            base = Path(name)
+            root, lock_path = create_parent_checkout(base)
+            build_root = base / "component-store"
+            fake_bin = create_fake_toolchain(base)
+            environment = fake_environment(fake_bin)
+            managed_manifest(Path(environment["HOME"])).unlink()
+
+            completed = run_build_cli(root, lock_path, build_root, environment)
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn("managed ScriptCat manifest", completed.stderr)
+            invocation_log = Path(environment["FAKE_INVOCATION_LOG"])
+            self.assertFalse(invocation_log.exists())
+
+    def test_shared_e2e_failure_does_not_materialize_component(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            base = Path(name)
+            root, lock_path = create_parent_checkout(base)
+            build_root = base / "component-store"
+            fake_bin = create_fake_toolchain(base)
+            environment = fake_environment(fake_bin) | {
+                "FAKE_NODE_SHARED_FAIL": "1",
+            }
+
+            completed = run_build_cli(root, lock_path, build_root, environment)
+
+            self.assertNotEqual(completed.returncode, 0)
+            self.assertIn(SHARED_TEST_FILE, completed.stderr)
+            self.assertFalse((build_root / "builds").exists())
 
     def test_cached_component_must_pass_runtime_smoke(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as name:
@@ -168,6 +233,7 @@ def create_fake_toolchain(base: Path) -> Path:
     pnpm.write_text(
         "#!/bin/sh\n"
         "set -eu\n"
+        'printf \'pnpm %s\\n\' "$*" >> "$FAKE_INVOCATION_LOG"\n'
         "printf '%s\\n' \"$FAKE_PNPM_STDOUT\"\n"
         "printf '%s\\n' \"$FAKE_PNPM_STDERR\" >&2\n"
         'case "$1" in\n'
@@ -185,7 +251,9 @@ def create_fake_toolchain(base: Path) -> Path:
         "#!/bin/sh\n"
         "set -eu\n"
         "{\n"
-        "  printf '%s' \"$*\"\n"
+        "  printf 'node %s' \"$*\"\n"
+        "  printf ' CHROME_DEVTOOLS_MCP_SHARED_TEST_ENTRY_PATH=%s' "
+        '"${CHROME_DEVTOOLS_MCP_SHARED_TEST_ENTRY_PATH:-}"\n'
         "  printf ' CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH=%s' "
         '"${CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH:-}"\n'
         "  printf ' CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH=%s' "
@@ -194,7 +262,14 @@ def create_fake_toolchain(base: Path) -> Path:
         '"${CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_REPOSITORY_ROOT:-}"\n'
         "  printf ' CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_EXTENSION_ID=%s\\n' "
         '"${CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_EXTENSION_ID:-}"\n'
-        '} >> "$FAKE_NODE_INVOCATION_LOG"\n'
+        '} >> "$FAKE_INVOCATION_LOG"\n'
+        'case "$*" in\n'
+        f"  *{SHARED_TEST_FILE}*)\n"
+        '    if [ "${FAKE_NODE_SHARED_FAIL:-0}" = 1 ]; then\n'
+        f"      printf '%s\\n' '{SHARED_TEST_FILE} failed' >&2\n"
+        "      exit 8\n"
+        "    fi ;;\n"
+        "esac\n"
         'for argument in "$@"; do\n'
         '  if [ "$argument" = --help ]; then\n'
         "    printf '%s\\n' \"$FAKE_NODE_HELP_STDOUT\"\n"
@@ -213,14 +288,55 @@ def create_fake_toolchain(base: Path) -> Path:
 
 
 def fake_environment(fake_bin: Path) -> dict[str, str]:
+    home = fake_bin.parent / "home"
+    create_shared_prerequisites(home)
     return os.environ | {
+        "HOME": str(home),
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_PNPM_STDOUT": PNPM_STDOUT,
         "FAKE_PNPM_STDERR": PNPM_STDERR,
         "FAKE_NODE_HELP_STDOUT": NODE_HELP_STDOUT,
         "FAKE_NODE_HELP_STDERR": NODE_HELP_STDERR,
-        "FAKE_NODE_INVOCATION_LOG": str(fake_bin.parent / "node-invocations.log"),
+        "FAKE_INVOCATION_LOG": str(fake_bin.parent / "invocations.log"),
     }
+
+
+def create_shared_prerequisites(home: Path) -> None:
+    executable = provider_executable(home)
+    executable.parent.mkdir(parents=True)
+    executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+    executable.chmod(0o755)
+    provider_manifest(home).write_text("{}\n", encoding="utf-8")
+    managed = managed_scriptcat(home)
+    managed.mkdir(parents=True)
+    managed_manifest(home).write_text(
+        '{"manifest_version": 3, "name": "ScriptCat"}\n',
+        encoding="utf-8",
+    )
+
+
+def provider_executable(home: Path) -> Path:
+    return (
+        home
+        / ".local"
+        / "share"
+        / "scriptcat-browser"
+        / "current"
+        / "chrome-linux"
+        / "chrome"
+    )
+
+
+def provider_manifest(home: Path) -> Path:
+    return home / ".local" / "share" / "scriptcat-browser" / "current" / "manifest.json"
+
+
+def managed_scriptcat(home: Path) -> Path:
+    return home / ".codex" / "chrome-extensions" / "scriptcat" / "managed"
+
+
+def managed_manifest(home: Path) -> Path:
+    return managed_scriptcat(home) / "manifest.json"
 
 
 def run_build_cli(

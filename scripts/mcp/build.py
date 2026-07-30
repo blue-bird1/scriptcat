@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import shlex
@@ -54,8 +55,14 @@ SHARED_TEST_EXECUTABLE_PATH = (
     / "chrome-linux"
     / "chrome"
 )
+SHARED_TEST_PROVIDER_MANIFEST_PATH = (
+    Path.home() / ".local" / "share" / "scriptcat-browser" / "current" / "manifest.json"
+)
 SHARED_TEST_MANAGED_SCRIPTCAT_PATH = (
     Path.home() / ".codex" / "chrome-extensions" / "scriptcat" / "managed"
+)
+SHARED_TEST_MANAGED_SCRIPTCAT_MANIFEST_PATH = (
+    SHARED_TEST_MANAGED_SCRIPTCAT_PATH / "manifest.json"
 )
 
 
@@ -63,10 +70,31 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Build and focus-test the local MCP component.",
         epilog=(
-            "Requires a clean main checkout and an initialized, clean MCP submodule. "
-            "Installs frozen pnpm dependencies and runs the build, focused tests, and "
-            "bundle in browser/chrome-devtools-mcp. It then smoke-tests the bundled "
-            "CLI and stores only the verified component under the local build root. "
+            "Requires a clean main checkout, an initialized clean MCP submodule, the "
+            f"installed provider at {SHARED_TEST_EXECUTABLE_PATH}, its release "
+            f"manifest at {SHARED_TEST_PROVIDER_MANIFEST_PATH}, and managed "
+            "ScriptCat at "
+            f"{SHARED_TEST_MANAGED_SCRIPTCAT_PATH}. Publish ScriptCat with:\n"
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/scriptcat/publish.py\n"
+            "Install the provider with:\n"
+            "  set provider_component_build_id (uv run --project scripts "
+            "--python 3.12 python scripts/remote/provider/build.py)\n"
+            "  set provider_archive /tmp/scriptcat-browser-portable.tar.zst\n"
+            "  set provider_release_build_id (uv run --project scripts "
+            "--python 3.12 python scripts/remote/provider/package.py --build-id "
+            "$provider_component_build_id --output $provider_archive)\n"
+            "  set provider_archive_sha256 (string trim < "
+            '"$provider_archive.sha256")\n'
+            "  uv run --project scripts --python 3.12 python "
+            "scripts/remote/provider/install.py $provider_archive --lock "
+            "browser/provider.lock.json --build-id $provider_release_build_id "
+            "--archive-sha256 $provider_archive_sha256\n\n"
+            "The build installs frozen pnpm dependencies, compiles, runs focused "
+            "tests, bundles the candidate runtime, and executes the formal shared "
+            "browser E2E with a temporary Chromium profile against that exact "
+            "candidate. It then smoke-tests the bundled CLI and stores only the "
+            "verified component under the local build root. "
             "Relative --lock and --build-root paths resolve from the repository root. "
             f"The default build root is {local_build_root()}. Build progress is "
             "written to stderr; stdout contains only the component build ID for "
@@ -116,6 +144,7 @@ def run(argv: Sequence[str]) -> int:
 
 def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
     checkout = root / "browser" / "chrome-devtools-mcp"
+    validate_shared_test_prerequisites(root)
     LOGGER.info("installing frozen MCP dependencies")
     run_build_command(
         ("pnpm", "install", "--frozen-lockfile", "--config.node-linker=hoisted"),
@@ -131,22 +160,8 @@ def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
             "--",
             "tests/cli.test.ts",
             "tests/shutdown.test.ts",
-            "tests/shared-browser.test.ts",
         ),
         cwd=checkout,
-        env=os.environ
-        | {
-            "CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH": str(
-                SHARED_TEST_EXECUTABLE_PATH
-            ),
-            "CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH": str(
-                SHARED_TEST_MANAGED_SCRIPTCAT_PATH
-            ),
-            "CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_REPOSITORY_ROOT": str(root),
-            "CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_EXTENSION_ID": (
-                SCRIPTCAT_EXTENSION_ID
-            ),
-        },
     )
     LOGGER.info("bundling MCP runtime")
     run_build_command(("pnpm", "bundle"), cwd=checkout)
@@ -157,7 +172,66 @@ def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
         shutil.copy2(checkout / "package.json", runtime / "package.json")
         shutil.copy2(checkout / "LICENSE", runtime / "LICENSE")
         smoke_runtime(runtime)
+        LOGGER.info("running shared browser E2E against candidate runtime")
+        run_build_command(
+            (
+                "node",
+                "scripts/test.mjs",
+                "--",
+                "tests/shared-browser.test.ts",
+            ),
+            cwd=checkout,
+            env=os.environ
+            | {
+                "CHROME_DEVTOOLS_MCP_SHARED_TEST_ENTRY_PATH": str(
+                    runtime / "bin" / "chrome-devtools-mcp.js"
+                ),
+                "CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH": str(
+                    SHARED_TEST_EXECUTABLE_PATH
+                ),
+                "CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH": str(
+                    SHARED_TEST_MANAGED_SCRIPTCAT_PATH
+                ),
+                "CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_REPOSITORY_ROOT": str(root),
+                "CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_EXTENSION_ID": (
+                    SCRIPTCAT_EXTENSION_ID
+                ),
+            },
+        )
         materialize_component(runtime.parent, build_root / "builds", lock, epoch)
+
+
+def validate_shared_test_prerequisites(root: Path) -> None:
+    if not root.is_dir():
+        raise WorkflowError(f"ScriptCat repository root is unavailable: {root}")
+    if not SHARED_TEST_EXECUTABLE_PATH.is_file() or not os.access(
+        SHARED_TEST_EXECUTABLE_PATH, os.X_OK
+    ):
+        raise WorkflowError(
+            f"browser provider executable is unavailable: {SHARED_TEST_EXECUTABLE_PATH}"
+        )
+    require_json_object(
+        SHARED_TEST_PROVIDER_MANIFEST_PATH,
+        "browser provider release manifest",
+    )
+    if not SHARED_TEST_MANAGED_SCRIPTCAT_PATH.is_dir():
+        raise WorkflowError(
+            "managed ScriptCat directory is unavailable: "
+            f"{SHARED_TEST_MANAGED_SCRIPTCAT_PATH}"
+        )
+    require_json_object(
+        SHARED_TEST_MANAGED_SCRIPTCAT_MANIFEST_PATH,
+        "managed ScriptCat manifest",
+    )
+
+
+def require_json_object(path: Path, label: str) -> None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise WorkflowError(f"{label} is unavailable or invalid: {path}") from error
+    if not isinstance(payload, dict):
+        raise WorkflowError(f"{label} must contain a JSON object: {path}")
 
 
 def run_build_command(

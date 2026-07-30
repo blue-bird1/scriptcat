@@ -179,6 +179,7 @@ class LocalMcpReleaseTest(unittest.TestCase):
         digest = hashlib.sha256(product.archive.read_bytes()).hexdigest()
         with (
             patch.object(install, "repository_root", return_value=root),
+            patch.object(install, "stop_broker_before_release_switch"),
             redirect_stdout(StringIO()),
         ):
             install.run(
