@@ -127,7 +127,7 @@ class ActivationRecoveryTest(unittest.TestCase):
                 (str(data_root / "releases" / fixture.manifest.build_id), None),
             )
 
-    def test_commit_success_before_committed_journal_failure_restores_old_links(
+    def test_commit_success_before_committed_journal_failure_preserves_new_links(
         self,
     ) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as name:
@@ -176,10 +176,18 @@ class ActivationRecoveryTest(unittest.TestCase):
 
             self.assertTrue(handoff.committed)
             self.assertFalse(handoff.aborted)
-            self.assertEqual((data_root / "current").resolve(), old_installed)
+            self.assertEqual(
+                link_targets(data_root),
+                (
+                    str(releases / new.manifest.build_id),
+                    str(old_installed),
+                ),
+            )
             self.assertFalse((data_root / "activation-journal.json").exists())
 
-    def test_committed_journal_recovery_preserves_new_links(self) -> None:
+    def test_cleanup_failure_after_commit_preserves_new_links_and_clears_journal(
+        self,
+    ) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as name:
             root = Path(name)
             old = create_release_fixture(root / "old", payload=b"old\n")
@@ -216,11 +224,6 @@ class ActivationRecoveryTest(unittest.TestCase):
                 str(old_installed),
             )
             self.assertTrue(handoff.committed)
-            self.assertEqual(link_targets(data_root), expected)
-            self.assertTrue((data_root / "activation-journal.json").exists())
-
-            recover_activation(data_root)
-
             self.assertEqual(link_targets(data_root), expected)
             self.assertFalse((data_root / "activation-journal.json").exists())
 

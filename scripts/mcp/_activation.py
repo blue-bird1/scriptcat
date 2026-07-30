@@ -15,6 +15,7 @@ from ._activation_state import (
     ActivationJournal,
     ActivationPhase,
     LinkState,
+    TransactionPaths,
     capture_link,
     ensure_transaction_paths_available,
     fsync_directory,
@@ -148,6 +149,12 @@ def commit_activation(
         paths = transaction_paths(data_root)
         ensure_transaction_paths_available(paths)
         previous_state = capture_link(previous)
+        committed_journal = ActivationJournal(
+            build_id=manifest.build_id,
+            current=current_state,
+            previous=previous_state,
+            phase=ActivationPhase.COMMITTED,
+        )
         write_journal(
             paths,
             ActivationJournal(
@@ -157,6 +164,7 @@ def commit_activation(
                 phase=ActivationPhase.SWITCHING,
             ),
         )
+        handoff_committed = False
         try:
             if current_state.exists:
                 replace_symlink(previous, current_state.target or "")
@@ -168,21 +176,34 @@ def commit_activation(
             active_checkpoint(ActivationStage.CURRENT_UPDATED)
             if handoff is not None:
                 handoff.commit()
-            write_journal(
-                paths,
-                ActivationJournal(
-                    build_id=manifest.build_id,
-                    current=current_state,
-                    previous=previous_state,
-                    phase=ActivationPhase.COMMITTED,
-                ),
-            )
+                handoff_committed = True
+            write_journal(paths, committed_journal)
+            remove_journal(paths)
         except BaseException:
-            recover_activation(data_root)
+            if handoff_committed:
+                preserve_committed_activation(
+                    data_root,
+                    paths,
+                    committed_journal,
+                )
+            else:
+                recover_activation(data_root)
             raise
-        remove_journal(paths)
         active_checkpoint(ActivationStage.CLEANUP_FINISHED)
     return manifest.build_id
+
+
+def preserve_committed_activation(
+    data_root: Path,
+    paths: TransactionPaths,
+    journal: ActivationJournal,
+) -> None:
+    try:
+        write_journal(paths, journal)
+    except BaseException:
+        remove_journal(paths)
+        return
+    recover_activation(data_root)
 
 
 def resolve_link_target(link: Path, target: str) -> Path:
