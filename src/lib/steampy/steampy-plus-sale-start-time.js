@@ -16,16 +16,20 @@ const CHINA_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
 
 export const SALE_START_TIME_FALLBACK = "暂无";
 
-export function decodeK900SaleStartedAt(saleId) {
-  if (!/^K900\d+$/.test(String(saleId ?? ""))) return null;
-  const milliseconds = (BigInt(String(saleId).slice(4)) >> 22n) + STEAMPY_SNOWFLAKE_EPOCH_MS;
+export function decodeSteamPySaleStartedAt(saleId) {
+  const value = String(saleId ?? "");
+  let payload;
+  if (/^K900\d+$/.test(value)) payload = value.slice(4);
+  else if (/^900\d+$/.test(value)) payload = value.slice(3);
+  else return null;
+  const milliseconds = (BigInt(payload) >> 22n) + STEAMPY_SNOWFLAKE_EPOCH_MS;
   if (milliseconds < 0n || milliseconds > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-  const value = Number(milliseconds);
-  return Number.isNaN(new Date(value).getTime()) ? null : value;
+  const timestamp = Number(milliseconds);
+  return Number.isNaN(new Date(timestamp).getTime()) ? null : timestamp;
 }
 
-export function formatK900SaleStartedAt(saleId) {
-  const milliseconds = decodeK900SaleStartedAt(saleId);
+export function formatSteamPySaleStartedAt(saleId) {
+  const milliseconds = decodeSteamPySaleStartedAt(saleId);
   if (milliseconds === null) return SALE_START_TIME_FALLBACK;
   const parts = Object.fromEntries(
     CHINA_TIME_FORMATTER.formatToParts(new Date(milliseconds))
@@ -125,7 +129,7 @@ function installColumn(vm) {
     minWidth: 170,
     sortable: false,
     title: "开始销售时间",
-    render: (createElement, { row }) => createElement("span", formatK900SaleStartedAt(row?.saleId)),
+    render: (createElement, { row }) => createElement("span", formatSteamPySaleStartedAt(row?.saleId)),
   });
 }
 

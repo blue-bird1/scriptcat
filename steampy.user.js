@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.9
+// @version         5.10.10
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -1030,15 +1030,19 @@
     year: "numeric"
   });
   var SALE_START_TIME_FALLBACK = "暂无";
-  function decodeK900SaleStartedAt(saleId) {
-    if (!/^K900\d+$/.test(String(saleId ?? ""))) return null;
-    const milliseconds = (BigInt(String(saleId).slice(4)) >> 22n) + STEAMPY_SNOWFLAKE_EPOCH_MS;
+  function decodeSteamPySaleStartedAt(saleId) {
+    const value = String(saleId ?? "");
+    let payload;
+    if (/^K900\d+$/.test(value)) payload = value.slice(4);
+    else if (/^900\d+$/.test(value)) payload = value.slice(3);
+    else return null;
+    const milliseconds = (BigInt(payload) >> 22n) + STEAMPY_SNOWFLAKE_EPOCH_MS;
     if (milliseconds < 0n || milliseconds > BigInt(Number.MAX_SAFE_INTEGER)) return null;
-    const value = Number(milliseconds);
-    return Number.isNaN(new Date(value).getTime()) ? null : value;
+    const timestamp = Number(milliseconds);
+    return Number.isNaN(new Date(timestamp).getTime()) ? null : timestamp;
   }
-  function formatK900SaleStartedAt(saleId) {
-    const milliseconds = decodeK900SaleStartedAt(saleId);
+  function formatSteamPySaleStartedAt(saleId) {
+    const milliseconds = decodeSteamPySaleStartedAt(saleId);
     if (milliseconds === null) return SALE_START_TIME_FALLBACK;
     const parts = Object.fromEntries(
       CHINA_TIME_FORMATTER.formatToParts(new Date(milliseconds)).filter(({ type }) => type !== "literal").map(({ type, value }) => [type, value])
@@ -1130,7 +1134,7 @@
       minWidth: 170,
       sortable: false,
       title: "开始销售时间",
-      render: (createElement2, { row }) => createElement2("span", formatK900SaleStartedAt(row?.saleId))
+      render: (createElement2, { row }) => createElement2("span", formatSteamPySaleStartedAt(row?.saleId))
     });
   }
   function removeColumn(vm) {
