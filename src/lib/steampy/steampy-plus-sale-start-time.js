@@ -1,4 +1,5 @@
 const PRO_DETAIL_PATH = "/pro/cdKey/cdkDetail";
+const SALE_AVATAR_COLUMN_KEY = "steamAva";
 const SALE_START_TIME_COLUMN_KEY = "steamPyPlusSaleStartedAt";
 const STEAMPY_SNOWFLAKE_EPOCH_MS = 1_524_291_141_000n;
 const CHINA_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
@@ -76,6 +77,44 @@ function findDetailVm() {
   });
 }
 
+function installAvatarRenderer(vm) {
+  const index = vm.columns.findIndex((column) => column?.key === SALE_AVATAR_COLUMN_KEY);
+  if (index < 0) return null;
+  const column = vm.columns[index];
+  const originalRender = column.render;
+  const patchedRender = (createElement, { row }) => {
+    const src = String(row?.steamAva ?? "").trim();
+    if (!src) {
+      return createElement("span", {
+        class: "ivu-avatar ivu-avatar-circle",
+        style: { height: "32px", width: "32px" },
+      });
+    }
+    return createElement("img", {
+      alt: "",
+      class: "ivu-avatar ivu-avatar-circle",
+      src,
+      style: {
+        height: "32px",
+        objectFit: "cover",
+        width: "32px",
+      },
+    });
+  };
+  column.render = patchedRender;
+  vm.columns.splice(index, 1, column);
+  return { originalRender, patchedRender };
+}
+
+function restoreAvatarRenderer(vm, patch) {
+  if (!vm || !patch) return;
+  const index = vm.columns.findIndex((column) => column?.key === SALE_AVATAR_COLUMN_KEY);
+  if (index < 0 || vm.columns[index].render !== patch.patchedRender) return;
+  const column = vm.columns[index];
+  column.render = patch.originalRender;
+  vm.columns.splice(index, 1, column);
+}
+
 function installColumn(vm) {
   if (vm.columns.some((column) => column?.key === SALE_START_TIME_COLUMN_KEY)) return;
   const inventoryIndex = vm.columns.findIndex((column) => column?.title === "库存");
@@ -102,6 +141,7 @@ export function createSteamPySaleStartTimeController({
   let active = false;
   let generation = 0;
   let detailVm = null;
+  let avatarPatch = null;
 
   async function start() {
     if (active) return;
@@ -111,6 +151,7 @@ export function createSteamPySaleStartTimeController({
       if (!active || currentGeneration !== generation || location.pathname !== PRO_DETAIL_PATH) return;
       detailVm = findDetailVm();
       if (detailVm) {
+        avatarPatch = installAvatarRenderer(detailVm);
         installColumn(detailVm);
         return;
       }
@@ -123,6 +164,8 @@ export function createSteamPySaleStartTimeController({
     active = false;
     generation += 1;
     removeColumn(detailVm);
+    restoreAvatarRenderer(detailVm, avatarPatch);
+    avatarPatch = null;
     detailVm = null;
   }
 

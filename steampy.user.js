@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.8
+// @version         5.10.9
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
@@ -1015,6 +1015,7 @@
 
   // src/lib/steampy/steampy-plus-sale-start-time.js
   var PRO_DETAIL_PATH = "/pro/cdKey/cdkDetail";
+  var SALE_AVATAR_COLUMN_KEY = "steamAva";
   var SALE_START_TIME_COLUMN_KEY = "steamPyPlusSaleStartedAt";
   var STEAMPY_SNOWFLAKE_EPOCH_MS = 1524291141000n;
   var CHINA_TIME_FORMATTER = new Intl.DateTimeFormat("zh-CN", {
@@ -1083,6 +1084,42 @@
       return proxy;
     });
   }
+  function installAvatarRenderer(vm) {
+    const index = vm.columns.findIndex((column2) => column2?.key === SALE_AVATAR_COLUMN_KEY);
+    if (index < 0) return null;
+    const column = vm.columns[index];
+    const originalRender = column.render;
+    const patchedRender = (createElement2, { row }) => {
+      const src = String(row?.steamAva ?? "").trim();
+      if (!src) {
+        return createElement2("span", {
+          class: "ivu-avatar ivu-avatar-circle",
+          style: { height: "32px", width: "32px" }
+        });
+      }
+      return createElement2("img", {
+        alt: "",
+        class: "ivu-avatar ivu-avatar-circle",
+        src,
+        style: {
+          height: "32px",
+          objectFit: "cover",
+          width: "32px"
+        }
+      });
+    };
+    column.render = patchedRender;
+    vm.columns.splice(index, 1, column);
+    return { originalRender, patchedRender };
+  }
+  function restoreAvatarRenderer(vm, patch) {
+    if (!vm || !patch) return;
+    const index = vm.columns.findIndex((column2) => column2?.key === SALE_AVATAR_COLUMN_KEY);
+    if (index < 0 || vm.columns[index].render !== patch.patchedRender) return;
+    const column = vm.columns[index];
+    column.render = patch.originalRender;
+    vm.columns.splice(index, 1, column);
+  }
   function installColumn(vm) {
     if (vm.columns.some((column) => column?.key === SALE_START_TIME_COLUMN_KEY)) return;
     const inventoryIndex = vm.columns.findIndex((column) => column?.title === "库存");
@@ -1107,6 +1144,7 @@
     let active = false;
     let generation = 0;
     let detailVm = null;
+    let avatarPatch = null;
     async function start() {
       if (active) return;
       active = true;
@@ -1115,6 +1153,7 @@
         if (!active || currentGeneration !== generation || location.pathname !== PRO_DETAIL_PATH) return;
         detailVm = findDetailVm();
         if (detailVm) {
+          avatarPatch = installAvatarRenderer(detailVm);
           installColumn(detailVm);
           return;
         }
@@ -1126,6 +1165,8 @@
       active = false;
       generation += 1;
       removeColumn(detailVm);
+      restoreAvatarRenderer(detailVm, avatarPatch);
+      avatarPatch = null;
       detailVm = null;
     }
     return { cleanup, start };
