@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import logging
+import os
 import shlex
 import shutil
 import subprocess
@@ -43,6 +44,19 @@ else:
 
 LOCK_PATH = Path("browser/mcp.lock.json")
 LOGGER = logging.getLogger("scriptcat.mcp")
+SCRIPTCAT_EXTENSION_ID = "oepcbpjafionmhhelohlfhlmlaciclhc"
+SHARED_TEST_EXECUTABLE_PATH = (
+    Path.home()
+    / ".local"
+    / "share"
+    / "scriptcat-browser"
+    / "current"
+    / "chrome-linux"
+    / "chrome"
+)
+SHARED_TEST_MANAGED_SCRIPTCAT_PATH = (
+    Path.home() / ".codex" / "chrome-extensions" / "scriptcat" / "managed"
+)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -117,8 +131,22 @@ def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
             "--",
             "tests/cli.test.ts",
             "tests/shutdown.test.ts",
+            "tests/shared-browser.test.ts",
         ),
         cwd=checkout,
+        env=os.environ
+        | {
+            "CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH": str(
+                SHARED_TEST_EXECUTABLE_PATH
+            ),
+            "CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH": str(
+                SHARED_TEST_MANAGED_SCRIPTCAT_PATH
+            ),
+            "CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_REPOSITORY_ROOT": str(root),
+            "CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_EXTENSION_ID": (
+                SCRIPTCAT_EXTENSION_ID
+            ),
+        },
     )
     LOGGER.info("bundling MCP runtime")
     run_build_command(("pnpm", "bundle"), cwd=checkout)
@@ -132,11 +160,17 @@ def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
         materialize_component(runtime.parent, build_root / "builds", lock, epoch)
 
 
-def run_build_command(command: Sequence[str], *, cwd: Path) -> None:
+def run_build_command(
+    command: Sequence[str],
+    *,
+    cwd: Path,
+    env: dict[str, str] | None = None,
+) -> None:
     try:
         subprocess.run(
             command,
             cwd=cwd,
+            env=env,
             check=True,
             text=True,
             stdout=sys.stderr,
@@ -154,6 +188,15 @@ def smoke_runtime(runtime: Path) -> None:
     LOGGER.info("smoke-testing bundled MCP CLI: %s", runtime)
     run_build_command(
         ("node", str(runtime / "bin" / "chrome-devtools-mcp.js"), "--help"),
+        cwd=runtime,
+    )
+    run_build_command(
+        (
+            "node",
+            str(runtime / "bin" / "chrome-devtools-mcp.js"),
+            "shared",
+            "--help",
+        ),
         cwd=runtime,
     )
 
