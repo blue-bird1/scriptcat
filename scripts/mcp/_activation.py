@@ -5,13 +5,15 @@ import os
 import shutil
 import tempfile
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
+from typing import Protocol
 
 from ._activation_state import (
     ActivationJournal,
+    ActivationPhase,
     LinkState,
     capture_link,
     ensure_transaction_paths_available,
@@ -43,7 +45,15 @@ class ActivationStage(StrEnum):
 
 
 ActivationCheckpoint = Callable[[ActivationStage], None]
-ActivationHandoff = Callable[[Path], None]
+
+
+class ActivationHandoff(Protocol):
+    def commit(self) -> None: ...
+
+
+ActivationHandoffFactory = Callable[
+    [Path], AbstractContextManager[ActivationHandoff | None]
+]
 
 
 @dataclass(frozen=True)
@@ -61,7 +71,7 @@ def activate_archive(
     *,
     expected_archive_sha256: str,
     expected_source_provenance: dict[str, dict[str, str]] | None = None,
-    before_switch: ActivationHandoff | None = None,
+    handoff_factory: ActivationHandoffFactory | None = None,
 ) -> str:
     validate_build_id(expected_build_id, "expected build_id")
     with tempfile.TemporaryDirectory(
@@ -88,7 +98,7 @@ def activate_archive(
                 release,
                 manifest,
                 data_root,
-                before_switch=before_switch,
+                handoff_factory=handoff_factory,
             )
 
 
@@ -112,7 +122,7 @@ def commit_activation(
     data_root: Path,
     checkpoint: ActivationCheckpoint | None = None,
     *,
-    before_switch: ActivationHandoff | None = None,
+    handoff_factory: ActivationHandoffFactory | None = None,
 ) -> str:
     active_checkpoint = checkpoint or ignore_checkpoint
     data_root.mkdir(parents=True, exist_ok=True)
@@ -126,29 +136,52 @@ def commit_activation(
     expected_current = LinkState(True, str(final))
     if current_state == expected_current:
         return manifest.build_id
-    if current_state.exists and before_switch is not None:
+    handoff_context: AbstractContextManager[ActivationHandoff | None]
+    if current_state.exists and handoff_factory is not None:
         assert current_state.target is not None
-        before_switch(resolve_link_target(current, current_state.target))
-    paths = transaction_paths(data_root)
-    ensure_transaction_paths_available(paths)
-    write_journal(
-        paths,
-        ActivationJournal(
-            build_id=manifest.build_id,
-            current=current_state,
-            previous=capture_link(previous),
-        ),
-    )
-    if current_state.exists:
-        replace_symlink(previous, current_state.target or "")
+        handoff_context = handoff_factory(
+            resolve_link_target(current, current_state.target)
+        )
     else:
-        previous.unlink(missing_ok=True)
-        fsync_directory(previous.parent)
-    active_checkpoint(ActivationStage.PREVIOUS_UPDATED)
-    replace_symlink(current, str(final))
-    active_checkpoint(ActivationStage.CURRENT_UPDATED)
-    remove_journal(paths)
-    active_checkpoint(ActivationStage.CLEANUP_FINISHED)
+        handoff_context = nullcontext(None)
+    with handoff_context as handoff:
+        paths = transaction_paths(data_root)
+        ensure_transaction_paths_available(paths)
+        previous_state = capture_link(previous)
+        write_journal(
+            paths,
+            ActivationJournal(
+                build_id=manifest.build_id,
+                current=current_state,
+                previous=previous_state,
+                phase=ActivationPhase.SWITCHING,
+            ),
+        )
+        try:
+            if current_state.exists:
+                replace_symlink(previous, current_state.target or "")
+            else:
+                previous.unlink(missing_ok=True)
+                fsync_directory(previous.parent)
+            active_checkpoint(ActivationStage.PREVIOUS_UPDATED)
+            replace_symlink(current, str(final))
+            active_checkpoint(ActivationStage.CURRENT_UPDATED)
+            if handoff is not None:
+                handoff.commit()
+            write_journal(
+                paths,
+                ActivationJournal(
+                    build_id=manifest.build_id,
+                    current=current_state,
+                    previous=previous_state,
+                    phase=ActivationPhase.COMMITTED,
+                ),
+            )
+        except BaseException:
+            recover_activation(data_root)
+            raise
+        remove_journal(paths)
+        active_checkpoint(ActivationStage.CLEANUP_FINISHED)
     return manifest.build_id
 
 

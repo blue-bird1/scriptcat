@@ -19,7 +19,7 @@ if __package__ in (None, ""):
         validate_build_id,
     )
     from mcp._component import expected_provenance
-    from mcp._control import stop_broker_before_release_switch
+    from mcp._control import prepare_broker_release_handoff
     from mcp._lock import load_lock
 else:
     from ._activation import activate_archive
@@ -32,7 +32,7 @@ else:
         validate_build_id,
     )
     from ._component import expected_provenance
-    from ._control import stop_broker_before_release_switch
+    from ._control import prepare_broker_release_handoff
     from ._lock import load_lock
 
 
@@ -45,10 +45,15 @@ def parser() -> argparse.ArgumentParser:
             "previous. Relative archive, --lock, and --data-root paths resolve from "
             f"the repository root. The default data root is {local_data_root()}; the "
             "command creates its releases directory and atomically updates current and "
-            "previous there. Before switching current, it asks a shared broker owned "
-            "by the old runtime to stop without force. A missing broker and a legacy "
-            "runtime continue; active clients and other control failures abort before "
-            "activation. The archive is read only and the operation is offline."
+            "previous there. Before switching current, it asks the old runtime to "
+            "prepare an exclusive broker handoff. The old broker retains its socket "
+            "until activation commits; failures abort the handoff and restore the "
+            "prior links. A missing broker and a runtime predating shared mode "
+            "continue. A running shared broker without handoff support, active "
+            "clients, timeouts, and protocol errors abort activation. The archive is "
+            "read only and the operation is offline. For the one-time upgrade from a "
+            "running shared runtime without handoff support, end active sessions, run "
+            "scripts/mcp/control.py stop explicitly, and retry install."
             "\n\nExample:\n  uv run --project "
             "scripts --python 3.12 python scripts/mcp/install.py /tmp/mcp.tar.zst "
             "--lock browser/mcp.lock.json "
@@ -103,8 +108,8 @@ def run(argv: Sequence[str]) -> int:
         lock.digest,
         expected_archive_sha256=arguments.archive_sha256,
         expected_source_provenance=expected_provenance(lock),
-        before_switch=partial(
-            stop_broker_before_release_switch,
+        handoff_factory=partial(
+            prepare_broker_release_handoff,
             root / ".codex" / "config.toml",
         ),
     )

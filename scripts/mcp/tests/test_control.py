@@ -107,6 +107,20 @@ class McpControlTest(unittest.TestCase):
             with self.assertRaises(WorkflowError):
                 load_mcp_invocation(config)
 
+    def test_status_timeout_is_bounded_and_reported(self) -> None:
+        with tempfile.TemporaryDirectory(dir="/tmp") as name:
+            root = Path(name)
+            config = write_config(root)
+            with (
+                patch.object(control, "repository_root", return_value=root),
+                patch(
+                    "scripts.mcp._control.subprocess.run",
+                    side_effect=subprocess.TimeoutExpired(("node",), 30),
+                ),
+                self.assertRaisesRegex(WorkflowError, "timed out after 30 seconds"),
+            ):
+                control.run(["--config", str(config), "status"])
+
 
 def write_config(root: Path) -> Path:
     config = root / ".codex" / "config.toml"

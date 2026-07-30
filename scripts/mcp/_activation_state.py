@@ -3,11 +3,18 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 
 from ._common import WorkflowError
 
-JOURNAL_SCHEMA_VERSION = 2
+JOURNAL_SCHEMA_VERSION = 3
+LEGACY_JOURNAL_SCHEMA_VERSION = 2
+
+
+class ActivationPhase(StrEnum):
+    SWITCHING = "switching"
+    COMMITTED = "committed"
 
 
 @dataclass(frozen=True)
@@ -21,6 +28,7 @@ class ActivationJournal:
     build_id: str
     current: LinkState
     previous: LinkState
+    phase: ActivationPhase
 
 
 @dataclass(frozen=True)
@@ -35,8 +43,9 @@ def recover_activation(data_root: Path) -> None:
     if journal is None:
         cleanup_stale_transaction_paths(paths, data_root)
         return
-    restore_link(data_root / "previous", journal.previous)
-    restore_link(data_root / "current", journal.current)
+    if journal.phase is ActivationPhase.SWITCHING:
+        restore_link(data_root / "previous", journal.previous)
+        restore_link(data_root / "current", journal.current)
     remove_journal(paths)
     cleanup_stale_transaction_paths(paths, data_root)
 
@@ -66,6 +75,7 @@ def write_journal(paths: TransactionPaths, journal: ActivationJournal) -> None:
         "build_id": journal.build_id,
         "current": link_state_payload(journal.current),
         "previous": link_state_payload(journal.previous),
+        "phase": journal.phase,
     }
     paths.journal.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -90,25 +100,37 @@ def read_journal(paths: TransactionPaths) -> ActivationJournal | None:
         raw = json.loads(paths.journal.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, UnicodeDecodeError) as error:
         raise WorkflowError(f"activation journal is invalid: {error}") from error
-    if not isinstance(raw, dict) or set(raw) != {
+    if not isinstance(raw, dict):
+        raise WorkflowError("activation journal has an unsupported shape")
+    schema_version = raw.get("schema_version")
+    expected_keys = {
         "schema_version",
         "build_id",
         "current",
         "previous",
-    }:
+    }
+    if schema_version == JOURNAL_SCHEMA_VERSION:
+        expected_keys.add("phase")
+    elif schema_version != LEGACY_JOURNAL_SCHEMA_VERSION:
+        raise WorkflowError("activation journal has an unsupported shape")
+    if set(raw) != expected_keys:
         raise WorkflowError("activation journal has an unsupported shape")
     build_id = raw["build_id"]
-    if (
-        raw["schema_version"] != JOURNAL_SCHEMA_VERSION
-        or not isinstance(build_id, str)
-        or not build_id
-        or "/" in build_id
-    ):
+    if not isinstance(build_id, str) or not build_id or "/" in build_id:
         raise WorkflowError("activation journal has an unsupported shape")
+    try:
+        phase = (
+            ActivationPhase(raw["phase"])
+            if schema_version == JOURNAL_SCHEMA_VERSION
+            else ActivationPhase.SWITCHING
+        )
+    except (TypeError, ValueError) as error:
+        raise WorkflowError("activation journal has an unsupported shape") from error
     return ActivationJournal(
         build_id=build_id,
         current=parse_link_state(raw["current"]),
         previous=parse_link_state(raw["previous"]),
+        phase=phase,
     )
 
 
