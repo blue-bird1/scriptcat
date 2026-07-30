@@ -103,86 +103,12 @@ def activate_current(runtime):
     os.symlink(str(runtime), link_stage)
     os.replace(link_stage, current)
 
-def schema_one_migrated_manifest(component):
-    manifest = read_manifest(component / 'build-manifest.json')
-    if not isinstance(manifest, dict) or manifest.get('schema') != 1 or manifest.get('lock_digest') != lock_digest:
-        return None
-    keys = {{'schema', 'build_id', 'project_commit', 'lock_digest', 'source_date_epoch', 'chromium_version', 'depot_tools_version', 'provenance', 'files', 'directories'}}
-    project_commit = manifest.get('project_commit')
-    expected_legacy_id = hashlib.sha256(f'{{lock_digest}}{{project_commit}}'.encode()).hexdigest()[:24] if is_hex(project_commit, 40) else None
-    if set(manifest) != keys or not is_hex(project_commit, 40) or manifest.get('build_id') != expected_legacy_id:
-        fail('schema-1 identity is invalid')
-    if not isinstance(manifest.get('source_date_epoch'), int) or isinstance(manifest['source_date_epoch'], bool) or manifest['source_date_epoch'] <= 0:
-        fail('schema-1 source date is invalid')
-    if manifest.get('chromium_version') != chromium_version or manifest.get('depot_tools_version') != depot_tools_version:
-        fail('schema-1 versions do not match the lock')
-    provenance = manifest.get('provenance')
-    chromium = provenance.get('chromium') if isinstance(provenance, dict) else None
-    if not isinstance(chromium, dict) or set(chromium) != {{'upstream_commit', 'patch_digest', 'build_commit'}} or chromium.get('upstream_commit') != chromium_commit or chromium.get('patch_digest') != patch_digest or not is_hex(chromium.get('build_commit'), 40):
-        fail('schema-1 Chromium provenance is invalid')
-    if provenance.get('depot_tools') != {{'upstream_commit': depot_tools_commit, 'build_commit': depot_tools_commit}}:
-        fail('schema-1 depot_tools provenance is invalid')
-    files, directories = runtime_inventory(component / 'runtime')
-    if manifest.get('files') != files or manifest.get('directories') != directories:
-        fail('schema-1 inventory is invalid')
-    return {{
-        'schema': {BUILD_SCHEMA}, 'build_id': build_id, 'lock_digest': lock_digest,
-        'source_date_epoch': manifest['source_date_epoch'],
-        'versions': {{'chromium': chromium_version, 'depot_tools': depot_tools_version}},
-        'provenance': provenance, 'files': files, 'directories': directories,
-    }}
-
-def clear_managed_manifest_stages():
-    prefix = f'.{{build_id}}.'
-    for stage in managed_stages(builds, prefix, '.manifest'):
-        if stage.is_symlink() or not stage.is_file():
-            fail('manifest migration staging path is invalid')
-        stage.unlink()
-
-def replace_schema_one_manifest(component, migrated_manifest):
-    clear_managed_manifest_stages()
-    manifest_stage = builds / f'.{{build_id}}.{{os.getpid()}}.manifest'
-    if manifest_stage.exists() or manifest_stage.is_symlink():
-        fail('manifest migration staging path already exists')
-    manifest_stage.write_text(json.dumps(migrated_manifest, indent=2, sort_keys=True) + '\\n', encoding='utf-8')
-    os.replace(manifest_stage, component / 'build-manifest.json')
-    activate_current(component / 'runtime')
-
-def migrate_current_schema_one():
-    current = builds.parent / 'current'
-    if not current.is_symlink():
-        return False
-    runtime_target = pathlib.Path(os.readlink(current))
-    if not runtime_target.is_absolute() or runtime_target.name != 'runtime' or runtime_target.parent.parent != builds:
-        return False
-    legacy = runtime_target.parent
-    if legacy.is_symlink() or not legacy.is_dir():
-        return False
-    migrated_manifest = schema_one_migrated_manifest(legacy)
-    if migrated_manifest is None:
-        return False
-    legacy_manifest = read_manifest(legacy / 'build-manifest.json')
-    if legacy.name != legacy_manifest.get('build_id'):
-        fail('schema-1 identity is invalid')
-    clear_managed_manifest_stages()
-    os.replace(legacy, target)
-    replace_schema_one_manifest(target, migrated_manifest)
-    return True
-
 if target.exists() or target.is_symlink():
     if target.is_symlink() or not target.is_dir():
         fail('is invalid')
     manifest = read_manifest(target / 'build-manifest.json')
-    if isinstance(manifest, dict) and manifest.get('schema') == 1:
-        migrated_manifest = schema_one_migrated_manifest(target)
-        if migrated_manifest is None:
-            fail('schema-1 migration lock does not match')
-        replace_schema_one_manifest(target, migrated_manifest)
-    else:
-        validate_schema_two(target, manifest)
-        activate_current(target / 'runtime')
-    print('reuse')
-elif migrate_current_schema_one():
+    validate_schema_two(target, manifest)
+    activate_current(target / 'runtime')
     print('reuse')
 else:
     print('build')

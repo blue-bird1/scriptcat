@@ -6,7 +6,6 @@ import os
 import subprocess
 import tempfile
 import unittest
-from dataclasses import replace
 from pathlib import Path
 
 from scripts.remote.provider._common import WorkflowError
@@ -32,7 +31,6 @@ FIRST_DIRECTORIES = ("chrome-linux",)
 SECOND_DIRECTORIES = ("chrome-linux", "chrome-linux/empty")
 UNSUPPORTED_PARENT_FIELD = "project_commit"
 LEGACY_PROJECT_COMMIT = "a" * 40
-TRUNCATED_MANIFEST_STAGE = b'{"schema":'
 
 
 class ProviderIdentityTest(unittest.TestCase):
@@ -168,121 +166,32 @@ class ProviderIdentityTest(unittest.TestCase):
                     manifest_path.parent, release_name.removeprefix("release-"), lock
                 )
 
-    def test_current_schema_one_build_rekeys_without_rebuilding_runtime(self) -> None:
+    def test_schema_one_component_is_not_reused(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
             root = Path(temporary_name) / "build-root"
             lock = load_lock(LOCK_PATH)
             legacy, chrome = self._create_schema_one_current(root, lock)
-            before = chrome.stat()
             content = chrome.read_bytes()
 
-            completed = self._run_reuse_script(root, lock)
+            script = verified_build_reuse_script(lock)
+            command = (
+                f"set -Eeuo pipefail\nbuild_root={root}\n{script}"
+                "\nprintf '%s\\n' \"$reuse_status\""
+            )
+            completed = subprocess.run(
+                ("bash", "-c", command),
+                check=False,
+                capture_output=True,
+                text=True,
+            )
 
             self.assertEqual(completed.returncode, 0, completed.stderr)
-            component = root / "builds" / component_build_id(lock.digest)
-            self.assertFalse(legacy.exists())
-            self.assertTrue(component.is_dir())
-            self.assertEqual(os.readlink(root / "current"), str(component / "runtime"))
-            migrated_chrome = component / "runtime" / "chrome-linux" / "chrome"
-            self.assertEqual(migrated_chrome.stat().st_ino, before.st_ino)
-            self.assertEqual(migrated_chrome.stat().st_mtime_ns, before.st_mtime_ns)
-            self.assertEqual(migrated_chrome.read_bytes(), content)
-            manifest = json.loads(
-                (component / "build-manifest.json").read_text(encoding="utf-8")
-            )
-            self.assertEqual(manifest["schema"], 2)
-            self.assertEqual(manifest["build_id"], component.name)
-            self.assertNotIn(UNSUPPORTED_PARENT_FIELD, manifest)
-
-    def test_schema_one_migration_retries_after_staging_interruption(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
-            root = Path(temporary_name) / "build-root"
-            lock = load_lock(LOCK_PATH)
-            legacy, chrome = self._create_schema_one_current(root, lock)
-            before = chrome.stat()
-            content = chrome.read_bytes()
-            component = self._create_schema_one_migration_stages(legacy, lock)
-
-            completed = self._run_reuse_script(root, lock)
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self._assert_schema_one_migration_recovered(
-                root, legacy, component, before, content
-            )
-
-    def test_schema_one_migration_retries_after_empty_manifest_stage_interruption(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
-            root = Path(temporary_name) / "build-root"
-            lock = load_lock(LOCK_PATH)
-            legacy, chrome = self._create_schema_one_current(root, lock)
-            before = chrome.stat()
-            content = chrome.read_bytes()
-            component = self._create_partial_schema_one_manifest_stage(
-                legacy, lock, b""
-            )
-
-            completed = self._run_reuse_script(root, lock)
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self._assert_schema_one_migration_recovered(
-                root, legacy, component, before, content
-            )
-
-    def test_schema_one_migration_retries_after_truncated_manifest_stage_interruption(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
-            root = Path(temporary_name) / "build-root"
-            lock = load_lock(LOCK_PATH)
-            legacy, chrome = self._create_schema_one_current(root, lock)
-            before = chrome.stat()
-            content = chrome.read_bytes()
-            component = self._create_partial_schema_one_manifest_stage(
-                legacy, lock, TRUNCATED_MANIFEST_STAGE
-            )
-
-            completed = self._run_reuse_script(root, lock)
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self._assert_schema_one_migration_recovered(
-                root, legacy, component, before, content
-            )
-
-    def test_schema_one_migration_retries_after_legacy_rename_interruption(
-        self,
-    ) -> None:
-        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
-            root = Path(temporary_name) / "build-root"
-            lock = load_lock(LOCK_PATH)
-            legacy, chrome = self._create_schema_one_current(root, lock)
-            before = chrome.stat()
-            content = chrome.read_bytes()
-            component = self._create_schema_one_migration_stages(legacy, lock)
-            os.replace(legacy, component)
-
-            completed = self._run_reuse_script(root, lock)
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
-            self._assert_schema_one_migration_recovered(
-                root, legacy, component, before, content
-            )
-
-    def test_current_schema_one_build_with_different_lock_is_not_migrated(self) -> None:
-        with tempfile.TemporaryDirectory(dir="/tmp") as temporary_name:
-            root = Path(temporary_name) / "build-root"
-            lock = load_lock(LOCK_PATH)
-            legacy, _ = self._create_schema_one_current(root, lock)
-            other_lock = replace(lock, digest="0" * 64)
-
-            completed = self._run_reuse_script(root, other_lock)
-
-            self.assertEqual(completed.returncode, 0, completed.stderr)
+            self.assertEqual(completed.stdout, "build\n")
             self.assertTrue(legacy.is_dir())
+            self.assertEqual(chrome.read_bytes(), content)
             self.assertEqual(os.readlink(root / "current"), str(legacy / "runtime"))
             self.assertFalse(
-                (root / "builds" / component_build_id(other_lock.digest)).exists()
+                (root / "builds" / component_build_id(lock.digest)).exists()
             )
 
     def _create_schema_one_current(
@@ -324,68 +233,6 @@ class ProviderIdentityTest(unittest.TestCase):
         )
         (root / "current").symlink_to(legacy / "runtime")
         return legacy, chrome
-
-    def _create_schema_one_migration_stages(
-        self, legacy: Path, provider_lock: ProviderLock
-    ) -> Path:
-        component = legacy.parent / component_build_id(provider_lock.digest)
-        legacy_manifest = json.loads(
-            (legacy / "build-manifest.json").read_text(encoding="utf-8")
-        )
-        migrated_manifest = {
-            "schema": 2,
-            "build_id": component.name,
-            "lock_digest": provider_lock.digest,
-            "source_date_epoch": legacy_manifest["source_date_epoch"],
-            "versions": {
-                "chromium": provider_lock.chromium.version,
-                "depot_tools": provider_lock.depot_tools.version,
-            },
-            "provenance": legacy_manifest["provenance"],
-            "files": legacy_manifest["files"],
-            "directories": legacy_manifest["directories"],
-        }
-        process_id = "999"
-        manifest_stage = legacy.parent / f".{component.name}.{process_id}.manifest"
-        current_stage = (
-            legacy.parent.parent / f".current-{component.name}.{process_id}.new"
-        )
-        manifest_stage.write_text(
-            json.dumps(migrated_manifest, indent=2, sort_keys=True) + "\n",
-            encoding="utf-8",
-        )
-        current_stage.symlink_to(component / "runtime")
-        return component
-
-    def _create_partial_schema_one_manifest_stage(
-        self, legacy: Path, provider_lock: ProviderLock, content: bytes
-    ) -> Path:
-        component = legacy.parent / component_build_id(provider_lock.digest)
-        manifest_stage = legacy.parent / f".{component.name}.999.manifest"
-        manifest_stage.write_bytes(content)
-        return component
-
-    def _assert_schema_one_migration_recovered(
-        self,
-        root: Path,
-        legacy: Path,
-        component: Path,
-        before: os.stat_result,
-        content: bytes,
-    ) -> None:
-        self.assertFalse(legacy.exists())
-        self.assertEqual(os.readlink(root / "current"), str(component / "runtime"))
-        manifest = json.loads(
-            (component / "build-manifest.json").read_text(encoding="utf-8")
-        )
-        self.assertEqual(manifest["schema"], 2)
-        self.assertEqual(manifest["build_id"], component.name)
-        migrated_chrome = component / "runtime" / "chrome-linux" / "chrome"
-        self.assertEqual(migrated_chrome.stat().st_ino, before.st_ino)
-        self.assertEqual(migrated_chrome.stat().st_mtime_ns, before.st_mtime_ns)
-        self.assertEqual(migrated_chrome.read_bytes(), content)
-        self.assertFalse(any((root / "builds").glob(f".{component.name}.*.manifest")))
-        self.assertFalse(any(root.glob(f".current-{component.name}.*.new")))
 
     def _run_reuse_script(
         self, root: Path, provider_lock: ProviderLock
