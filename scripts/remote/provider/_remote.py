@@ -82,7 +82,7 @@ gclient config --unmanaged --name src {shell_quote(lock.chromium.source)}
 cd "$chromium"
 gclient sync -D --nohooks -j 1
 gclient runhooks
-gn gen out/Release --args='is_debug=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
+gn gen out/Release --args='is_debug=false dcheck_always_on=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
 autoninja -C out/Release chrome browser_tests
 run_provider_protocol_test browser-provider-protocol "$chromium" /usr/bin:/bin '
   "$BROWSER_TESTS_BINARY" \\

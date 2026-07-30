@@ -35,6 +35,16 @@ TRUNCATED_MANIFEST_STAGE = b'{"schema":'
 
 
 class ProviderIdentityTest(unittest.TestCase):
+    def test_remote_release_build_script_disables_dchecks(self) -> None:
+        script = remote_build_script(
+            ProviderRemoteConfig(), load_lock(LOCK_PATH), FIRST_PARENT_COMMIT, "origin"
+        )
+
+        self.assertIn(
+            "gn gen out/Release --args='is_debug=false dcheck_always_on=false ",
+            script,
+        )
+
     def test_component_reuse_is_independent_of_parent_commit(self) -> None:
         lock = load_lock(LOCK_PATH)
 
