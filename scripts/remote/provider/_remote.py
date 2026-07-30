@@ -4,7 +4,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from ._common import RemoteConfig, shell_quote
-from ._identity import PACKAGE_SCHEMA, component_build_id
+from ._identity import PACKAGE_SCHEMA, RELEASE_GN_ARGS, component_build_id
 from ._lock import ProviderLock
 from ._patching import chromium_patch_preparation_script
 from ._sandbox import provider_protocol_sandbox_helpers
@@ -82,7 +82,7 @@ gclient config --unmanaged --name src {shell_quote(lock.chromium.source)}
 cd "$chromium"
 gclient sync -D --nohooks -j 1
 gclient runhooks
-gn gen out/Release --args='is_debug=false dcheck_always_on=false is_component_build=false symbol_level=0 blink_symbol_level=0 v8_symbol_level=0 use_remoteexec=false use_siso=false'
+gn gen out/Release --args={shell_quote(" ".join(RELEASE_GN_ARGS))}
 autoninja -C out/Release chrome browser_tests
 run_provider_protocol_test browser-provider-protocol "$chromium" /usr/bin:/bin '
   "$BROWSER_TESTS_BINARY" \\

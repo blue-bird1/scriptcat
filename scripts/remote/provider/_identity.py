@@ -6,11 +6,22 @@ from collections.abc import Collection, Mapping
 
 BUILD_SCHEMA = 2
 PACKAGE_SCHEMA = 2
+RELEASE_GN_ARGS = (
+    "is_debug=false",
+    "dcheck_always_on=false",
+    "is_component_build=false",
+    "symbol_level=0",
+    "blink_symbol_level=0",
+    "v8_symbol_level=0",
+    "use_remoteexec=false",
+    "use_siso=false",
+)
 
 
 def component_build_id(lock_digest: str) -> str:
     """Return the provider component identity for one pinned browser input set."""
-    source = f"provider-component-v{BUILD_SCHEMA}\0{lock_digest}".encode()
+    recipe = " ".join(RELEASE_GN_ARGS)
+    source = f"provider-component-v{BUILD_SCHEMA}\0{lock_digest}\0{recipe}".encode()
     return hashlib.sha256(source).hexdigest()[:24]
 
 
