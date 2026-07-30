@@ -1,3 +1,5 @@
+import { createProfileFeaturesLimitedReader } from "./discovery-queue-profile-features.js";
+
 const MONTHS = new Map([
   ["jan", 0],
   ["feb", 1],
@@ -18,6 +20,7 @@ function createEmptyData() {
     reviewCount: undefined,
     positiveRate: undefined,
     isDlc: undefined,
+    profileFeaturesLimited: undefined,
     isFree: undefined,
     price: undefined,
     currency: undefined,
@@ -279,6 +282,7 @@ function isIsoDate(value) {
 export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
   const reviewsCache = new Map();
   const detailsCache = new Map();
+  const profileFeaturesLimitedReader = createProfileFeaturesLimitedReader();
 
   function loadCached(cache, appId, url) {
     let payloadPromise = cache.get(appId);
@@ -411,11 +415,25 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
         reasons.push(...matchingTags.map((tag) => `tag:${tag}`));
       }
 
+      if (reasons.length > 0 || config?.ignoreProfileFeaturesLimited !== true) {
+        return { matched: reasons.length > 0, reasons, data };
+      }
+
+      const profileFeaturesLimited =
+        await profileFeaturesLimitedReader.get(appId);
+      if (typeof profileFeaturesLimited === "boolean") {
+        data.profileFeaturesLimited = profileFeaturesLimited;
+      }
+      if (profileFeaturesLimited === true) {
+        reasons.push("profile-features-limited");
+      }
+
       return { matched: reasons.length > 0, reasons, data };
     },
     clear() {
       reviewsCache.clear();
       detailsCache.clear();
+      profileFeaturesLimitedReader.clear();
     },
   };
 }

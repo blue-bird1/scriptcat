@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.11
+// @version      0.3.12
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -66,6 +66,7 @@
     ignoreFree: false,
     ignoreUnreviewed: false,
     ignoreDlc: false,
+    ignoreProfileFeaturesLimited: false,
     autoContinueQueue: false,
     excludedTags: { enabled: false, value: [] },
     requiredLanguages: { enabled: false, value: [6, 7] }
@@ -79,6 +80,7 @@
       minimumDiscount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumDiscount },
       earliestReleaseDate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.earliestReleaseDate },
       ignoreDlc: DEFAULT_DISCOVERY_QUEUE_CONFIG.ignoreDlc,
+      ignoreProfileFeaturesLimited: DEFAULT_DISCOVERY_QUEUE_CONFIG.ignoreProfileFeaturesLimited,
       autoContinueQueue: DEFAULT_DISCOVERY_QUEUE_CONFIG.autoContinueQueue,
       excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] },
       requiredLanguages: {
@@ -166,6 +168,10 @@
       ignoreFree: normalizeBoolean(value.ignoreFree, fallback.ignoreFree),
       ignoreUnreviewed: normalizeBoolean(value.ignoreUnreviewed, fallback.ignoreUnreviewed),
       ignoreDlc: normalizeBoolean(value.ignoreDlc, fallback.ignoreDlc),
+      ignoreProfileFeaturesLimited: normalizeBoolean(
+        value.ignoreProfileFeaturesLimited,
+        fallback.ignoreProfileFeaturesLimited
+      ),
       autoContinueQueue: normalizeBoolean(
         value.autoContinueQueue,
         fallback.autoContinueQueue
@@ -320,6 +326,11 @@
       const ignoreFree = addCheckbox(fields, "忽略免费游戏", draft.ignoreFree);
       const ignoreUnreviewed = addCheckbox(fields, "忽略未评测游戏", draft.ignoreUnreviewed);
       const ignoreDlc = addCheckbox(fields, "忽略 DLC / 下载内容", draft.ignoreDlc);
+      const ignoreProfileFeaturesLimited = addCheckbox(
+        fields,
+        "忽略个人资料功能受限的游戏",
+        draft.ignoreProfileFeaturesLimited
+      );
       const autoContinueQueue = addCheckbox(
         fields,
         "探索结束后自动继续下一次",
@@ -418,6 +429,7 @@
         ignoreFree.checked = defaults.ignoreFree;
         ignoreUnreviewed.checked = defaults.ignoreUnreviewed;
         ignoreDlc.checked = defaults.ignoreDlc;
+        ignoreProfileFeaturesLimited.checked = defaults.ignoreProfileFeaturesLimited;
         autoContinueQueue.checked = defaults.autoContinueQueue;
         tagEnabled.checked = defaults.excludedTags.enabled;
         tags = [];
@@ -441,6 +453,7 @@
           ignoreFree: ignoreFree.checked,
           ignoreUnreviewed: ignoreUnreviewed.checked,
           ignoreDlc: ignoreDlc.checked,
+          ignoreProfileFeaturesLimited: ignoreProfileFeaturesLimited.checked,
           autoContinueQueue: autoContinueQueue.checked,
           excludedTags: { enabled: tagEnabled.checked, value: tags },
           requiredLanguages: {
@@ -499,6 +512,104 @@
     };
   }
 
+  // src/lib/steam/discovery-queue-profile-features.js
+  var PROFILE_PROGRESS_ENDPOINT = "https://api.steampowered.com/IPlayerService/GetAchievementsProgress/v1/";
+  function readApplicationConfig() {
+    const applicationConfig = document.getElementById("application_config");
+    if (!(applicationConfig instanceof HTMLElement)) {
+      return void 0;
+    }
+    try {
+      const userInfo = JSON.parse(applicationConfig.dataset.userinfo ?? "");
+      const storeUserConfig = JSON.parse(
+        applicationConfig.dataset.store_user_config ?? ""
+      );
+      const steamId = userInfo?.steamid;
+      const accessToken = storeUserConfig?.webapi_token;
+      return typeof steamId === "string" && /^\d{17}$/.test(steamId) && typeof accessToken === "string" && accessToken ? { steamId, accessToken } : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function parseProfileFeaturesLimited(payload, appId) {
+    const progress = payload?.response?.achievement_progress;
+    if (!Array.isArray(progress)) {
+      return void 0;
+    }
+    const matching = progress.find((entry) => String(entry?.appid) === appId);
+    if (!matching || typeof matching !== "object") {
+      return void 0;
+    }
+    if (!Object.hasOwn(matching, "vetted")) {
+      return true;
+    }
+    return typeof matching.vetted === "boolean" ? !matching.vetted : void 0;
+  }
+  function createProfileFeaturesLimitedReader() {
+    const cache = /* @__PURE__ */ new Map();
+    let requestChain = Promise.resolve();
+    let requestGeneration = 0;
+    let requestsBlocked = false;
+    async function request(appId, generation) {
+      if (requestsBlocked || generation !== requestGeneration) {
+        return void 0;
+      }
+      const credentials = readApplicationConfig();
+      if (!credentials) {
+        return void 0;
+      }
+      const url = new URL(PROFILE_PROGRESS_ENDPOINT);
+      url.searchParams.set("access_token", credentials.accessToken);
+      const body = new FormData();
+      body.set(
+        "input_json",
+        JSON.stringify({
+          steamid: credentials.steamId,
+          language: typeof window.g_strLanguage === "string" && window.g_strLanguage ? window.g_strLanguage : "english",
+          appids: [Number(appId)],
+          include_unvetted_apps: true
+        })
+      );
+      try {
+        const response = await fetch(url, {
+          method: "POST",
+          body
+        });
+        if (generation !== requestGeneration) {
+          return void 0;
+        }
+        if (response.status === 429) {
+          requestsBlocked = true;
+          return void 0;
+        }
+        return response.ok ? parseProfileFeaturesLimited(await response.json(), appId) : void 0;
+      } catch {
+        return void 0;
+      }
+    }
+    return {
+      get(appId) {
+        let statusPromise = cache.get(appId);
+        if (!statusPromise) {
+          const generation = requestGeneration;
+          statusPromise = requestChain.then(() => request(appId, generation));
+          requestChain = statusPromise.then(
+            () => void 0,
+            () => void 0
+          );
+          cache.set(appId, statusPromise);
+        }
+        return statusPromise;
+      },
+      clear() {
+        requestGeneration += 1;
+        cache.clear();
+        requestChain = Promise.resolve();
+        requestsBlocked = false;
+      }
+    };
+  }
+
   // src/lib/steam/discovery-queue-rules.js
   var MONTHS = /* @__PURE__ */ new Map([
     ["jan", 0],
@@ -519,6 +630,7 @@
       reviewCount: void 0,
       positiveRate: void 0,
       isDlc: void 0,
+      profileFeaturesLimited: void 0,
       isFree: void 0,
       price: void 0,
       currency: void 0,
@@ -713,6 +825,7 @@
   function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
     const reviewsCache = /* @__PURE__ */ new Map();
     const detailsCache = /* @__PURE__ */ new Map();
+    const profileFeaturesLimitedReader = createProfileFeaturesLimitedReader();
     function loadCached(cache, appId, url) {
       let payloadPromise = cache.get(appId);
       if (!payloadPromise) {
@@ -809,11 +922,22 @@
           const matchingTags = normalizeTags2(tags).filter((tag) => excludedTags.has(tag)).sort();
           reasons.push(...matchingTags.map((tag) => `tag:${tag}`));
         }
+        if (reasons.length > 0 || config?.ignoreProfileFeaturesLimited !== true) {
+          return { matched: reasons.length > 0, reasons, data };
+        }
+        const profileFeaturesLimited = await profileFeaturesLimitedReader.get(appId);
+        if (typeof profileFeaturesLimited === "boolean") {
+          data.profileFeaturesLimited = profileFeaturesLimited;
+        }
+        if (profileFeaturesLimited === true) {
+          reasons.push("profile-features-limited");
+        }
         return { matched: reasons.length > 0, reasons, data };
       },
       clear() {
         reviewsCache.clear();
         detailsCache.clear();
+        profileFeaturesLimitedReader.clear();
       }
     };
   }

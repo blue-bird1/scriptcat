@@ -16,6 +16,7 @@ export const DEFAULT_DISCOVERY_QUEUE_CONFIG = {
   ignoreFree: false,
   ignoreUnreviewed: false,
   ignoreDlc: false,
+  ignoreProfileFeaturesLimited: false,
   autoContinueQueue: false,
   excludedTags: { enabled: false, value: [] },
   requiredLanguages: { enabled: false, value: [6, 7] },
@@ -30,6 +31,8 @@ function cloneDefaultConfig() {
     minimumDiscount: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.minimumDiscount },
     earliestReleaseDate: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.earliestReleaseDate },
     ignoreDlc: DEFAULT_DISCOVERY_QUEUE_CONFIG.ignoreDlc,
+    ignoreProfileFeaturesLimited:
+      DEFAULT_DISCOVERY_QUEUE_CONFIG.ignoreProfileFeaturesLimited,
     autoContinueQueue: DEFAULT_DISCOVERY_QUEUE_CONFIG.autoContinueQueue,
     excludedTags: { ...DEFAULT_DISCOVERY_QUEUE_CONFIG.excludedTags, value: [] },
     requiredLanguages: {
@@ -132,6 +135,10 @@ function normalizeConfig(value) {
     ignoreFree: normalizeBoolean(value.ignoreFree, fallback.ignoreFree),
     ignoreUnreviewed: normalizeBoolean(value.ignoreUnreviewed, fallback.ignoreUnreviewed),
     ignoreDlc: normalizeBoolean(value.ignoreDlc, fallback.ignoreDlc),
+    ignoreProfileFeaturesLimited: normalizeBoolean(
+      value.ignoreProfileFeaturesLimited,
+      fallback.ignoreProfileFeaturesLimited,
+    ),
     autoContinueQueue: normalizeBoolean(
       value.autoContinueQueue,
       fallback.autoContinueQueue,
@@ -299,6 +306,11 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
     const ignoreFree = addCheckbox(fields, "忽略免费游戏", draft.ignoreFree);
     const ignoreUnreviewed = addCheckbox(fields, "忽略未评测游戏", draft.ignoreUnreviewed);
     const ignoreDlc = addCheckbox(fields, "忽略 DLC / 下载内容", draft.ignoreDlc);
+    const ignoreProfileFeaturesLimited = addCheckbox(
+      fields,
+      "忽略个人资料功能受限的游戏",
+      draft.ignoreProfileFeaturesLimited,
+    );
     const autoContinueQueue = addCheckbox(
       fields,
       "探索结束后自动继续下一次",
@@ -403,6 +415,8 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
       ignoreFree.checked = defaults.ignoreFree;
       ignoreUnreviewed.checked = defaults.ignoreUnreviewed;
       ignoreDlc.checked = defaults.ignoreDlc;
+      ignoreProfileFeaturesLimited.checked =
+        defaults.ignoreProfileFeaturesLimited;
       autoContinueQueue.checked = defaults.autoContinueQueue;
       tagEnabled.checked = defaults.excludedTags.enabled;
       tags = [];
@@ -426,6 +440,7 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
         ignoreFree: ignoreFree.checked,
         ignoreUnreviewed: ignoreUnreviewed.checked,
         ignoreDlc: ignoreDlc.checked,
+        ignoreProfileFeaturesLimited: ignoreProfileFeaturesLimited.checked,
         autoContinueQueue: autoContinueQueue.checked,
         excludedTags: { enabled: tagEnabled.checked, value: tags },
         requiredLanguages: {
