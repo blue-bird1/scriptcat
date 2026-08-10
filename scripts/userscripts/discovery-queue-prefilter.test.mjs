@@ -121,6 +121,76 @@ async function runPrefilter({ dialogPresent, ignoreSucceeds }) {
   }
 }
 
+async function runRepeatedDialogPrefilter() {
+  const calls = [];
+  const originalGlobals = {
+    document: globalThis.document,
+    HTMLElement: globalThis.HTMLElement,
+    location: globalThis.location,
+    localStorage: globalThis.localStorage,
+    window: globalThis.window,
+  };
+  const dialog = new class HTMLElement {}();
+  globalThis.HTMLElement = dialog.constructor;
+  globalThis.document = {
+    querySelector(selector) {
+      if (selector.startsWith("#application_config")) {
+        return { dataset: { config: JSON.stringify({ SNR: "1_4_4_" }) } };
+      }
+      return selector.startsWith('[role="dialog"]') ? dialog : null;
+    },
+  };
+  globalThis.location = { href: "https://store.steampowered.com/" };
+  globalThis.localStorage = {
+    getItem() {
+      return JSON.stringify({ version: 1, enabled: true, ignoreFree: true });
+    },
+  };
+  const storeItemCache = {
+    QueueMultipleAppRequests() {
+      calls.push("store-items");
+      return Promise.resolve(1);
+    },
+  };
+  globalThis.window = {
+    StoreItemCache: storeItemCache,
+    g_sessionID: "session",
+    async fetch(input) {
+      const url = String(input);
+      if (url.startsWith("https://api.steampowered.com/")) {
+        calls.push("queue-response");
+        return new Response(Uint8Array.from([0x0a, 0x01, 0x2a]), {
+          headers: { "content-type": "application/octet-stream" },
+        });
+      }
+      calls.push("ignore");
+      return Response.json({ success: 2 });
+    },
+  };
+
+  const stop = startDiscoveryQueuePrefilter({
+    async getStoreItem(appId) {
+      return { appId: Number(appId), success: 1, isFree: true };
+    },
+  });
+  try {
+    await storeItemCache.QueueMultipleAppRequests([42], DISCOVERY_QUEUE_DATA_REQUEST);
+    await storeItemCache.QueueMultipleAppRequests([42], DISCOVERY_QUEUE_DATA_REQUEST);
+    await window.fetch(
+      "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1/?input_protobuf_encoded=GAE%3D",
+    );
+    await storeItemCache.QueueMultipleAppRequests([42], DISCOVERY_QUEUE_DATA_REQUEST);
+    return calls;
+  } finally {
+    stop();
+    globalThis.document = originalGlobals.document;
+    globalThis.HTMLElement = originalGlobals.HTMLElement;
+    globalThis.location = originalGlobals.location;
+    globalThis.localStorage = originalGlobals.localStorage;
+    globalThis.window = originalGlobals.window;
+  }
+}
+
 test("queue delivery waits for successful prefiltering and keeps failed ignores", async () => {
   const succeeded = await runPrefilter({ dialogPresent: true, ignoreSucceeds: true });
   assert.deepEqual(succeeded.appIds, []);
@@ -138,4 +208,15 @@ test("matching background StoreItem batches pass through without a queue dialog"
   });
   assert.deepEqual(background.appIds, [42]);
   assert.deepEqual(background.calls, ["store-items"]);
+});
+
+test("later batches in the same dialog require a matching rebuild permit", async () => {
+  assert.deepEqual(await runRepeatedDialogPrefilter(), [
+    "store-items",
+    "ignore",
+    "store-items",
+    "queue-response",
+    "store-items",
+    "ignore",
+  ]);
 });
