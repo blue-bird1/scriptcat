@@ -37,11 +37,22 @@ test("unknown protobuf fields are skipped without changing queue appids", () => 
   assert.deepEqual(decodeDiscoveryQueueAppIds(responseWithUnknownField), [128]);
 });
 
-async function runPrefilter({ ignoreSucceeds }) {
+const DISCOVERY_QUEUE_DATA_REQUEST = {
+  include_assets: true,
+  include_trailers: true,
+  include_basic_info: true,
+  include_tag_count: 20,
+  include_release: true,
+  include_platforms: true,
+  include_screenshots: true,
+};
+
+async function runPrefilter({ dialogPresent, ignoreSucceeds }) {
   const appIds = [42];
   const calls = [];
   const originalGlobals = {
     document: globalThis.document,
+    HTMLElement: globalThis.HTMLElement,
     location: globalThis.location,
     localStorage: globalThis.localStorage,
     window: globalThis.window,
@@ -66,10 +77,17 @@ async function runPrefilter({ ignoreSucceeds }) {
     return Response.json({ success: ignoreSucceeds ? 1 : 2 });
   };
   globalThis.document = {
-    querySelector() {
-      return { dataset: { config: JSON.stringify({ SNR: "1_4_4_" }) } };
+    querySelector(selector) {
+      if (selector.startsWith("#application_config")) {
+        return { dataset: { config: JSON.stringify({ SNR: "1_4_4_" }) } };
+      }
+      if (selector.startsWith('[role="dialog"]')) {
+        return dialogPresent ? new globalThis.HTMLElement() : null;
+      }
+      return null;
     },
   };
+  globalThis.HTMLElement = class HTMLElement {};
   globalThis.location = { href: "https://store.steampowered.com/" };
   globalThis.localStorage = {
     getItem() {
@@ -88,14 +106,15 @@ async function runPrefilter({ ignoreSucceeds }) {
     },
   });
   try {
-    await window.fetch(
-      "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1/?input_protobuf_encoded=GAE%3D",
+    await storeItemCache.QueueMultipleAppRequests(
+      appIds,
+      DISCOVERY_QUEUE_DATA_REQUEST,
     );
-    await storeItemCache.QueueMultipleAppRequests(appIds, {});
     return { appIds, calls };
   } finally {
     stop();
     globalThis.document = originalGlobals.document;
+    globalThis.HTMLElement = originalGlobals.HTMLElement;
     globalThis.location = originalGlobals.location;
     globalThis.localStorage = originalGlobals.localStorage;
     globalThis.window = originalGlobals.window;
@@ -103,11 +122,20 @@ async function runPrefilter({ ignoreSucceeds }) {
 }
 
 test("queue delivery waits for successful prefiltering and keeps failed ignores", async () => {
-  const succeeded = await runPrefilter({ ignoreSucceeds: true });
+  const succeeded = await runPrefilter({ dialogPresent: true, ignoreSucceeds: true });
   assert.deepEqual(succeeded.appIds, []);
-  assert.deepEqual(succeeded.calls, ["queue-response", "store-items", "ignore"]);
+  assert.deepEqual(succeeded.calls, ["store-items", "ignore"]);
 
-  const failed = await runPrefilter({ ignoreSucceeds: false });
+  const failed = await runPrefilter({ dialogPresent: true, ignoreSucceeds: false });
   assert.deepEqual(failed.appIds, [42]);
-  assert.deepEqual(failed.calls, ["queue-response", "store-items", "ignore"]);
+  assert.deepEqual(failed.calls, ["store-items", "ignore"]);
+});
+
+test("matching background StoreItem batches pass through without a queue dialog", async () => {
+  const background = await runPrefilter({
+    dialogPresent: false,
+    ignoreSucceeds: true,
+  });
+  assert.deepEqual(background.appIds, [42]);
+  assert.deepEqual(background.calls, ["store-items"]);
 });

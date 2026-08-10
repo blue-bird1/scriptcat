@@ -1237,6 +1237,7 @@
 
   // src/lib/steam/discovery-queue-prefilter.js
   var DISCOVERY_QUEUE_URL = "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
+  var DISCOVERY_QUEUE_DIALOG_SELECTOR = '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
   var PERMIT_DURATION_MS = 1e4;
   var PREFILTER_CONCURRENCY = 4;
   var POLL_INTERVAL_MS = 50;
@@ -1419,12 +1420,22 @@
       config?.minimumPositiveRate?.enabled || config?.minimumReviewCount?.enabled || config?.maximumPrice?.enabled || config?.minimumDiscount?.enabled || config?.earliestReleaseDate?.enabled || config?.ignoreFree || config?.ignoreUnreviewed || config?.ignoreDlc || config?.ignoreProfileFeaturesLimited || config?.excludedTags?.enabled || config?.requiredLanguages?.enabled
     );
   }
+  function getDiscoveryQueueDialog() {
+    const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
+    return dialog instanceof HTMLElement ? dialog : void 0;
+  }
+  function isDiscoveryQueueDataRequest(value) {
+    return Boolean(
+      value?.include_assets === true && value?.include_trailers === true && value?.include_basic_info === true && value?.include_tag_count === 20 && value?.include_release === true && value?.include_platforms === true && value?.include_screenshots === true
+    );
+  }
   function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
     if (typeof window !== "object" || typeof window.fetch !== "function") {
       return () => {
       };
     }
     const permits = /* @__PURE__ */ new Map();
+    const deliveredDialogs = /* @__PURE__ */ new WeakSet();
     const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
     const originalFetch = window.fetch;
     let stopped = false;
@@ -1552,9 +1563,15 @@
           const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
           const snapshot = Array.isArray(appIds) ? [...appIds] : void 0;
           const expectedKey = snapshot && appIdKey(snapshot);
-          if (expectedKey === void 0 || !takePermit(snapshot)) {
+          const dialog = getDiscoveryQueueDialog();
+          if (expectedKey === void 0 || snapshot.length === 0 || !dialog || !isDiscoveryQueueDataRequest(args[0])) {
             return result;
           }
+          const permittedRebuild = takePermit(snapshot);
+          if (deliveredDialogs.has(dialog) && !permittedRebuild) {
+            return result;
+          }
+          deliveredDialogs.add(dialog);
           const currentGeneration = generation;
           return Promise.resolve(result).then(async (value) => {
             await prefilter(appIds, expectedKey, currentGeneration);

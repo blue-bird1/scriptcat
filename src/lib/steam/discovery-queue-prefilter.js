@@ -3,6 +3,8 @@ import { createDiscoveryQueueRuleEngine } from "./discovery-queue-rules.js";
 
 const DISCOVERY_QUEUE_URL =
   "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
+const DISCOVERY_QUEUE_DIALOG_SELECTOR =
+  '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
 const PERMIT_DURATION_MS = 10_000;
 const PREFILTER_CONCURRENCY = 4;
 const POLL_INTERVAL_MS = 50;
@@ -219,12 +221,30 @@ function hasActiveRules(config) {
   );
 }
 
+function getDiscoveryQueueDialog() {
+  const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
+  return dialog instanceof HTMLElement ? dialog : undefined;
+}
+
+function isDiscoveryQueueDataRequest(value) {
+  return Boolean(
+    value?.include_assets === true &&
+      value?.include_trailers === true &&
+      value?.include_basic_info === true &&
+      value?.include_tag_count === 20 &&
+      value?.include_release === true &&
+      value?.include_platforms === true &&
+      value?.include_screenshots === true,
+  );
+}
+
 export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
   if (typeof window !== "object" || typeof window.fetch !== "function") {
     return () => {};
   }
 
   const permits = new Map();
+  const deliveredDialogs = new WeakSet();
   const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
   const originalFetch = window.fetch;
   let stopped = false;
@@ -370,9 +390,20 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
         const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
         const snapshot = Array.isArray(appIds) ? [...appIds] : undefined;
         const expectedKey = snapshot && appIdKey(snapshot);
-        if (expectedKey === undefined || !takePermit(snapshot)) {
+        const dialog = getDiscoveryQueueDialog();
+        if (
+          expectedKey === undefined ||
+          snapshot.length === 0 ||
+          !dialog ||
+          !isDiscoveryQueueDataRequest(args[0])
+        ) {
           return result;
         }
+        const permittedRebuild = takePermit(snapshot);
+        if (deliveredDialogs.has(dialog) && !permittedRebuild) {
+          return result;
+        }
+        deliveredDialogs.add(dialog);
         const currentGeneration = generation;
         return Promise.resolve(result).then(async (value) => {
           await prefilter(appIds, expectedKey, currentGeneration);
