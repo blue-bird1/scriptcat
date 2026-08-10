@@ -75,7 +75,7 @@
 - 队列对话框通过包含 `dq=widget` 的 `/explore` 链接识别。操作按钮按结构和位置识别，不依赖本地化 `aria-label` 文本。
 - 后置命中使用 Steam 原生忽略控件，并在点击事件派发完成后进入下一项。未命中或数据缺失时停留当前项目。
 - 愿望单使用 `POST /api/addtowishlist`。响应成功且按钮选中类稳定后，脚本点击右侧轮播按钮进入下一项。
-- 每批末尾显示 summary 卡。启用自动继续时，仅在同时存在 Done 和 Continue 时点击 Continue；已耗尽且仅有 Done 时停止。
+- 每批末尾显示 summary 卡。启用自动继续时，仅当 summary 卡位于轮播当前项且同时存在 Done 和 Continue 时点击 Continue；离屏预渲染的 summary 卡不会提前重建队列，已耗尽且仅有 Done 时停止。
 
 ### 经典队列
 

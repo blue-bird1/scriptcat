@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.16
+// @version      0.3.17
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -1098,6 +1098,12 @@
     const summaryCard = summaryContent?.parentElement;
     const actionParent = statisticsRoot.nextElementSibling;
     if (!(summaryContent instanceof HTMLElement) || !(summaryCard instanceof HTMLElement) || !summaryCard.matches('[role="button"][tabindex="0"]') || !(actionParent instanceof HTMLElement) || actionParent.parentElement !== summaryContent) {
+      return void 0;
+    }
+    const dialogRect = dialog.getBoundingClientRect();
+    const summaryRect = summaryCard.getBoundingClientRect();
+    const dialogCenter = dialogRect.left + dialogRect.width / 2;
+    if (!isVisible(summaryCard) || summaryRect.left > dialogCenter || summaryRect.right < dialogCenter) {
       return void 0;
     }
     const actions = [...actionParent.children].filter(

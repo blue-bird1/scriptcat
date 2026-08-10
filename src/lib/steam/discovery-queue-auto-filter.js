@@ -176,7 +176,7 @@ function getClassicContext() {
   };
 }
 
-function getModalContinueButton() {
+export function getModalContinueButton() {
   const dialog = document.querySelector(
     '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])',
   );
@@ -209,6 +209,17 @@ function getModalContinueButton() {
     !summaryCard.matches('[role="button"][tabindex="0"]') ||
     !(actionParent instanceof HTMLElement) ||
     actionParent.parentElement !== summaryContent
+  ) {
+    return undefined;
+  }
+
+  const dialogRect = dialog.getBoundingClientRect();
+  const summaryRect = summaryCard.getBoundingClientRect();
+  const dialogCenter = dialogRect.left + dialogRect.width / 2;
+  if (
+    !isVisible(summaryCard) ||
+    summaryRect.left > dialogCenter ||
+    summaryRect.right < dialogCenter
   ) {
     return undefined;
   }
