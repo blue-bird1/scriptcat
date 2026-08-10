@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.15
+// @version      0.3.16
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -1487,12 +1487,95 @@
     const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
     return dialog instanceof HTMLElement ? dialog : void 0;
   }
+  function createPrefilterReporter() {
+    let checked = 0;
+    let ignored = 0;
+    let total = 0;
+    let batches = 0;
+    let element;
+    function ensureElement() {
+      if (element?.isConnected) {
+        return element;
+      }
+      if (!(document.body instanceof HTMLElement)) {
+        return void 0;
+      }
+      element = document.createElement("div");
+      element.style.cssText = [
+        "position:fixed",
+        "top:72px",
+        "right:24px",
+        "z-index:100000",
+        "max-width:360px",
+        "padding:12px 16px",
+        "border:1px solid rgba(103,193,245,.45)",
+        "border-radius:4px",
+        "background:rgba(20,30,40,.96)",
+        "box-shadow:0 8px 24px rgba(0,0,0,.35)",
+        "color:#d6d7d8",
+        "font:14px/1.5 Arial,sans-serif",
+        "pointer-events:none"
+      ].join(";");
+      document.body.append(element);
+      return element;
+    }
+    function render(stage) {
+      const target = ensureElement();
+      if (target) {
+        target.textContent = `${stage} · 已检查 ${checked}/${total}，已忽略 ${ignored}`;
+      }
+    }
+    return {
+      beginBatch(appIds) {
+        batches += 1;
+        total += appIds.length;
+        render(`正在加载第 ${batches} 批（${appIds.length} 项）`);
+        console.info("[Steam 探索队列] 开始预筛选批次", {
+          appIds: [...appIds],
+          batch: batches
+        });
+      },
+      beginEvaluation() {
+        render(`正在筛选第 ${batches} 批`);
+      },
+      record(appId, result) {
+        checked += 1;
+        if (result?.ignored === true) {
+          ignored += 1;
+        }
+        render(`正在筛选第 ${batches} 批`);
+        if (result?.matched === true) {
+          console.info("[Steam 探索队列] 规则命中", {
+            appId,
+            ignored: result.ignored === true,
+            reasons: result.reasons
+          });
+        }
+      },
+      finishBatch(retainedAppIds) {
+        console.info("[Steam 探索队列] 批次完成", {
+          batch: batches,
+          checked,
+          ignored,
+          retainedAppIds: [...retainedAppIds]
+        });
+      },
+      close() {
+        element?.remove();
+        element = void 0;
+      }
+    };
+  }
   function isDiscoveryQueueDataRequest(value) {
     return Boolean(
       value?.include_assets === true && value?.include_trailers === true && value?.include_basic_info === true && value?.include_tag_count === 20 && value?.include_release === true && value?.include_platforms === true && value?.include_screenshots === true && value?.include_reviews === true
     );
   }
-  function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
+  function startDiscoveryQueuePrefilter({
+    getStoreItem,
+    getLocalizedTags,
+    prepareStoreItems
+  } = {}) {
     if (typeof window !== "object" || typeof window.fetch !== "function") {
       return () => {
       };
@@ -1557,8 +1640,17 @@
         return false;
       }
     }
-    async function prefilter(appIds, config, currentGeneration) {
+    async function prefilter(appIds, config, currentGeneration, reporter) {
+      const requiredLanguages = config.requiredLanguages?.enabled === true ? config.requiredLanguages.value : [];
+      if (typeof prepareStoreItems === "function") {
+        await prepareStoreItems(appIds, requiredLanguages);
+      }
+      if (stopped || currentGeneration !== generation) {
+        return void 0;
+      }
+      reporter?.beginEvaluation();
       const matches = await runWithConcurrency(appIds, async (appId) => {
+        let report = { ignored: false, matched: false, reasons: [] };
         try {
           const tags = config.excludedTags?.enabled && typeof getLocalizedTags === "function" ? await getLocalizedTags(String(appId)) : [];
           const result = await ruleEngine.evaluate({
@@ -1569,20 +1661,30 @@
           if (!result?.matched || stopped || currentGeneration !== generation) {
             return false;
           }
-          return ignoreApp(appId);
+          const ignored = await ignoreApp(appId);
+          report = {
+            ignored,
+            matched: true,
+            reasons: Array.isArray(result.reasons) ? result.reasons : []
+          };
+          return ignored;
         } catch {
           return false;
+        } finally {
+          reporter?.record(appId, report);
         }
       });
       if (stopped || currentGeneration !== generation) {
         return void 0;
       }
-      return appIds.filter((_, index) => matches[index] !== true);
+      const retainedAppIds = appIds.filter((_, index) => matches[index] !== true);
+      reporter?.finishBatch(retainedAppIds);
+      return retainedAppIds;
     }
     function replaceAppIds(target, replacement) {
       target.splice(0, target.length, ...replacement);
     }
-    async function loadNextVisibleBatch(permit, dataRequest, queueReceiver, config, currentGeneration, seenBatches) {
+    async function loadNextVisibleBatch(permit, dataRequest, queueReceiver, config, currentGeneration, seenBatches, reporter) {
       let fetchArgs = createRebuildFetchArgs(permit.args, permit.request);
       if (!fetchArgs) {
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
@@ -1608,12 +1710,18 @@
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
         seenBatches.add(key);
+        reporter?.beginBatch(appIds);
         try {
           await Reflect.apply(originalQueueMultiple, queueReceiver, [appIds, dataRequest]);
         } catch {
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
-        const retainedAppIds = await prefilter(appIds, config, currentGeneration);
+        const retainedAppIds = await prefilter(
+          appIds,
+          config,
+          currentGeneration,
+          reporter
+        );
         if (!retainedAppIds) {
           return appIds;
         }
@@ -1683,8 +1791,15 @@
           }
           const currentGeneration = generation;
           const queueReceiver = this;
+          const reporter = createPrefilterReporter();
+          reporter.beginBatch(snapshot);
           return Promise.resolve(result).then(async (value) => {
-            const retainedAppIds = await prefilter(snapshot, config, currentGeneration);
+            const retainedAppIds = await prefilter(
+              snapshot,
+              config,
+              currentGeneration,
+              reporter
+            );
             if (!retainedAppIds || stopped || currentGeneration !== generation) {
               return value;
             }
@@ -1702,11 +1817,12 @@
               queueReceiver,
               config,
               currentGeneration,
-              /* @__PURE__ */ new Set([expectedKey])
+              /* @__PURE__ */ new Set([expectedKey]),
+              reporter
             );
             replaceAppIds(appIds, nextAppIds);
             return value;
-          });
+          }).finally(() => reporter.close());
         };
         cache.QueueMultipleAppRequests = queueMultipleWrapper;
       }
@@ -1732,10 +1848,130 @@
     };
   }
 
+  // src/lib/steam/discovery-queue-tags.js
+  var TAG_LIST_URL = "https://api.steampowered.com/IStoreService/GetTagList/v1/";
+  var TAG_CACHE_PREFIX = "LocalizedTagNames2_";
+  function readSteamLanguage() {
+    try {
+      const config = document.querySelector("#application_config[data-config]")?.dataset.config;
+      const language = config ? JSON.parse(config).LANGUAGE : void 0;
+      if (typeof language === "string" && language) {
+        return language;
+      }
+    } catch {
+      console.debug("[Steam 探索队列] 页面语言配置不可解析，使用 HTML 语言");
+    }
+    if (typeof window.g_strLanguage === "string" && window.g_strLanguage) {
+      return window.g_strLanguage;
+    }
+    const htmlLanguage = document.documentElement?.lang?.toLowerCase();
+    if (htmlLanguage === "zh-cn") {
+      return "schinese";
+    }
+    if (htmlLanguage === "zh-tw" || htmlLanguage === "zh-hk") {
+      return "tchinese";
+    }
+    return "english";
+  }
+  function parseTags(value) {
+    if (!Array.isArray(value)) {
+      return void 0;
+    }
+    const tags = [];
+    for (const entry of value) {
+      const tagId = entry?.tagid;
+      const name = entry?.name;
+      if (!Number.isSafeInteger(tagId) || tagId < 1 || typeof name !== "string" || !name.trim()) {
+        return void 0;
+      }
+      tags.push([tagId, name.trim()]);
+    }
+    return tags;
+  }
+  function readCachedTags(language) {
+    try {
+      const value = JSON.parse(
+        localStorage.getItem(`${TAG_CACHE_PREFIX}${language}`) ?? "null"
+      );
+      const tags = parseTags(value?.tags);
+      return tags ? { tags, versionHash: String(value.version_hash ?? "") } : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function saveCachedTags(language, value) {
+    try {
+      localStorage.setItem(
+        `${TAG_CACHE_PREFIX}${language}`,
+        JSON.stringify({
+          tags: value.tags.map(([tagid, name]) => ({ tagid, name })),
+          version_hash: value.versionHash
+        })
+      );
+    } catch {
+      return false;
+    }
+    return true;
+  }
+  async function loadTagNames(language) {
+    const cached = readCachedTags(language);
+    if (cached) {
+      console.info("[Steam 探索队列] 使用 Steam 本地标签目录", {
+        language,
+        tags: cached.tags.length
+      });
+      return new Map(cached.tags);
+    }
+    const url = new URL(TAG_LIST_URL);
+    url.searchParams.set("language", language);
+    try {
+      console.info("[Steam 探索队列] 首次加载完整标签目录", { language });
+      const response = await fetch(url);
+      if (!response.ok) {
+        return /* @__PURE__ */ new Map();
+      }
+      const payload = (await response.json())?.response;
+      const tags = parseTags(payload?.tags);
+      if (tags) {
+        const value = {
+          tags,
+          versionHash: String(payload.version_hash ?? "")
+        };
+        saveCachedTags(language, value);
+        return new Map(tags);
+      }
+    } catch {
+      return /* @__PURE__ */ new Map();
+    }
+    return /* @__PURE__ */ new Map();
+  }
+  function createDiscoveryQueueTagCatalog() {
+    const catalogs = /* @__PURE__ */ new Map();
+    return {
+      async getNames(tagIds) {
+        if (!Array.isArray(tagIds) || tagIds.length === 0) {
+          return [];
+        }
+        const language = readSteamLanguage();
+        let catalogPromise = catalogs.get(language);
+        if (!catalogPromise) {
+          catalogPromise = loadTagNames(language);
+          catalogs.set(language, catalogPromise);
+        }
+        const catalog = await catalogPromise;
+        return tagIds.map((tagId) => catalog.get(tagId)).filter((name) => typeof name === "string");
+      },
+      clear() {
+        catalogs.clear();
+      }
+    };
+  }
+
   // src/lib/steam/discovery-queue-store-items.js
   var CACHE_WAIT_MS = 50;
   var CHINESE_LANGUAGE_IDS = /* @__PURE__ */ new Set([6, 7, 29]);
   var DLC_APP_TYPE = 4;
+  var SUPPORTED_LANGUAGES_REQUEST = { include_supported_languages: true };
   function getStoreItemCache() {
     const cache = window.StoreItemCache;
     return cache && typeof cache.GetApp === "function" && typeof cache.QueueAppRequest === "function" ? cache : void 0;
@@ -1806,7 +2042,7 @@
       return void 0;
     }
   }
-  function buildStoreItemRequest(requirements, descriptionHasChinese, appType) {
+  function buildStoreItemRequest(requirements, appType) {
     const request = {};
     if (requirements?.needsReviews === true) {
       request.include_reviews = true;
@@ -1816,13 +2052,6 @@
     }
     if (requirements?.needsDlc === true && appType === void 0) {
       request.include_basic_info = true;
-    }
-    const requiredLanguages = Array.isArray(requirements?.requiredLanguages) ? requirements.requiredLanguages : [];
-    const acceptsChineseDescription = requiredLanguages.some(
-      (language) => CHINESE_LANGUAGE_IDS.has(language)
-    );
-    if (requiredLanguages.length > 0 && !(acceptsChineseDescription && descriptionHasChinese)) {
-      request.include_supported_languages = true;
     }
     return request;
   }
@@ -1886,8 +2115,40 @@
     }
   }
   function createDiscoveryQueueStoreItemReader() {
+    const tagCatalog = createDiscoveryQueueTagCatalog();
     let stopped = false;
     return {
+      async prepareBatch(appIds, requiredLanguages) {
+        if (stopped || !Array.isArray(appIds) || !Array.isArray(requiredLanguages) || requiredLanguages.length === 0) {
+          return;
+        }
+        const cache = await waitForStoreItemCache();
+        if (!cache || typeof cache.QueueMultipleAppRequests !== "function" || stopped) {
+          return;
+        }
+        const acceptsChineseDescription = requiredLanguages.some(
+          (language) => CHINESE_LANGUAGE_IDS.has(language)
+        );
+        const missingAppIds = appIds.filter((appId) => {
+          const item = cache.GetApp(appId);
+          return !(acceptsChineseDescription && readDescriptionHasChinese(item) === true) && !item?.BContainDataRequest?.(SUPPORTED_LANGUAGES_REQUEST);
+        });
+        if (missingAppIds.length === 0) {
+          return;
+        }
+        try {
+          console.info("[Steam 探索队列] 批量补齐支持语言", {
+            appIds: [...missingAppIds],
+            requiredLanguages: [...requiredLanguages]
+          });
+          await cache.QueueMultipleAppRequests(
+            missingAppIds,
+            SUPPORTED_LANGUAGES_REQUEST
+          );
+        } catch {
+          return;
+        }
+      },
       async get(appId, requirements) {
         if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
           return void 0;
@@ -1904,7 +2165,6 @@
           let item = cache.GetApp(numericAppId);
           const request = buildStoreItemRequest(
             requirements,
-            readDescriptionHasChinese(item),
             readAppType(item)
           );
           if (Object.keys(request).length > 0 && !item?.BContainDataRequest?.(request)) {
@@ -1934,33 +2194,14 @@
           if (uniqueTagIds.length === 0) {
             return [];
           }
-          if (typeof cache.QueueMultipleTagRequests === "function") {
-            await cache.QueueMultipleTagRequests(uniqueTagIds, {});
-            if (stopped) {
-              return [];
-            }
-          }
-          const names = [];
-          const seenNames = /* @__PURE__ */ new Set();
-          for (const tagId of tagIds) {
-            const tag = cache.GetTag?.(tagId);
-            const name = tag?.GetName?.();
-            if (typeof name !== "string") {
-              return [];
-            }
-            const trimmedName = name.trim();
-            if (trimmedName && !seenNames.has(trimmedName)) {
-              seenNames.add(trimmedName);
-              names.push(trimmedName);
-            }
-          }
-          return names;
+          return await tagCatalog.getNames(uniqueTagIds);
         } catch {
           return [];
         }
       },
       stop() {
         stopped = true;
+        tagCatalog.clear();
       }
     };
   }
@@ -2309,7 +2550,8 @@
     const storeItemReader = createDiscoveryQueueStoreItemReader();
     const stopPrefilter = startDiscoveryQueuePrefilter({
       getLocalizedTags: storeItemReader.getLocalizedTags,
-      getStoreItem: storeItemReader.get
+      getStoreItem: storeItemReader.get,
+      prepareStoreItems: storeItemReader.prepareBatch
     });
     const stopModalQueue = startModalQueue();
     let stopClassicQueue = () => {

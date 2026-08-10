@@ -53,7 +53,7 @@
 
 - `IStoreService/GetDiscoveryQueue` 提供 AppID，`IStoreBrowseService/GetItems` 加载对应 `StoreItem`。
 - 脚本只克隆 `GetDiscoveryQueue` Response 读取 AppID，并将原始 Response 对象和字节原样交给 Steam。包含 `dq=widget` 探索链接的对话框用于确认真实队列；首页预览不修改忽略列表。
-- Steam 的 `QueueMultipleAppRequests` 完成后，脚本从同一 `StoreItem` 缓存按响应顺序评估规则。标签使用标签缓存中的本地化名称，并保持缓存顺序。
+- Steam 的 `QueueMultipleAppRequests` 完成后，脚本从同一 `StoreItem` 缓存按响应顺序评估规则。处理开始时立即显示浮动进度，并在控制台记录批次、命中原因和忽略结果。
 - 命中项通过 `POST /recommended/ignorerecommendation` 标记为不感兴趣。只有 HTTP 与响应成功标记均确认后，脚本才在 React 接收队列前从页面局部 AppID 数组移除对应项目。
 - 整批均成功忽略时，脚本使用原始请求的认证参数发起 `rebuild_queue=true` 请求，加载并筛选后续批次。服务端不再返回 AppID 时，脚本交付 Steam 当前 React 队列使用的 summary 哨兵，避免原生空队列索引越界。
 - 预筛选不调用 `SkipDiscoveryQueueItem` 或 impression 接口。未渲染项目不产生浏览记录。
@@ -63,7 +63,8 @@
 
 - `StoreItem.GetAppType()` 返回 `4` 表示 DLC。字段缺失时先请求 `include_basic_info`，仍未知时再读取同源 `appdetails` 的 `type`。
 - 价格、免费状态、发行日期、评论数和好评率优先使用队列数据。评论口径跟随 Steam 当前评测偏好。
-- 语言规则使用 `GetAllLanguagesWithSomeSupport()`。所选中文语言可由包含 Han 字符的短描述直接满足；其他缺失语言字段通过 `include_supported_languages` 补齐。
+- 标签 ID 按原顺序映射到 Steam 的 `LocalizedTagNames2_<language>` 完整本地化目录。目录尚未建立时只调用一次 `IStoreService/GetTagList` 并写回该目录，不再逐标签请求。
+- 语言规则使用 `GetAllLanguagesWithSomeSupport()`。所选中文语言可由包含 Han 字符的短描述直接满足；同一批次的其他缺失语言字段通过一次 `QueueMultipleAppRequests({ include_supported_languages: true })` 补齐。
 - 缓存字段缺失时先使用 `QueueAppRequest`。缓存不可用或字段仍缺失时，详情与评论分别回退到同源 `appdetails` 和 `appreviews`。
 - 个人资料功能限制规则最后调用 `IPlayerService/GetAchievementsProgress/v1/`。请求按 AppID 缓存并串行执行；收到 `429` 后本页停止该检查。未知结果不命中。
 - 预筛选不可用时，React 队列对已渲染卡片执行后置筛选。未知项目保持可见。

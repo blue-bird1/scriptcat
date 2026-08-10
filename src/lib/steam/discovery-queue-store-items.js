@@ -1,6 +1,9 @@
+import { createDiscoveryQueueTagCatalog } from "./discovery-queue-tags.js";
+
 const CACHE_WAIT_MS = 50;
 const CHINESE_LANGUAGE_IDS = new Set([6, 7, 29]);
 const DLC_APP_TYPE = 4;
+const SUPPORTED_LANGUAGES_REQUEST = { include_supported_languages: true };
 
 function getStoreItemCache() {
   const cache = window.StoreItemCache;
@@ -93,7 +96,7 @@ function readAppType(item) {
   }
 }
 
-function buildStoreItemRequest(requirements, descriptionHasChinese, appType) {
+function buildStoreItemRequest(requirements, appType) {
   const request = {};
   if (requirements?.needsReviews === true) {
     request.include_reviews = true;
@@ -105,15 +108,6 @@ function buildStoreItemRequest(requirements, descriptionHasChinese, appType) {
     request.include_basic_info = true;
   }
 
-  const requiredLanguages = Array.isArray(requirements?.requiredLanguages)
-    ? requirements.requiredLanguages
-    : [];
-  const acceptsChineseDescription = requiredLanguages.some((language) =>
-    CHINESE_LANGUAGE_IDS.has(language),
-  );
-  if (requiredLanguages.length > 0 && !(acceptsChineseDescription && descriptionHasChinese)) {
-    request.include_supported_languages = true;
-  }
   return request;
 }
 
@@ -194,9 +188,54 @@ function readStoreItem(item, appId) {
 }
 
 export function createDiscoveryQueueStoreItemReader() {
+  const tagCatalog = createDiscoveryQueueTagCatalog();
   let stopped = false;
 
   return {
+    async prepareBatch(appIds, requiredLanguages) {
+      if (
+        stopped ||
+        !Array.isArray(appIds) ||
+        !Array.isArray(requiredLanguages) ||
+        requiredLanguages.length === 0
+      ) {
+        return;
+      }
+      const cache = await waitForStoreItemCache();
+      if (
+        !cache ||
+        typeof cache.QueueMultipleAppRequests !== "function" ||
+        stopped
+      ) {
+        return;
+      }
+
+      const acceptsChineseDescription = requiredLanguages.some((language) =>
+        CHINESE_LANGUAGE_IDS.has(language),
+      );
+      const missingAppIds = appIds.filter((appId) => {
+        const item = cache.GetApp(appId);
+        return !(
+          acceptsChineseDescription &&
+          readDescriptionHasChinese(item) === true
+        ) && !item?.BContainDataRequest?.(SUPPORTED_LANGUAGES_REQUEST);
+      });
+      if (missingAppIds.length === 0) {
+        return;
+      }
+      try {
+        console.info("[Steam 探索队列] 批量补齐支持语言", {
+          appIds: [...missingAppIds],
+          requiredLanguages: [...requiredLanguages],
+        });
+        await cache.QueueMultipleAppRequests(
+          missingAppIds,
+          SUPPORTED_LANGUAGES_REQUEST,
+        );
+      } catch {
+        return;
+      }
+    },
     async get(appId, requirements) {
       if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
         return undefined;
@@ -216,7 +255,6 @@ export function createDiscoveryQueueStoreItemReader() {
         let item = cache.GetApp(numericAppId);
         const request = buildStoreItemRequest(
           requirements,
-          readDescriptionHasChinese(item),
           readAppType(item),
         );
         if (
@@ -253,35 +291,14 @@ export function createDiscoveryQueueStoreItemReader() {
           return [];
         }
 
-        if (typeof cache.QueueMultipleTagRequests === "function") {
-          await cache.QueueMultipleTagRequests(uniqueTagIds, {});
-          if (stopped) {
-            return [];
-          }
-        }
-
-        const names = [];
-        const seenNames = new Set();
-        for (const tagId of tagIds) {
-          const tag = cache.GetTag?.(tagId);
-          const name = tag?.GetName?.();
-          if (typeof name !== "string") {
-            return [];
-          }
-
-          const trimmedName = name.trim();
-          if (trimmedName && !seenNames.has(trimmedName)) {
-            seenNames.add(trimmedName);
-            names.push(trimmedName);
-          }
-        }
-        return names;
+        return await tagCatalog.getNames(uniqueTagIds);
       } catch {
         return [];
       }
     },
     stop() {
       stopped = true;
+      tagCatalog.clear();
     },
   };
 }

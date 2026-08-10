@@ -297,6 +297,89 @@ function getDiscoveryQueueDialog() {
   return dialog instanceof HTMLElement ? dialog : undefined;
 }
 
+function createPrefilterReporter() {
+  let checked = 0;
+  let ignored = 0;
+  let total = 0;
+  let batches = 0;
+  let element;
+
+  function ensureElement() {
+    if (element?.isConnected) {
+      return element;
+    }
+    if (!(document.body instanceof HTMLElement)) {
+      return undefined;
+    }
+    element = document.createElement("div");
+    element.style.cssText = [
+      "position:fixed",
+      "top:72px",
+      "right:24px",
+      "z-index:100000",
+      "max-width:360px",
+      "padding:12px 16px",
+      "border:1px solid rgba(103,193,245,.45)",
+      "border-radius:4px",
+      "background:rgba(20,30,40,.96)",
+      "box-shadow:0 8px 24px rgba(0,0,0,.35)",
+      "color:#d6d7d8",
+      "font:14px/1.5 Arial,sans-serif",
+      "pointer-events:none",
+    ].join(";");
+    document.body.append(element);
+    return element;
+  }
+
+  function render(stage) {
+    const target = ensureElement();
+    if (target) {
+      target.textContent = `${stage} · 已检查 ${checked}/${total}，已忽略 ${ignored}`;
+    }
+  }
+
+  return {
+    beginBatch(appIds) {
+      batches += 1;
+      total += appIds.length;
+      render(`正在加载第 ${batches} 批（${appIds.length} 项）`);
+      console.info("[Steam 探索队列] 开始预筛选批次", {
+        appIds: [...appIds],
+        batch: batches,
+      });
+    },
+    beginEvaluation() {
+      render(`正在筛选第 ${batches} 批`);
+    },
+    record(appId, result) {
+      checked += 1;
+      if (result?.ignored === true) {
+        ignored += 1;
+      }
+      render(`正在筛选第 ${batches} 批`);
+      if (result?.matched === true) {
+        console.info("[Steam 探索队列] 规则命中", {
+          appId,
+          ignored: result.ignored === true,
+          reasons: result.reasons,
+        });
+      }
+    },
+    finishBatch(retainedAppIds) {
+      console.info("[Steam 探索队列] 批次完成", {
+        batch: batches,
+        checked,
+        ignored,
+        retainedAppIds: [...retainedAppIds],
+      });
+    },
+    close() {
+      element?.remove();
+      element = undefined;
+    },
+  };
+}
+
 function isDiscoveryQueueDataRequest(value) {
   return Boolean(
     value?.include_assets === true &&
@@ -310,7 +393,11 @@ function isDiscoveryQueueDataRequest(value) {
   );
 }
 
-export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
+export function startDiscoveryQueuePrefilter({
+  getStoreItem,
+  getLocalizedTags,
+  prepareStoreItems,
+} = {}) {
   if (typeof window !== "object" || typeof window.fetch !== "function") {
     return () => {};
   }
@@ -379,8 +466,19 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
     }
   }
 
-  async function prefilter(appIds, config, currentGeneration) {
+  async function prefilter(appIds, config, currentGeneration, reporter) {
+    const requiredLanguages = config.requiredLanguages?.enabled === true
+      ? config.requiredLanguages.value
+      : [];
+    if (typeof prepareStoreItems === "function") {
+      await prepareStoreItems(appIds, requiredLanguages);
+    }
+    if (stopped || currentGeneration !== generation) {
+      return undefined;
+    }
+    reporter?.beginEvaluation();
     const matches = await runWithConcurrency(appIds, async (appId) => {
+      let report = { ignored: false, matched: false, reasons: [] };
       try {
         const tags = config.excludedTags?.enabled && typeof getLocalizedTags === "function"
           ? await getLocalizedTags(String(appId))
@@ -393,15 +491,25 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
         if (!result?.matched || stopped || currentGeneration !== generation) {
           return false;
         }
-        return ignoreApp(appId);
+        const ignored = await ignoreApp(appId);
+        report = {
+          ignored,
+          matched: true,
+          reasons: Array.isArray(result.reasons) ? result.reasons : [],
+        };
+        return ignored;
       } catch {
         return false;
+      } finally {
+        reporter?.record(appId, report);
       }
     });
     if (stopped || currentGeneration !== generation) {
       return undefined;
     }
-    return appIds.filter((_, index) => matches[index] !== true);
+    const retainedAppIds = appIds.filter((_, index) => matches[index] !== true);
+    reporter?.finishBatch(retainedAppIds);
+    return retainedAppIds;
   }
 
   function replaceAppIds(target, replacement) {
@@ -415,6 +523,7 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
     config,
     currentGeneration,
     seenBatches,
+    reporter,
   ) {
     let fetchArgs = createRebuildFetchArgs(permit.args, permit.request);
     if (!fetchArgs) {
@@ -444,12 +553,18 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
       }
       seenBatches.add(key);
 
+      reporter?.beginBatch(appIds);
       try {
         await Reflect.apply(originalQueueMultiple, queueReceiver, [appIds, dataRequest]);
       } catch {
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
-      const retainedAppIds = await prefilter(appIds, config, currentGeneration);
+      const retainedAppIds = await prefilter(
+        appIds,
+        config,
+        currentGeneration,
+        reporter,
+      );
       if (!retainedAppIds) {
         return appIds;
       }
@@ -529,8 +644,15 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
 
         const currentGeneration = generation;
         const queueReceiver = this;
+        const reporter = createPrefilterReporter();
+        reporter.beginBatch(snapshot);
         return Promise.resolve(result).then(async (value) => {
-          const retainedAppIds = await prefilter(snapshot, config, currentGeneration);
+          const retainedAppIds = await prefilter(
+            snapshot,
+            config,
+            currentGeneration,
+            reporter,
+          );
           if (!retainedAppIds || stopped || currentGeneration !== generation) {
             return value;
           }
@@ -549,10 +671,11 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
             config,
             currentGeneration,
             new Set([expectedKey]),
+            reporter,
           );
           replaceAppIds(appIds, nextAppIds);
           return value;
-        });
+        }).finally(() => reporter.close());
       };
       cache.QueueMultipleAppRequests = queueMultipleWrapper;
     }

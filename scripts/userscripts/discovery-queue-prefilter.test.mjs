@@ -6,6 +6,8 @@ import {
   isDiscoveryQueueRebuildRequest,
   startDiscoveryQueuePrefilter,
 } from "../../src/lib/steam/discovery-queue-prefilter.js";
+import { createDiscoveryQueueStoreItemReader } from "../../src/lib/steam/discovery-queue-store-items.js";
+import { createDiscoveryQueueTagCatalog } from "../../src/lib/steam/discovery-queue-tags.js";
 
 // Wire fixtures encoded from Steam's current IStoreService protobuf schema.
 const REBUILD_STANDARD_QUEUE = "CAAYAQ=="; // queue_type = 0, rebuild_queue = true
@@ -35,6 +37,92 @@ test("unknown protobuf fields are skipped without changing queue appids", () => 
   ]);
   assert.equal(isDiscoveryQueueRebuildRequest(requestWithUnknownField), true);
   assert.deepEqual(decodeDiscoveryQueueAppIds(responseWithUnknownField), [128]);
+});
+
+test("supported languages are supplemented once for the whole queue batch", async () => {
+  const originalWindow = globalThis.window;
+  const calls = [];
+  const items = new Map([42, 43].map((appId) => [appId, {
+    BContainDataRequest() {
+      return false;
+    },
+    GetAllLanguagesWithSomeSupport() {
+      return [10];
+    },
+    GetID() {
+      return appId;
+    },
+  }]));
+  globalThis.window = {
+    StoreItemCache: {
+      GetApp(appId) {
+        return items.get(appId);
+      },
+      async QueueAppRequest(appId, request) {
+        calls.push(["single", appId, request]);
+      },
+      async QueueMultipleAppRequests(appIds, request) {
+        calls.push(["batch", [...appIds], request]);
+      },
+    },
+  };
+  const reader = createDiscoveryQueueStoreItemReader();
+  try {
+    await reader.prepareBatch([42, 43], [10]);
+    await reader.get("42", { requiredLanguages: [10] });
+    await reader.get("43", { requiredLanguages: [10] });
+    assert.deepEqual(calls, [[
+      "batch",
+      [42, 43],
+      { include_supported_languages: true },
+    ]]);
+  } finally {
+    reader.stop();
+    globalThis.window = originalWindow;
+  }
+});
+
+test("Steam's persisted tag catalog resolves names without tag requests", async () => {
+  const originalGlobals = {
+    document: globalThis.document,
+    fetch: globalThis.fetch,
+    localStorage: globalThis.localStorage,
+    window: globalThis.window,
+  };
+  globalThis.document = {
+    documentElement: { lang: "zh-CN" },
+    querySelector() {
+      return {
+        dataset: { config: JSON.stringify({ LANGUAGE: "schinese" }) },
+      };
+    },
+  };
+  globalThis.localStorage = {
+    getItem(key) {
+      assert.equal(key, "LocalizedTagNames2_schinese");
+      return JSON.stringify({
+        tags: [
+          { tagid: 1, name: "动作" },
+          { tagid: 2, name: "独立" },
+        ],
+        version_hash: "fixture",
+      });
+    },
+  };
+  globalThis.window = {};
+  globalThis.fetch = async () => {
+    assert.fail("cached tag catalog must not issue a request");
+  };
+  const catalog = createDiscoveryQueueTagCatalog();
+  try {
+    assert.deepEqual(await catalog.getNames([2, 1]), ["独立", "动作"]);
+  } finally {
+    catalog.clear();
+    globalThis.document = originalGlobals.document;
+    globalThis.fetch = originalGlobals.fetch;
+    globalThis.localStorage = originalGlobals.localStorage;
+    globalThis.window = originalGlobals.window;
+  }
 });
 
 const INITIAL_QUEUE_URL =
@@ -126,7 +214,12 @@ async function runPrefilter({
   globalThis.location = { href: "https://store.steampowered.com/" };
   globalThis.localStorage = {
     getItem() {
-      return JSON.stringify({ version: 1, enabled: true, ignoreFree: true });
+      return JSON.stringify({
+        version: 1,
+        enabled: true,
+        ignoreFree: true,
+        requiredLanguages: { enabled: true, value: [6, 7] },
+      });
     },
   };
   globalThis.window = {
@@ -148,6 +241,9 @@ async function runPrefilter({
         success: 1,
         isFree: matchingAppIds.includes(numericAppId),
       };
+    },
+    async prepareStoreItems(appIds, requiredLanguages) {
+      calls.push(["prepare", [...appIds], [...requiredLanguages]]);
     },
   });
   try {
@@ -192,12 +288,15 @@ test("original protobuf response stays untouched while fully filtered batches re
   assert.deepEqual(result.calls, [
     ["queue", false],
     ["store-items", [42]],
+    ["prepare", [42], [6, 7]],
     ["ignore", 42],
     ["queue", true],
     ["store-items", [43]],
+    ["prepare", [43], [6, 7]],
     ["ignore", 43],
     ["queue", true],
     ["store-items", [44]],
+    ["prepare", [44], [6, 7]],
   ]);
 });
 
@@ -223,6 +322,7 @@ test("successful ignores are removed before delivery while failures stay ordered
   assert.deepEqual(result.calls, [
     ["queue", false],
     ["store-items", [42, 43, 44]],
+    ["prepare", [42, 43, 44], [6, 7]],
     ["ignore", 42],
     ["ignore", 43],
   ]);
@@ -238,6 +338,7 @@ test("queue exhaustion delivers Steam's summary sentinel instead of an empty que
   assert.deepEqual(result.calls, [
     ["queue", false],
     ["store-items", [42]],
+    ["prepare", [42], [6, 7]],
     ["ignore", 42],
     ["queue", true],
   ]);
