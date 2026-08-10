@@ -1,6 +1,15 @@
 const CACHE_WAIT_MS = 50;
 const CHINESE_LANGUAGE_IDS = new Set([6, 7, 29]);
 const DLC_APP_TYPE = 4;
+const DISCOVERY_QUEUE_DATA_REQUEST = {
+  include_assets: true,
+  include_trailers: true,
+  include_basic_info: true,
+  include_tag_count: 20,
+  include_release: true,
+  include_platforms: true,
+  include_screenshots: true,
+};
 
 function getStoreItemCache() {
   const cache = window.StoreItemCache;
@@ -197,6 +206,28 @@ export function createDiscoveryQueueStoreItemReader() {
   let stopped = false;
 
   return {
+    async loadBatch(appIds) {
+      if (
+        stopped ||
+        !Array.isArray(appIds) ||
+        appIds.length === 0 ||
+        appIds.some((appId) => !Number.isSafeInteger(appId) || appId < 1)
+      ) {
+        return false;
+      }
+
+      const cache = await waitForStoreItemCache();
+      if (!cache || typeof cache.QueueMultipleAppRequests !== "function" || stopped) {
+        return false;
+      }
+
+      try {
+        await cache.QueueMultipleAppRequests([...appIds], DISCOVERY_QUEUE_DATA_REQUEST);
+        return !stopped;
+      } catch {
+        return false;
+      }
+    },
     async get(appId, requirements) {
       if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
         return undefined;

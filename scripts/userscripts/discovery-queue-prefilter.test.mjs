@@ -37,19 +37,41 @@ test("unknown protobuf fields are skipped without changing queue appids", () => 
   assert.deepEqual(decodeDiscoveryQueueAppIds(responseWithUnknownField), [128]);
 });
 
-const DISCOVERY_QUEUE_DATA_REQUEST = {
-  include_assets: true,
-  include_trailers: true,
-  include_basic_info: true,
-  include_tag_count: 20,
-  include_release: true,
-  include_platforms: true,
-  include_screenshots: true,
-};
+const INITIAL_QUEUE_URL =
+  "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1/?input_protobuf_encoded=EgJDTjAB&access_token=token";
 
-async function runPrefilter({ dialogPresent, ignoreSucceeds }) {
-  const appIds = [42];
+function encodeQueueResponse(appIds, extraFields = []) {
+  const payload = appIds.flatMap((appId) => {
+    const bytes = [];
+    let remaining = appId;
+    do {
+      const byte = remaining % 128;
+      remaining = Math.floor(remaining / 128);
+      bytes.push(byte | (remaining > 0 ? 0x80 : 0));
+    } while (remaining > 0);
+    return bytes;
+  });
+  return Uint8Array.from([
+    0x0a,
+    payload.length,
+    ...payload,
+    ...extraFields,
+  ]);
+}
+
+async function runPrefilter({
+  dialogPresent = true,
+  queueBodies,
+  successfulIgnores = [],
+  matchingAppIds = [],
+}) {
   const calls = [];
+  const responses = queueBodies.map((body) => new Response(body, {
+    headers: {
+      "content-length": String(body.length),
+      "content-type": "application/octet-stream",
+    },
+  }));
   const originalGlobals = {
     document: globalThis.document,
     HTMLElement: globalThis.HTMLElement,
@@ -57,24 +79,26 @@ async function runPrefilter({ dialogPresent, ignoreSucceeds }) {
     localStorage: globalThis.localStorage,
     window: globalThis.window,
   };
-  const storeItemCache = {
-    QueueMultipleAppRequests() {
-      calls.push("store-items");
-      return Promise.resolve(1);
-    },
-  };
   const originalFetch = async (input, init) => {
     const url = String(input);
     if (url.startsWith("https://api.steampowered.com/")) {
-      calls.push("queue-response");
-      return new Response(Uint8Array.from([0x0a, 0x01, 0x2a]), {
-        headers: { "content-type": "application/octet-stream" },
-      });
+      const requestUrl = new URL(url);
+      assert.equal(requestUrl.searchParams.get("access_token"), "token");
+      calls.push([
+        "queue",
+        isDiscoveryQueueRebuildRequest(
+          requestUrl.searchParams.get("input_protobuf_encoded"),
+        ),
+      ]);
+      const response = responses.shift();
+      assert.ok(response, "unexpected extra queue rebuild");
+      return response;
     }
     assert.equal(url, "/recommended/ignorerecommendation");
     assert.equal(init?.method, "POST");
-    calls.push("ignore");
-    return Response.json({ success: ignoreSucceeds ? 1 : 2 });
+    const appId = Number(init.body.get("appid"));
+    calls.push(["ignore", appId]);
+    return Response.json({ success: successfulIgnores.includes(appId) ? 1 : 2 });
   };
   globalThis.document = {
     querySelector(selector) {
@@ -95,22 +119,32 @@ async function runPrefilter({ dialogPresent, ignoreSucceeds }) {
     },
   };
   globalThis.window = {
-    StoreItemCache: storeItemCache,
     fetch: originalFetch,
     g_sessionID: "session",
   };
 
   const stop = startDiscoveryQueuePrefilter({
     async getStoreItem(appId) {
-      return { appId: Number(appId), success: 1, isFree: true };
+      const numericAppId = Number(appId);
+      return {
+        appId: numericAppId,
+        success: 1,
+        isFree: matchingAppIds.includes(numericAppId),
+      };
+    },
+    async loadStoreItems(appIds) {
+      calls.push(["store-items", [...appIds]]);
+      return true;
     },
   });
   try {
-    await storeItemCache.QueueMultipleAppRequests(
-      appIds,
-      DISCOVERY_QUEUE_DATA_REQUEST,
-    );
-    return { appIds, calls };
+    const response = await window.fetch(INITIAL_QUEUE_URL);
+    return {
+      appIds: decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer()),
+      body: new Uint8Array(await response.arrayBuffer()),
+      calls,
+      response,
+    };
   } finally {
     stop();
     globalThis.document = originalGlobals.document;
@@ -121,102 +155,67 @@ async function runPrefilter({ dialogPresent, ignoreSucceeds }) {
   }
 }
 
-async function runRepeatedDialogPrefilter() {
-  const calls = [];
-  const originalGlobals = {
-    document: globalThis.document,
-    HTMLElement: globalThis.HTMLElement,
-    location: globalThis.location,
-    localStorage: globalThis.localStorage,
-    window: globalThis.window,
-  };
-  const dialog = new class HTMLElement {}();
-  globalThis.HTMLElement = dialog.constructor;
-  globalThis.document = {
-    querySelector(selector) {
-      if (selector.startsWith("#application_config")) {
-        return { dataset: { config: JSON.stringify({ SNR: "1_4_4_" }) } };
-      }
-      return selector.startsWith('[role="dialog"]') ? dialog : null;
-    },
-  };
-  globalThis.location = { href: "https://store.steampowered.com/" };
-  globalThis.localStorage = {
-    getItem() {
-      return JSON.stringify({ version: 1, enabled: true, ignoreFree: true });
-    },
-  };
-  const storeItemCache = {
-    QueueMultipleAppRequests() {
-      calls.push("store-items");
-      return Promise.resolve(1);
-    },
-  };
-  globalThis.window = {
-    StoreItemCache: storeItemCache,
-    g_sessionID: "session",
-    async fetch(input) {
-      const url = String(input);
-      if (url.startsWith("https://api.steampowered.com/")) {
-        calls.push("queue-response");
-        return new Response(Uint8Array.from([0x0a, 0x01, 0x2a]), {
-          headers: { "content-type": "application/octet-stream" },
-        });
-      }
-      calls.push("ignore");
-      return Response.json({ success: 2 });
-    },
-  };
-
-  const stop = startDiscoveryQueuePrefilter({
-    async getStoreItem(appId) {
-      return { appId: Number(appId), success: 1, isFree: true };
-    },
+test("fully filtered batches rebuild before Steam receives a queue", async () => {
+  const result = await runPrefilter({
+    queueBodies: [encodeQueueResponse([42]), encodeQueueResponse([43])],
+    successfulIgnores: [42],
+    matchingAppIds: [42],
   });
-  try {
-    await storeItemCache.QueueMultipleAppRequests([42], DISCOVERY_QUEUE_DATA_REQUEST);
-    await storeItemCache.QueueMultipleAppRequests([42], DISCOVERY_QUEUE_DATA_REQUEST);
-    await window.fetch(
-      "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1/?input_protobuf_encoded=GAE%3D",
-    );
-    await storeItemCache.QueueMultipleAppRequests([42], DISCOVERY_QUEUE_DATA_REQUEST);
-    return calls;
-  } finally {
-    stop();
-    globalThis.document = originalGlobals.document;
-    globalThis.HTMLElement = originalGlobals.HTMLElement;
-    globalThis.location = originalGlobals.location;
-    globalThis.localStorage = originalGlobals.localStorage;
-    globalThis.window = originalGlobals.window;
-  }
-}
-
-test("queue delivery waits for successful prefiltering and keeps failed ignores", async () => {
-  const succeeded = await runPrefilter({ dialogPresent: true, ignoreSucceeds: true });
-  assert.deepEqual(succeeded.appIds, []);
-  assert.deepEqual(succeeded.calls, ["store-items", "ignore"]);
-
-  const failed = await runPrefilter({ dialogPresent: true, ignoreSucceeds: false });
-  assert.deepEqual(failed.appIds, [42]);
-  assert.deepEqual(failed.calls, ["store-items", "ignore"]);
-});
-
-test("matching background StoreItem batches pass through without a queue dialog", async () => {
-  const background = await runPrefilter({
-    dialogPresent: false,
-    ignoreSucceeds: true,
-  });
-  assert.deepEqual(background.appIds, [42]);
-  assert.deepEqual(background.calls, ["store-items"]);
-});
-
-test("later batches in the same dialog require a matching rebuild permit", async () => {
-  assert.deepEqual(await runRepeatedDialogPrefilter(), [
-    "store-items",
-    "ignore",
-    "store-items",
-    "queue-response",
-    "store-items",
-    "ignore",
+  assert.deepEqual(result.appIds, [43]);
+  assert.deepEqual(result.calls, [
+    ["queue", false],
+    ["store-items", [42]],
+    ["ignore", 42],
+    ["queue", true],
+    ["store-items", [43]],
   ]);
+});
+
+test("successful ignores are removed before delivery while failures stay ordered", async () => {
+  const result = await runPrefilter({
+    queueBodies: [
+      Uint8Array.from([
+        0x12, 0x03, 0x75, 0x6e, 0x6b,
+        0x0a, 0x03, 0x2a, 0x2b, 0x2c,
+        0x28, 0x01,
+      ]),
+    ],
+    successfulIgnores: [42],
+    matchingAppIds: [42, 43],
+  });
+  assert.deepEqual(result.appIds, [43, 44]);
+  assert.deepEqual([...result.body], [
+    0x12, 0x03, 0x75, 0x6e, 0x6b,
+    0x0a, 0x02, 0x2b, 0x2c,
+    0x28, 0x01,
+  ]);
+  assert.equal(result.response.headers.has("content-length"), false);
+});
+
+test("queue exhaustion delivers Steam's summary sentinel instead of an empty queue", async () => {
+  const result = await runPrefilter({
+    queueBodies: [encodeQueueResponse([42]), encodeQueueResponse([])],
+    successfulIgnores: [42],
+    matchingAppIds: [42],
+  });
+  assert.deepEqual(result.appIds, [1]);
+  assert.deepEqual(result.calls, [
+    ["queue", false],
+    ["store-items", [42]],
+    ["ignore", 42],
+    ["queue", true],
+  ]);
+});
+
+test("background preview responses pass through without loading or ignoring", async () => {
+  const body = encodeQueueResponse([42]);
+  const result = await runPrefilter({
+    dialogPresent: false,
+    queueBodies: [body],
+    successfulIgnores: [42],
+    matchingAppIds: [42],
+  });
+  assert.deepEqual(result.appIds, [42]);
+  assert.deepEqual(result.calls, [["queue", false]]);
+  assert.deepEqual(result.body, body);
 });

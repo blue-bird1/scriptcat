@@ -52,10 +52,10 @@
 ### React 预筛选
 
 - `IStoreService/GetDiscoveryQueue` 提供 AppID，`IStoreBrowseService/GetItems` 加载对应 `StoreItem`。
-- 首次打开队列时，脚本同时检查包含 `dq=widget` 探索链接的对话框和 Steam 队列数据请求字段。首页预览没有该对话框，只加载数据，不修改忽略列表。
-- 后续批次使用 `queue_type=0`、`rebuild_queue=true` 的 `GetDiscoveryQueue` 响应，与同序 AppID 批次建立一次性对应关系。
-- 对应的 `QueueMultipleAppRequests` 完成后，脚本在 React 渲染前读取 `StoreItem` 并评估规则。标签使用标签缓存中的本地化名称，并保持缓存顺序。
-- 命中项通过 `POST /recommended/ignorerecommendation` 标记为不感兴趣。只有 HTTP 与响应成功标记均确认后，AppID 才从待渲染批次移除。
+- 脚本在 `GetDiscoveryQueue` Response 交给 Steam 前确认标准队列请求和包含 `dq=widget` 探索链接的对话框。首页预览没有该对话框，Response 原样交付，不修改忽略列表。
+- 脚本先通过 `QueueMultipleAppRequests` 预载整批 `StoreItem`，再按响应中的 AppID 顺序评估规则。标签使用标签缓存中的本地化名称，并保持缓存顺序。
+- 命中项通过 `POST /recommended/ignorerecommendation` 标记为不感兴趣。只有 HTTP 与响应成功标记均确认后，脚本才从 protobuf Response 移除对应 AppID；Steam 从未持有待删除的队列数组。
+- 整批均成功忽略时，脚本将同一请求改为 `rebuild_queue=true` 并继续获取下一批。服务端不再返回 AppID 时，脚本交付 Steam 当前 React 队列使用的 summary 哨兵，避免原生空队列索引越界。
 - 预筛选不调用 `SkipDiscoveryQueueItem` 或 impression 接口。未渲染项目不产生浏览记录。
 - 请求解析、缓存、规则评估或忽略请求失败时保留项目，并交给 Steam 原生流程。
 

@@ -401,6 +401,7 @@ export function startSteamDiscoveryQueue() {
   const stopPrefilter = startDiscoveryQueuePrefilter({
     getLocalizedTags: storeItemReader.getLocalizedTags,
     getStoreItem: storeItemReader.get,
+    loadStoreItems: storeItemReader.loadBatch,
   });
   const stopModalQueue = startModalQueue();
   let stopClassicQueue = () => {};
