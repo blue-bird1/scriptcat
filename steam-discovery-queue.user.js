@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.12
+// @version      0.3.13
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -1235,6 +1235,356 @@
     };
   }
 
+  // src/lib/steam/discovery-queue-prefilter.js
+  var DISCOVERY_QUEUE_URL = "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
+  var PERMIT_DURATION_MS = 1e4;
+  var PREFILTER_CONCURRENCY = 4;
+  var POLL_INTERVAL_MS = 50;
+  function readVarint(bytes, offset) {
+    let value = 0;
+    let shift = 0;
+    for (let index = 0; index < 10; index += 1) {
+      const byte = bytes[offset + index];
+      if (byte === void 0) {
+        return void 0;
+      }
+      value += (byte & 127) * 2 ** shift;
+      if (byte < 128) {
+        return Number.isSafeInteger(value) ? { value, offset: offset + index + 1 } : void 0;
+      }
+      shift += 7;
+    }
+    return void 0;
+  }
+  function skipField(bytes, wireType, offset) {
+    if (wireType === 0) {
+      return readVarint(bytes, offset)?.offset;
+    }
+    if (wireType === 1) {
+      return offset + 8 <= bytes.length ? offset + 8 : void 0;
+    }
+    if (wireType === 2) {
+      const length = readVarint(bytes, offset);
+      return length && length.value <= bytes.length - length.offset ? length.offset + length.value : void 0;
+    }
+    if (wireType === 5) {
+      return offset + 4 <= bytes.length ? offset + 4 : void 0;
+    }
+    return void 0;
+  }
+  function decodeBase64(value) {
+    if (typeof value !== "string" || !value) {
+      return void 0;
+    }
+    try {
+      const normalized = value.replace(/-/g, "+").replace(/_/g, "/");
+      const binary = atob(normalized);
+      return Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    } catch {
+      return void 0;
+    }
+  }
+  function isDiscoveryQueueRebuildRequest(inputProtobufEncoded) {
+    const bytes = decodeBase64(inputProtobufEncoded);
+    if (!bytes) {
+      return false;
+    }
+    let queueType;
+    let rebuildQueue;
+    for (let offset = 0; offset < bytes.length; ) {
+      const key = readVarint(bytes, offset);
+      if (!key || key.value === 0) {
+        return false;
+      }
+      offset = key.offset;
+      const fieldNumber = Math.floor(key.value / 8);
+      const wireType = key.value % 8;
+      if ((fieldNumber === 1 || fieldNumber === 3) && wireType === 0) {
+        const value = readVarint(bytes, offset);
+        if (!value) {
+          return false;
+        }
+        if (fieldNumber === 1) {
+          queueType = value.value;
+        } else {
+          rebuildQueue = value.value !== 0;
+        }
+        offset = value.offset;
+        continue;
+      }
+      const nextOffset = skipField(bytes, wireType, offset);
+      if (nextOffset === void 0) {
+        return false;
+      }
+      offset = nextOffset;
+    }
+    return (queueType === void 0 || queueType === 0) && rebuildQueue === true;
+  }
+  function decodeDiscoveryQueueAppIds(buffer) {
+    const bytes = buffer instanceof Uint8Array ? buffer : buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : void 0;
+    if (!bytes) {
+      return void 0;
+    }
+    const appIds = [];
+    for (let offset = 0; offset < bytes.length; ) {
+      const key = readVarint(bytes, offset);
+      if (!key || key.value === 0) {
+        return void 0;
+      }
+      offset = key.offset;
+      const fieldNumber = Math.floor(key.value / 8);
+      const wireType = key.value % 8;
+      if (fieldNumber === 1 && wireType === 0) {
+        const value = readVarint(bytes, offset);
+        if (!value || value.value < 1) {
+          return void 0;
+        }
+        appIds.push(value.value);
+        offset = value.offset;
+        continue;
+      }
+      if (fieldNumber === 1 && wireType === 2) {
+        const length = readVarint(bytes, offset);
+        if (!length || length.value > bytes.length - length.offset) {
+          return void 0;
+        }
+        const end = length.offset + length.value;
+        offset = length.offset;
+        while (offset < end) {
+          const value = readVarint(bytes, offset);
+          if (!value || value.offset > end || value.value < 1) {
+            return void 0;
+          }
+          appIds.push(value.value);
+          offset = value.offset;
+        }
+        continue;
+      }
+      const nextOffset = skipField(bytes, wireType, offset);
+      if (nextOffset === void 0) {
+        return void 0;
+      }
+      offset = nextOffset;
+    }
+    return appIds;
+  }
+  function appIdKey(appIds) {
+    if (!Array.isArray(appIds) || appIds.some((appId) => !Number.isSafeInteger(appId) || appId < 1)) {
+      return void 0;
+    }
+    return appIds.join(",");
+  }
+  function getFetchRequest(input, init) {
+    const request = typeof Request === "function" && input instanceof Request ? input : void 0;
+    const method = init?.method ?? request?.method ?? "GET";
+    if (typeof method !== "string" || method.toUpperCase() !== "GET") {
+      return void 0;
+    }
+    try {
+      const url = new URL(request?.url ?? String(input), location.href);
+      const pathname = url.pathname.replace(/\/+$/, "");
+      return `${url.origin}${pathname}` === DISCOVERY_QUEUE_URL ? url : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  function isOctetStream(response) {
+    const contentType = response.headers?.get("content-type");
+    return typeof contentType === "string" && contentType.split(";", 1)[0].trim().toLowerCase() === "application/octet-stream";
+  }
+  function readSnr() {
+    try {
+      const config = document.querySelector("#application_config[data-config]")?.dataset.config;
+      const snr = config ? JSON.parse(config).SNR : void 0;
+      return typeof snr === "string" && snr ? snr : void 0;
+    } catch {
+      return void 0;
+    }
+  }
+  async function runWithConcurrency(values, worker) {
+    let nextIndex = 0;
+    const results = new Array(values.length);
+    async function consume() {
+      while (nextIndex < values.length) {
+        const index = nextIndex;
+        nextIndex += 1;
+        results[index] = await worker(values[index], index);
+      }
+    }
+    await Promise.all(Array.from({ length: Math.min(PREFILTER_CONCURRENCY, values.length) }, consume));
+    return results;
+  }
+  function hasActiveRules(config) {
+    return Boolean(
+      config?.minimumPositiveRate?.enabled || config?.minimumReviewCount?.enabled || config?.maximumPrice?.enabled || config?.minimumDiscount?.enabled || config?.earliestReleaseDate?.enabled || config?.ignoreFree || config?.ignoreUnreviewed || config?.ignoreDlc || config?.ignoreProfileFeaturesLimited || config?.excludedTags?.enabled || config?.requiredLanguages?.enabled
+    );
+  }
+  function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
+    if (typeof window !== "object" || typeof window.fetch !== "function") {
+      return () => {
+      };
+    }
+    const permits = /* @__PURE__ */ new Map();
+    const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
+    const originalFetch = window.fetch;
+    let stopped = false;
+    let generation = 0;
+    let pollTimer;
+    let queueCache;
+    let originalQueueMultiple;
+    let queueMultipleWrapper;
+    function grantPermit(appIds) {
+      const key = appIdKey(appIds);
+      if (key !== void 0 && appIds.length > 0) {
+        permits.set(key, Date.now() + PERMIT_DURATION_MS);
+      }
+    }
+    function takePermit(appIds) {
+      const key = appIdKey(appIds);
+      if (key === void 0) {
+        return false;
+      }
+      const expiresAt = permits.get(key);
+      permits.delete(key);
+      return typeof expiresAt === "number" && expiresAt >= Date.now();
+    }
+    async function ignoreApp(appId) {
+      if (typeof window.g_sessionID !== "string" || !window.g_sessionID) {
+        return false;
+      }
+      const form = new FormData();
+      form.set("sessionid", window.g_sessionID);
+      form.set("appid", String(appId));
+      form.set("remove", "0");
+      const snr = readSnr();
+      if (snr !== void 0) {
+        form.set("snr", snr);
+      }
+      form.set("ignore_reason", "0");
+      try {
+        const response = await window.fetch("/recommended/ignorerecommendation", {
+          method: "POST",
+          body: form
+        });
+        if (!response.ok) {
+          return false;
+        }
+        const payload = await response.json();
+        return payload?.success === true || payload?.success === 1;
+      } catch {
+        return false;
+      }
+    }
+    async function prefilter(appIds, expectedKey, currentGeneration) {
+      if (appIdKey(appIds) !== expectedKey) {
+        return;
+      }
+      let config;
+      try {
+        config = loadDiscoveryQueueConfig();
+      } catch {
+        return;
+      }
+      if (config?.enabled !== true || !hasActiveRules(config) || stopped || currentGeneration !== generation) {
+        return;
+      }
+      const matches = await runWithConcurrency(appIds, async (appId) => {
+        try {
+          const tags = config.excludedTags?.enabled && typeof getLocalizedTags === "function" ? await getLocalizedTags(String(appId)) : [];
+          const result = await ruleEngine.evaluate({
+            appId: String(appId),
+            tags: Array.isArray(tags) ? tags : [],
+            config
+          });
+          if (!result?.matched || stopped || currentGeneration !== generation) {
+            return false;
+          }
+          return ignoreApp(appId);
+        } catch {
+          return false;
+        }
+      });
+      if (stopped || currentGeneration !== generation || appIdKey(appIds) !== expectedKey) {
+        return;
+      }
+      for (let index = matches.length - 1; index >= 0; index -= 1) {
+        if (matches[index] === true) {
+          appIds.splice(index, 1);
+        }
+      }
+    }
+    function wrappedFetch(...args) {
+      const responsePromise = Reflect.apply(originalFetch, this, args);
+      let request;
+      try {
+        request = getFetchRequest(args[0], args[1]);
+      } catch {
+        return responsePromise;
+      }
+      if (!request || !isDiscoveryQueueRebuildRequest(request.searchParams.get("input_protobuf_encoded"))) {
+        return responsePromise;
+      }
+      return Promise.resolve(responsePromise).then(async (response) => {
+        if (stopped || !response?.ok || !isOctetStream(response)) {
+          return response;
+        }
+        try {
+          const appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
+          if (!stopped && appIds) {
+            grantPermit(appIds);
+          }
+        } catch {
+          return response;
+        }
+        return response;
+      });
+    }
+    function installQueueWrapper() {
+      if (stopped) {
+        return;
+      }
+      const cache = window.StoreItemCache;
+      const current = cache?.QueueMultipleAppRequests;
+      if (cache && typeof current === "function" && current !== queueMultipleWrapper) {
+        queueCache = cache;
+        originalQueueMultiple = current;
+        queueMultipleWrapper = function wrappedQueueMultiple(appIds, ...args) {
+          const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
+          const snapshot = Array.isArray(appIds) ? [...appIds] : void 0;
+          const expectedKey = snapshot && appIdKey(snapshot);
+          if (expectedKey === void 0 || !takePermit(snapshot)) {
+            return result;
+          }
+          const currentGeneration = generation;
+          return Promise.resolve(result).then(async (value) => {
+            await prefilter(appIds, expectedKey, currentGeneration);
+            return value;
+          });
+        };
+        cache.QueueMultipleAppRequests = queueMultipleWrapper;
+      }
+      pollTimer = setTimeout(installQueueWrapper, POLL_INTERVAL_MS);
+    }
+    window.fetch = wrappedFetch;
+    installQueueWrapper();
+    return () => {
+      if (stopped) {
+        return;
+      }
+      stopped = true;
+      generation += 1;
+      permits.clear();
+      clearTimeout(pollTimer);
+      ruleEngine.clear();
+      if (window.fetch === wrappedFetch) {
+        window.fetch = originalFetch;
+      }
+      if (queueCache?.QueueMultipleAppRequests === queueMultipleWrapper) {
+        queueCache.QueueMultipleAppRequests = originalQueueMultiple;
+      }
+    };
+  }
+
   // src/lib/steam/discovery-queue-store-items.js
   var CACHE_WAIT_MS = 50;
   var CHINESE_LANGUAGE_IDS = /* @__PURE__ */ new Set([6, 7, 29]);
@@ -1417,6 +1767,49 @@
           return readStoreItem(item, numericAppId);
         } catch {
           return void 0;
+        }
+      },
+      async getLocalizedTags(appId) {
+        if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
+          return [];
+        }
+        const numericAppId = Number(appId);
+        if (!Number.isSafeInteger(numericAppId)) {
+          return [];
+        }
+        const cache = await waitForStoreItemCache();
+        if (!cache || stopped) {
+          return [];
+        }
+        try {
+          const tagIds = readArray(() => cache.GetApp(numericAppId)?.GetTagIDs?.());
+          const uniqueTagIds = [...new Set(tagIds)];
+          if (uniqueTagIds.length === 0) {
+            return [];
+          }
+          if (typeof cache.QueueMultipleTagRequests === "function") {
+            await cache.QueueMultipleTagRequests(uniqueTagIds, {});
+            if (stopped) {
+              return [];
+            }
+          }
+          const names = [];
+          const seenNames = /* @__PURE__ */ new Set();
+          for (const tagId of tagIds) {
+            const tag = cache.GetTag?.(tagId);
+            const name = tag?.GetName?.();
+            if (typeof name !== "string") {
+              return [];
+            }
+            const trimmedName = name.trim();
+            if (trimmedName && !seenNames.has(trimmedName)) {
+              seenNames.add(trimmedName);
+              names.push(trimmedName);
+            }
+          }
+          return names;
+        } catch {
+          return [];
         }
       },
       stop() {
@@ -1740,6 +2133,10 @@
   }
   function startSteamDiscoveryQueue() {
     const storeItemReader = createDiscoveryQueueStoreItemReader();
+    const stopPrefilter = startDiscoveryQueuePrefilter({
+      getLocalizedTags: storeItemReader.getLocalizedTags,
+      getStoreItem: storeItemReader.get
+    });
     const stopModalQueue = startModalQueue();
     let stopClassicQueue = () => {
     };
@@ -1764,6 +2161,7 @@
     return () => {
       stopped = true;
       document.removeEventListener("DOMContentLoaded", startQueueControllersWhenReady);
+      stopPrefilter();
       stopModalQueue();
       stopClassicQueue();
       stopAutoFilter();

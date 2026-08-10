@@ -6,13 +6,15 @@ import {
   isDiscoveryQueueRebuildRequest,
 } from "../../src/lib/steam/discovery-queue-prefilter.js";
 
-// Captured protobuf wire fixtures from Steam's IStoreService discovery-queue contract.
+// Wire fixtures encoded from Steam's current IStoreService protobuf schema.
 const REBUILD_STANDARD_QUEUE = "CAAYAQ=="; // queue_type = 0, rebuild_queue = true
+const REBUILD_DEFAULT_QUEUE = "GAE="; // queue_type omitted at its protobuf default, rebuild_queue = true
 const REBUILD_PREVIEW_QUEUE = "CAAYAA=="; // queue_type = 0, rebuild_queue = false
 const REBUILD_OTHER_QUEUE = "CAEYARgB"; // queue_type = 1, rebuild_queue = true
 
 test("only Steam's standard rebuild queue protobuf request is eligible", () => {
   assert.equal(isDiscoveryQueueRebuildRequest(REBUILD_STANDARD_QUEUE), true);
+  assert.equal(isDiscoveryQueueRebuildRequest(REBUILD_DEFAULT_QUEUE), true);
   assert.equal(isDiscoveryQueueRebuildRequest(REBUILD_PREVIEW_QUEUE), false);
   assert.equal(isDiscoveryQueueRebuildRequest(REBUILD_OTHER_QUEUE), false);
 });

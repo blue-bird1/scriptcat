@@ -2,7 +2,7 @@ import { loadDiscoveryQueueConfig } from "./discovery-queue-config.js";
 import { createDiscoveryQueueRuleEngine } from "./discovery-queue-rules.js";
 
 const DISCOVERY_QUEUE_URL =
-  "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1/";
+  "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
 const PERMIT_DURATION_MS = 10_000;
 const PREFILTER_CONCURRENCY = 4;
 const POLL_INTERVAL_MS = 50;
@@ -93,7 +93,7 @@ export function isDiscoveryQueueRebuildRequest(inputProtobufEncoded) {
     }
     offset = nextOffset;
   }
-  return queueType === 0 && rebuildQueue === true;
+  return (queueType === undefined || queueType === 0) && rebuildQueue === true;
 }
 
 export function decodeDiscoveryQueueAppIds(buffer) {
@@ -165,7 +165,8 @@ function getFetchRequest(input, init) {
   }
   try {
     const url = new URL(request?.url ?? String(input), location.href);
-    return `${url.origin}${url.pathname}` === DISCOVERY_QUEUE_URL
+    const pathname = url.pathname.replace(/\/+$/, "");
+    return `${url.origin}${pathname}` === DISCOVERY_QUEUE_URL
       ? url
       : undefined;
   } catch {
@@ -200,6 +201,22 @@ async function runWithConcurrency(values, worker) {
   }
   await Promise.all(Array.from({ length: Math.min(PREFILTER_CONCURRENCY, values.length) }, consume));
   return results;
+}
+
+function hasActiveRules(config) {
+  return Boolean(
+    config?.minimumPositiveRate?.enabled ||
+      config?.minimumReviewCount?.enabled ||
+      config?.maximumPrice?.enabled ||
+      config?.minimumDiscount?.enabled ||
+      config?.earliestReleaseDate?.enabled ||
+      config?.ignoreFree ||
+      config?.ignoreUnreviewed ||
+      config?.ignoreDlc ||
+      config?.ignoreProfileFeaturesLimited ||
+      config?.excludedTags?.enabled ||
+      config?.requiredLanguages?.enabled,
+  );
 }
 
 export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
@@ -272,14 +289,19 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
     } catch {
       return;
     }
-    if (config?.enabled !== true || stopped || currentGeneration !== generation) {
+    if (
+      config?.enabled !== true ||
+      !hasActiveRules(config) ||
+      stopped ||
+      currentGeneration !== generation
+    ) {
       return;
     }
 
     const matches = await runWithConcurrency(appIds, async (appId) => {
       try {
-        const tags = typeof getLocalizedTags === "function"
-          ? await getLocalizedTags(appId)
+        const tags = config.excludedTags?.enabled && typeof getLocalizedTags === "function"
+          ? await getLocalizedTags(String(appId))
           : [];
         const result = await ruleEngine.evaluate({
           appId: String(appId),
@@ -319,9 +341,9 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
     if (!request || !isDiscoveryQueueRebuildRequest(request.searchParams.get("input_protobuf_encoded"))) {
       return responsePromise;
     }
-    void Promise.resolve(responsePromise).then(async (response) => {
+    return Promise.resolve(responsePromise).then(async (response) => {
       if (stopped || !response?.ok || !isOctetStream(response)) {
-        return;
+        return response;
       }
       try {
         const appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
@@ -329,10 +351,10 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
           grantPermit(appIds);
         }
       } catch {
-        // A malformed or unreadable response is not eligible for prefiltering.
+        return response;
       }
-    }).catch(() => {});
-    return responsePromise;
+      return response;
+    });
   }
 
   function installQueueWrapper() {
@@ -348,10 +370,14 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
         const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
         const snapshot = Array.isArray(appIds) ? [...appIds] : undefined;
         const expectedKey = snapshot && appIdKey(snapshot);
-        if (expectedKey !== undefined && takePermit(snapshot)) {
-          void prefilter(appIds, expectedKey, generation);
+        if (expectedKey === undefined || !takePermit(snapshot)) {
+          return result;
         }
-        return result;
+        const currentGeneration = generation;
+        return Promise.resolve(result).then(async (value) => {
+          await prefilter(appIds, expectedKey, currentGeneration);
+          return value;
+        });
       };
       cache.QueueMultipleAppRequests = queueMultipleWrapper;
     }
