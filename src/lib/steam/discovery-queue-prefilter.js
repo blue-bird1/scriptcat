@@ -262,7 +262,10 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
     }
   }
 
-  async function prefilter(appIds, currentGeneration) {
+  async function prefilter(appIds, expectedKey, currentGeneration) {
+    if (appIdKey(appIds) !== expectedKey) {
+      return;
+    }
     let config;
     try {
       config = loadDiscoveryQueueConfig();
@@ -291,7 +294,11 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
         return false;
       }
     });
-    if (stopped || currentGeneration !== generation) {
+    if (
+      stopped ||
+      currentGeneration !== generation ||
+      appIdKey(appIds) !== expectedKey
+    ) {
       return;
     }
     for (let index = matches.length - 1; index >= 0; index -= 1) {
@@ -340,8 +347,9 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
       queueMultipleWrapper = function wrappedQueueMultiple(appIds, ...args) {
         const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
         const snapshot = Array.isArray(appIds) ? [...appIds] : undefined;
-        if (snapshot && takePermit(snapshot)) {
-          void prefilter(appIds, generation);
+        const expectedKey = snapshot && appIdKey(snapshot);
+        if (expectedKey !== undefined && takePermit(snapshot)) {
+          void prefilter(appIds, expectedKey, generation);
         }
         return result;
       };
