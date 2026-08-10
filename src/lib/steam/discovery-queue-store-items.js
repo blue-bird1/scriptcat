@@ -231,6 +231,55 @@ export function createDiscoveryQueueStoreItemReader() {
         return undefined;
       }
     },
+    async getLocalizedTags(appId) {
+      if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
+        return [];
+      }
+
+      const numericAppId = Number(appId);
+      if (!Number.isSafeInteger(numericAppId)) {
+        return [];
+      }
+
+      const cache = await waitForStoreItemCache();
+      if (!cache || stopped) {
+        return [];
+      }
+
+      try {
+        const tagIds = readArray(() => cache.GetApp(numericAppId)?.GetTagIDs?.());
+        const uniqueTagIds = [...new Set(tagIds)];
+        if (uniqueTagIds.length === 0) {
+          return [];
+        }
+
+        if (typeof cache.QueueMultipleTagRequests === "function") {
+          await cache.QueueMultipleTagRequests(uniqueTagIds, {});
+          if (stopped) {
+            return [];
+          }
+        }
+
+        const names = [];
+        const seenNames = new Set();
+        for (const tagId of tagIds) {
+          const tag = cache.GetTag?.(tagId);
+          const name = tag?.GetName?.();
+          if (typeof name !== "string") {
+            return [];
+          }
+
+          const trimmedName = name.trim();
+          if (trimmedName && !seenNames.has(trimmedName)) {
+            seenNames.add(trimmedName);
+            names.push(trimmedName);
+          }
+        }
+        return names;
+      } catch {
+        return [];
+      }
+    },
     stop() {
       stopped = true;
     },
