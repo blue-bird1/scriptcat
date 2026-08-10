@@ -125,6 +125,67 @@ test("Steam's persisted tag catalog resolves names without tag requests", async 
   }
 });
 
+test("missing tag catalog uses Steam's CORS origin parameter and persists once", async () => {
+  const originalGlobals = {
+    document: globalThis.document,
+    fetch: globalThis.fetch,
+    localStorage: globalThis.localStorage,
+    location: globalThis.location,
+    window: globalThis.window,
+  };
+  let stored;
+  globalThis.document = {
+    documentElement: { lang: "zh-CN" },
+    querySelector() {
+      return {
+        dataset: { config: JSON.stringify({ LANGUAGE: "schinese" }) },
+      };
+    },
+  };
+  globalThis.localStorage = {
+    getItem() {
+      return null;
+    },
+    setItem(key, value) {
+      stored = { key, value: JSON.parse(value) };
+    },
+  };
+  globalThis.location = { origin: "https://store.steampowered.com" };
+  globalThis.window = {};
+  globalThis.fetch = async (input) => {
+    const url = new URL(input);
+    assert.equal(url.searchParams.get("language"), "schinese");
+    assert.equal(
+      url.searchParams.get("origin"),
+      "https://store.steampowered.com",
+    );
+    return Response.json({
+      response: {
+        tags: [{ tagid: 1, name: "动作" }],
+        version_hash: "fixture",
+      },
+    });
+  };
+  const catalog = createDiscoveryQueueTagCatalog();
+  try {
+    assert.deepEqual(await catalog.getNames([1]), ["动作"]);
+    assert.deepEqual(stored, {
+      key: "LocalizedTagNames2_schinese",
+      value: {
+        tags: [{ tagid: 1, name: "动作" }],
+        version_hash: "fixture",
+      },
+    });
+  } finally {
+    catalog.clear();
+    globalThis.document = originalGlobals.document;
+    globalThis.fetch = originalGlobals.fetch;
+    globalThis.localStorage = originalGlobals.localStorage;
+    globalThis.location = originalGlobals.location;
+    globalThis.window = originalGlobals.window;
+  }
+});
+
 const INITIAL_QUEUE_URL =
   "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1/?input_protobuf_encoded=EgJDTjAB&access_token=token";
 const DISCOVERY_QUEUE_DATA_REQUEST = {

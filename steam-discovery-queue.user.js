@@ -1924,6 +1924,7 @@
     }
     const url = new URL(TAG_LIST_URL);
     url.searchParams.set("language", language);
+    url.searchParams.set("origin", location.origin);
     try {
       console.info("[Steam 探索队列] 首次加载完整标签目录", { language });
       const response = await fetch(url);
