@@ -5,8 +5,10 @@ const DISCOVERY_QUEUE_URL =
   "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
 const DISCOVERY_QUEUE_DIALOG_SELECTOR =
   '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
+const PERMIT_DURATION_MS = 10_000;
 const PREFILTER_CONCURRENCY = 4;
 const DISCOVERY_QUEUE_SUMMARY_APP_ID = 1;
+const POLL_INTERVAL_MS = 50;
 
 function readVarint(bytes, offset) {
   let value = 0;
@@ -65,20 +67,6 @@ function encodeBase64(bytes) {
     binary += String.fromCharCode(byte);
   }
   return btoa(binary);
-}
-
-function encodeVarint(value) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    return undefined;
-  }
-  const bytes = [];
-  let remaining = value;
-  do {
-    const byte = remaining % 128;
-    remaining = Math.floor(remaining / 128);
-    bytes.push(byte | (remaining > 0 ? 0x80 : 0));
-  } while (remaining > 0);
-  return bytes;
 }
 
 function readFields(bytes) {
@@ -191,48 +179,6 @@ export function decodeDiscoveryQueueAppIds(buffer) {
   return appIds;
 }
 
-function rewriteDiscoveryQueueAppIds(buffer, retainedAppIds) {
-  const bytes = buffer instanceof Uint8Array
-    ? buffer
-    : buffer instanceof ArrayBuffer
-      ? new Uint8Array(buffer)
-      : undefined;
-  const fields = bytes && readFields(bytes);
-  const originalAppIds = bytes && decodeDiscoveryQueueAppIds(bytes);
-  if (!bytes || !fields || !originalAppIds || !Array.isArray(retainedAppIds)) {
-    return undefined;
-  }
-
-  if (retainedAppIds.some((appId) => !Number.isSafeInteger(appId) || appId < 1)) {
-    return undefined;
-  }
-
-  const payload = retainedAppIds.flatMap((appId) => encodeVarint(appId) ?? []);
-  const length = encodeVarint(payload.length);
-  if (!length || (payload.length === 0 && retainedAppIds.length > 0)) {
-    return undefined;
-  }
-  const replacement = retainedAppIds.length > 0
-    ? [0x0a, ...length, ...payload]
-    : [];
-  const output = [];
-  let inserted = false;
-  for (const field of fields) {
-    if (field.fieldNumber === 1) {
-      if (!inserted) {
-        output.push(...replacement);
-        inserted = true;
-      }
-    } else {
-      output.push(...bytes.subarray(field.start, field.end));
-    }
-  }
-  if (!inserted) {
-    output.push(...replacement);
-  }
-  return Uint8Array.from(output);
-}
-
 function withDiscoveryQueueRebuild(inputProtobufEncoded) {
   const request = parseDiscoveryQueueRequest(inputProtobufEncoded);
   if (!request?.standard) {
@@ -306,16 +252,6 @@ function isOctetStream(response) {
   return typeof contentType === "string" && contentType.split(";", 1)[0].trim().toLowerCase() === "application/octet-stream";
 }
 
-function replaceResponseBody(response, body) {
-  const headers = new Headers(response.headers);
-  headers.delete("content-length");
-  return new Response(body, {
-    headers,
-    status: response.status,
-    statusText: response.statusText,
-  });
-}
-
 function readSnr() {
   try {
     const config = document.querySelector("#application_config[data-config]")?.dataset.config;
@@ -361,19 +297,56 @@ function getDiscoveryQueueDialog() {
   return dialog instanceof HTMLElement ? dialog : undefined;
 }
 
-export function startDiscoveryQueuePrefilter({
-  getStoreItem,
-  getLocalizedTags,
-  loadStoreItems,
-} = {}) {
+function isDiscoveryQueueDataRequest(value) {
+  return Boolean(
+    value?.include_assets === true &&
+      value?.include_trailers === true &&
+      value?.include_basic_info === true &&
+      value?.include_tag_count === 20 &&
+      value?.include_release === true &&
+      value?.include_platforms === true &&
+      value?.include_screenshots === true &&
+      value?.include_reviews === true,
+  );
+}
+
+export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
   if (typeof window !== "object" || typeof window.fetch !== "function") {
     return () => {};
   }
 
+  const permits = new Map();
+  const deliveredDialogs = new WeakSet();
   const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
   const originalFetch = window.fetch;
   let stopped = false;
   let generation = 0;
+  let pollTimer;
+  let queueCache;
+  let originalQueueMultiple;
+  let queueMultipleWrapper;
+
+  function grantPermit(appIds, request, args, receiver) {
+    const key = appIdKey(appIds);
+    if (key !== undefined && appIds.length > 0) {
+      permits.set(key, {
+        args,
+        expiresAt: Date.now() + PERMIT_DURATION_MS,
+        receiver,
+        request,
+      });
+    }
+  }
+
+  function takePermit(appIds) {
+    const key = appIdKey(appIds);
+    if (key === undefined) {
+      return undefined;
+    }
+    const permit = permits.get(key);
+    permits.delete(key);
+    return permit?.expiresAt >= Date.now() ? permit : undefined;
+  }
 
   async function ignoreApp(appId) {
     if (typeof window.g_sessionID !== "string" || !window.g_sessionID) {
@@ -407,16 +380,6 @@ export function startDiscoveryQueuePrefilter({
   }
 
   async function prefilter(appIds, config, currentGeneration) {
-    if (stopped || currentGeneration !== generation) {
-      return undefined;
-    }
-    if (typeof loadStoreItems !== "function" || !await loadStoreItems(appIds)) {
-      return undefined;
-    }
-    if (stopped || currentGeneration !== generation) {
-      return undefined;
-    }
-
     const matches = await runWithConcurrency(appIds, async (appId) => {
       try {
         const tags = config.excludedTags?.enabled && typeof getLocalizedTags === "function"
@@ -441,91 +404,164 @@ export function startDiscoveryQueuePrefilter({
     return appIds.filter((_, index) => matches[index] !== true);
   }
 
-  async function wrappedFetch(...args) {
+  function replaceAppIds(target, replacement) {
+    target.splice(0, target.length, ...replacement);
+  }
+
+  async function loadNextVisibleBatch(
+    permit,
+    dataRequest,
+    queueReceiver,
+    config,
+    currentGeneration,
+    seenBatches,
+  ) {
+    let fetchArgs = createRebuildFetchArgs(permit.args, permit.request);
+    if (!fetchArgs) {
+      return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+    }
+
+    while (!stopped && currentGeneration === generation) {
+      let response;
+      try {
+        response = await Reflect.apply(originalFetch, permit.receiver, fetchArgs);
+      } catch {
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+      if (!response?.ok || !isOctetStream(response)) {
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+
+      let appIds;
+      try {
+        appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
+      } catch {
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+      const key = appIdKey(appIds);
+      if (!appIds || appIds.length === 0 || key === undefined || seenBatches.has(key)) {
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+      seenBatches.add(key);
+
+      try {
+        await Reflect.apply(originalQueueMultiple, queueReceiver, [appIds, dataRequest]);
+      } catch {
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+      const retainedAppIds = await prefilter(appIds, config, currentGeneration);
+      if (!retainedAppIds) {
+        return appIds;
+      }
+      if (retainedAppIds.length > 0) {
+        return retainedAppIds;
+      }
+    }
+    return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+  }
+
+  function wrappedFetch(...args) {
+    const responsePromise = Reflect.apply(originalFetch, this, args);
     let request;
     try {
       request = getFetchRequest(args[0], args[1]);
     } catch {
-      return Reflect.apply(originalFetch, this, args);
+      return responsePromise;
     }
     if (!request?.queueRequest.standard) {
-      return Reflect.apply(originalFetch, this, args);
+      return responsePromise;
     }
-
-    let fetchArgs = args;
-    let currentRequest = request;
-    const currentGeneration = generation;
-    const seenBatches = new Set();
-    let config;
-    let transactionStarted = false;
-    while (true) {
-      const response = await Reflect.apply(originalFetch, this, fetchArgs);
-      if (stopped || currentGeneration !== generation || !response?.ok || !isOctetStream(response)) {
+    const receiver = this;
+    return Promise.resolve(responsePromise).then(async (response) => {
+      if (stopped || !response?.ok || !isOctetStream(response)) {
         return response;
       }
-
-      if (!transactionStarted) {
-        if (!getDiscoveryQueueDialog()) {
-          return response;
-        }
-        try {
-          config = loadDiscoveryQueueConfig();
-        } catch {
-          return response;
-        }
-        if (config?.enabled !== true || !hasActiveRules(config)) {
-          return response;
-        }
-        transactionStarted = true;
-      }
-
-      let buffer;
-      let appIds;
       try {
-        buffer = await response.clone().arrayBuffer();
-        appIds = decodeDiscoveryQueueAppIds(buffer);
+        const appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
+        if (!stopped && appIds) {
+          grantPermit(appIds, request, args, receiver);
+        }
       } catch {
         return response;
       }
-      if (!appIds) {
-        return response;
-      }
-      if (appIds.length === 0) {
-        const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-        return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-      }
+      return response;
+    });
+  }
 
-      const batchKey = appIdKey(appIds);
-      if (batchKey === undefined || seenBatches.has(batchKey)) {
-        const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-        return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-      }
-      seenBatches.add(batchKey);
-
-      const retainedAppIds = await prefilter(appIds, config, currentGeneration);
-      if (!retainedAppIds || stopped || currentGeneration !== generation) {
-        return response;
-      }
-      if (retainedAppIds.length > 0) {
-        const body = rewriteDiscoveryQueueAppIds(buffer, retainedAppIds);
-        return body ? replaceResponseBody(response, body) : response;
-      }
-
-      const rebuildArgs = createRebuildFetchArgs(fetchArgs, currentRequest);
-      if (!rebuildArgs) {
-        const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-        return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-      }
-      fetchArgs = rebuildArgs;
-      currentRequest = getFetchRequest(fetchArgs[0], fetchArgs[1]);
-      if (!currentRequest) {
-        const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-        return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-      }
+  function installQueueWrapper() {
+    if (stopped) {
+      return;
     }
+    const cache = window.StoreItemCache;
+    const current = cache?.QueueMultipleAppRequests;
+    if (cache && typeof current === "function" && current !== queueMultipleWrapper) {
+      queueCache = cache;
+      originalQueueMultiple = current;
+      queueMultipleWrapper = function wrappedQueueMultiple(appIds, ...args) {
+        const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
+        const snapshot = Array.isArray(appIds) ? [...appIds] : undefined;
+        const expectedKey = snapshot && appIdKey(snapshot);
+        const dialog = getDiscoveryQueueDialog();
+        if (
+          expectedKey === undefined ||
+          snapshot.length === 0 ||
+          !dialog ||
+          !isDiscoveryQueueDataRequest(args[0])
+        ) {
+          return result;
+        }
+
+        const permit = takePermit(snapshot);
+        if (deliveredDialogs.has(dialog) && !permit?.request.queueRequest.rebuild) {
+          return result;
+        }
+        deliveredDialogs.add(dialog);
+
+        let config;
+        try {
+          config = loadDiscoveryQueueConfig();
+        } catch {
+          return result;
+        }
+        if (config?.enabled !== true || !hasActiveRules(config)) {
+          return result;
+        }
+
+        const currentGeneration = generation;
+        const queueReceiver = this;
+        return Promise.resolve(result).then(async (value) => {
+          const retainedAppIds = await prefilter(snapshot, config, currentGeneration);
+          if (!retainedAppIds || stopped || currentGeneration !== generation) {
+            return value;
+          }
+          if (retainedAppIds.length > 0) {
+            replaceAppIds(appIds, retainedAppIds);
+            return value;
+          }
+          if (!permit) {
+            replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
+            return value;
+          }
+
+          const nextAppIds = await loadNextVisibleBatch(
+            permit,
+            args[0],
+            queueReceiver,
+            config,
+            currentGeneration,
+            new Set([expectedKey]),
+          );
+          replaceAppIds(appIds, nextAppIds);
+          return value;
+        });
+      };
+      cache.QueueMultipleAppRequests = queueMultipleWrapper;
+    }
+    pollTimer = setTimeout(installQueueWrapper, POLL_INTERVAL_MS);
   }
 
   window.fetch = wrappedFetch;
+  installQueueWrapper();
 
   return () => {
     if (stopped) {
@@ -533,9 +569,14 @@ export function startDiscoveryQueuePrefilter({
     }
     stopped = true;
     generation += 1;
+    permits.clear();
+    clearTimeout(pollTimer);
     ruleEngine.clear();
     if (window.fetch === wrappedFetch) {
       window.fetch = originalFetch;
+    }
+    if (queueCache?.QueueMultipleAppRequests === queueMultipleWrapper) {
+      queueCache.QueueMultipleAppRequests = originalQueueMultiple;
     }
   };
 }

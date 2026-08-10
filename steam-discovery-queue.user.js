@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.14
+// @version      0.3.15
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -1238,8 +1238,10 @@
   // src/lib/steam/discovery-queue-prefilter.js
   var DISCOVERY_QUEUE_URL = "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
   var DISCOVERY_QUEUE_DIALOG_SELECTOR = '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
+  var PERMIT_DURATION_MS = 1e4;
   var PREFILTER_CONCURRENCY = 4;
   var DISCOVERY_QUEUE_SUMMARY_APP_ID = 1;
+  var POLL_INTERVAL_MS = 50;
   function readVarint(bytes, offset) {
     let value = 0;
     let shift = 0;
@@ -1290,19 +1292,6 @@
       binary += String.fromCharCode(byte);
     }
     return btoa(binary);
-  }
-  function encodeVarint(value) {
-    if (!Number.isSafeInteger(value) || value < 0) {
-      return void 0;
-    }
-    const bytes = [];
-    let remaining = value;
-    do {
-      const byte = remaining % 128;
-      remaining = Math.floor(remaining / 128);
-      bytes.push(byte | (remaining > 0 ? 128 : 0));
-    } while (remaining > 0);
-    return bytes;
   }
   function readFields(bytes) {
     const fields = [];
@@ -1400,39 +1389,6 @@
     }
     return appIds;
   }
-  function rewriteDiscoveryQueueAppIds(buffer, retainedAppIds) {
-    const bytes = buffer instanceof Uint8Array ? buffer : buffer instanceof ArrayBuffer ? new Uint8Array(buffer) : void 0;
-    const fields = bytes && readFields(bytes);
-    const originalAppIds = bytes && decodeDiscoveryQueueAppIds(bytes);
-    if (!bytes || !fields || !originalAppIds || !Array.isArray(retainedAppIds)) {
-      return void 0;
-    }
-    if (retainedAppIds.some((appId) => !Number.isSafeInteger(appId) || appId < 1)) {
-      return void 0;
-    }
-    const payload = retainedAppIds.flatMap((appId) => encodeVarint(appId) ?? []);
-    const length = encodeVarint(payload.length);
-    if (!length || payload.length === 0 && retainedAppIds.length > 0) {
-      return void 0;
-    }
-    const replacement = retainedAppIds.length > 0 ? [10, ...length, ...payload] : [];
-    const output = [];
-    let inserted = false;
-    for (const field of fields) {
-      if (field.fieldNumber === 1) {
-        if (!inserted) {
-          output.push(...replacement);
-          inserted = true;
-        }
-      } else {
-        output.push(...bytes.subarray(field.start, field.end));
-      }
-    }
-    if (!inserted) {
-      output.push(...replacement);
-    }
-    return Uint8Array.from(output);
-  }
   function withDiscoveryQueueRebuild(inputProtobufEncoded) {
     const request = parseDiscoveryQueueRequest(inputProtobufEncoded);
     if (!request?.standard) {
@@ -1500,15 +1456,6 @@
     const contentType = response.headers?.get("content-type");
     return typeof contentType === "string" && contentType.split(";", 1)[0].trim().toLowerCase() === "application/octet-stream";
   }
-  function replaceResponseBody(response, body) {
-    const headers = new Headers(response.headers);
-    headers.delete("content-length");
-    return new Response(body, {
-      headers,
-      status: response.status,
-      statusText: response.statusText
-    });
-  }
   function readSnr() {
     try {
       const config = document.querySelector("#application_config[data-config]")?.dataset.config;
@@ -1540,19 +1487,46 @@
     const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
     return dialog instanceof HTMLElement ? dialog : void 0;
   }
-  function startDiscoveryQueuePrefilter({
-    getStoreItem,
-    getLocalizedTags,
-    loadStoreItems
-  } = {}) {
+  function isDiscoveryQueueDataRequest(value) {
+    return Boolean(
+      value?.include_assets === true && value?.include_trailers === true && value?.include_basic_info === true && value?.include_tag_count === 20 && value?.include_release === true && value?.include_platforms === true && value?.include_screenshots === true && value?.include_reviews === true
+    );
+  }
+  function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } = {}) {
     if (typeof window !== "object" || typeof window.fetch !== "function") {
       return () => {
       };
     }
+    const permits = /* @__PURE__ */ new Map();
+    const deliveredDialogs = /* @__PURE__ */ new WeakSet();
     const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
     const originalFetch = window.fetch;
     let stopped = false;
     let generation = 0;
+    let pollTimer;
+    let queueCache;
+    let originalQueueMultiple;
+    let queueMultipleWrapper;
+    function grantPermit(appIds, request, args, receiver) {
+      const key = appIdKey(appIds);
+      if (key !== void 0 && appIds.length > 0) {
+        permits.set(key, {
+          args,
+          expiresAt: Date.now() + PERMIT_DURATION_MS,
+          receiver,
+          request
+        });
+      }
+    }
+    function takePermit(appIds) {
+      const key = appIdKey(appIds);
+      if (key === void 0) {
+        return void 0;
+      }
+      const permit = permits.get(key);
+      permits.delete(key);
+      return permit?.expiresAt >= Date.now() ? permit : void 0;
+    }
     async function ignoreApp(appId) {
       if (typeof window.g_sessionID !== "string" || !window.g_sessionID) {
         return false;
@@ -1584,15 +1558,6 @@
       }
     }
     async function prefilter(appIds, config, currentGeneration) {
-      if (stopped || currentGeneration !== generation) {
-        return void 0;
-      }
-      if (typeof loadStoreItems !== "function" || !await loadStoreItems(appIds)) {
-        return void 0;
-      }
-      if (stopped || currentGeneration !== generation) {
-        return void 0;
-      }
       const matches = await runWithConcurrency(appIds, async (appId) => {
         try {
           const tags = config.excludedTags?.enabled && typeof getLocalizedTags === "function" ? await getLocalizedTags(String(appId)) : [];
@@ -1614,93 +1579,155 @@
       }
       return appIds.filter((_, index) => matches[index] !== true);
     }
-    async function wrappedFetch(...args) {
+    function replaceAppIds(target, replacement) {
+      target.splice(0, target.length, ...replacement);
+    }
+    async function loadNextVisibleBatch(permit, dataRequest, queueReceiver, config, currentGeneration, seenBatches) {
+      let fetchArgs = createRebuildFetchArgs(permit.args, permit.request);
+      if (!fetchArgs) {
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+      while (!stopped && currentGeneration === generation) {
+        let response;
+        try {
+          response = await Reflect.apply(originalFetch, permit.receiver, fetchArgs);
+        } catch {
+          return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+        }
+        if (!response?.ok || !isOctetStream(response)) {
+          return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+        }
+        let appIds;
+        try {
+          appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
+        } catch {
+          return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+        }
+        const key = appIdKey(appIds);
+        if (!appIds || appIds.length === 0 || key === void 0 || seenBatches.has(key)) {
+          return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+        }
+        seenBatches.add(key);
+        try {
+          await Reflect.apply(originalQueueMultiple, queueReceiver, [appIds, dataRequest]);
+        } catch {
+          return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+        }
+        const retainedAppIds = await prefilter(appIds, config, currentGeneration);
+        if (!retainedAppIds) {
+          return appIds;
+        }
+        if (retainedAppIds.length > 0) {
+          return retainedAppIds;
+        }
+      }
+      return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+    }
+    function wrappedFetch(...args) {
+      const responsePromise = Reflect.apply(originalFetch, this, args);
       let request;
       try {
         request = getFetchRequest(args[0], args[1]);
       } catch {
-        return Reflect.apply(originalFetch, this, args);
+        return responsePromise;
       }
       if (!request?.queueRequest.standard) {
-        return Reflect.apply(originalFetch, this, args);
+        return responsePromise;
       }
-      let fetchArgs = args;
-      let currentRequest = request;
-      const currentGeneration = generation;
-      const seenBatches = /* @__PURE__ */ new Set();
-      let config;
-      let transactionStarted = false;
-      while (true) {
-        const response = await Reflect.apply(originalFetch, this, fetchArgs);
-        if (stopped || currentGeneration !== generation || !response?.ok || !isOctetStream(response)) {
+      const receiver = this;
+      return Promise.resolve(responsePromise).then(async (response) => {
+        if (stopped || !response?.ok || !isOctetStream(response)) {
           return response;
         }
-        if (!transactionStarted) {
-          if (!getDiscoveryQueueDialog()) {
-            return response;
-          }
-          try {
-            config = loadDiscoveryQueueConfig();
-          } catch {
-            return response;
-          }
-          if (config?.enabled !== true || !hasActiveRules(config)) {
-            return response;
-          }
-          transactionStarted = true;
-        }
-        let buffer;
-        let appIds;
         try {
-          buffer = await response.clone().arrayBuffer();
-          appIds = decodeDiscoveryQueueAppIds(buffer);
+          const appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
+          if (!stopped && appIds) {
+            grantPermit(appIds, request, args, receiver);
+          }
         } catch {
           return response;
         }
-        if (!appIds) {
-          return response;
-        }
-        if (appIds.length === 0) {
-          const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-          return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-        }
-        const batchKey = appIdKey(appIds);
-        if (batchKey === void 0 || seenBatches.has(batchKey)) {
-          const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-          return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-        }
-        seenBatches.add(batchKey);
-        const retainedAppIds = await prefilter(appIds, config, currentGeneration);
-        if (!retainedAppIds || stopped || currentGeneration !== generation) {
-          return response;
-        }
-        if (retainedAppIds.length > 0) {
-          const body = rewriteDiscoveryQueueAppIds(buffer, retainedAppIds);
-          return body ? replaceResponseBody(response, body) : response;
-        }
-        const rebuildArgs = createRebuildFetchArgs(fetchArgs, currentRequest);
-        if (!rebuildArgs) {
-          const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-          return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-        }
-        fetchArgs = rebuildArgs;
-        currentRequest = getFetchRequest(fetchArgs[0], fetchArgs[1]);
-        if (!currentRequest) {
-          const summaryBody = rewriteDiscoveryQueueAppIds(buffer, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-          return summaryBody ? replaceResponseBody(response, summaryBody) : response;
-        }
+        return response;
+      });
+    }
+    function installQueueWrapper() {
+      if (stopped) {
+        return;
       }
+      const cache = window.StoreItemCache;
+      const current = cache?.QueueMultipleAppRequests;
+      if (cache && typeof current === "function" && current !== queueMultipleWrapper) {
+        queueCache = cache;
+        originalQueueMultiple = current;
+        queueMultipleWrapper = function wrappedQueueMultiple(appIds, ...args) {
+          const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
+          const snapshot = Array.isArray(appIds) ? [...appIds] : void 0;
+          const expectedKey = snapshot && appIdKey(snapshot);
+          const dialog = getDiscoveryQueueDialog();
+          if (expectedKey === void 0 || snapshot.length === 0 || !dialog || !isDiscoveryQueueDataRequest(args[0])) {
+            return result;
+          }
+          const permit = takePermit(snapshot);
+          if (deliveredDialogs.has(dialog) && !permit?.request.queueRequest.rebuild) {
+            return result;
+          }
+          deliveredDialogs.add(dialog);
+          let config;
+          try {
+            config = loadDiscoveryQueueConfig();
+          } catch {
+            return result;
+          }
+          if (config?.enabled !== true || !hasActiveRules(config)) {
+            return result;
+          }
+          const currentGeneration = generation;
+          const queueReceiver = this;
+          return Promise.resolve(result).then(async (value) => {
+            const retainedAppIds = await prefilter(snapshot, config, currentGeneration);
+            if (!retainedAppIds || stopped || currentGeneration !== generation) {
+              return value;
+            }
+            if (retainedAppIds.length > 0) {
+              replaceAppIds(appIds, retainedAppIds);
+              return value;
+            }
+            if (!permit) {
+              replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
+              return value;
+            }
+            const nextAppIds = await loadNextVisibleBatch(
+              permit,
+              args[0],
+              queueReceiver,
+              config,
+              currentGeneration,
+              /* @__PURE__ */ new Set([expectedKey])
+            );
+            replaceAppIds(appIds, nextAppIds);
+            return value;
+          });
+        };
+        cache.QueueMultipleAppRequests = queueMultipleWrapper;
+      }
+      pollTimer = setTimeout(installQueueWrapper, POLL_INTERVAL_MS);
     }
     window.fetch = wrappedFetch;
+    installQueueWrapper();
     return () => {
       if (stopped) {
         return;
       }
       stopped = true;
       generation += 1;
+      permits.clear();
+      clearTimeout(pollTimer);
       ruleEngine.clear();
       if (window.fetch === wrappedFetch) {
         window.fetch = originalFetch;
+      }
+      if (queueCache?.QueueMultipleAppRequests === queueMultipleWrapper) {
+        queueCache.QueueMultipleAppRequests = originalQueueMultiple;
       }
     };
   }
@@ -1709,15 +1736,6 @@
   var CACHE_WAIT_MS = 50;
   var CHINESE_LANGUAGE_IDS = /* @__PURE__ */ new Set([6, 7, 29]);
   var DLC_APP_TYPE = 4;
-  var DISCOVERY_QUEUE_DATA_REQUEST = {
-    include_assets: true,
-    include_trailers: true,
-    include_basic_info: true,
-    include_tag_count: 20,
-    include_release: true,
-    include_platforms: true,
-    include_screenshots: true
-  };
   function getStoreItemCache() {
     const cache = window.StoreItemCache;
     return cache && typeof cache.GetApp === "function" && typeof cache.QueueAppRequest === "function" ? cache : void 0;
@@ -1870,21 +1888,6 @@
   function createDiscoveryQueueStoreItemReader() {
     let stopped = false;
     return {
-      async loadBatch(appIds) {
-        if (stopped || !Array.isArray(appIds) || appIds.length === 0 || appIds.some((appId) => !Number.isSafeInteger(appId) || appId < 1)) {
-          return false;
-        }
-        const cache = await waitForStoreItemCache();
-        if (!cache || typeof cache.QueueMultipleAppRequests !== "function" || stopped) {
-          return false;
-        }
-        try {
-          await cache.QueueMultipleAppRequests([...appIds], DISCOVERY_QUEUE_DATA_REQUEST);
-          return !stopped;
-        } catch {
-          return false;
-        }
-      },
       async get(appId, requirements) {
         if (stopped || typeof appId !== "string" || !/^[1-9]\d*$/.test(appId)) {
           return void 0;
@@ -1967,6 +1970,7 @@
   var ADVANCE_DELAY_MS = 50;
   var CLASSIC_NEXT_SELECTOR = "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
   var MODAL_WISHLIST_PATH = "/api/addtowishlist";
+  var MODAL_QUEUE_SELECTOR = '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
   function isVisible2(element) {
     return Boolean(
       element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
@@ -2073,6 +2077,32 @@
     queueActions.addEventListener("click", handleClick, true);
     window.addEventListener("pagehide", stop, { once: true });
     return stop;
+  }
+  function startModalReviewCountFix() {
+    const root = document.body;
+    if (!(root instanceof HTMLElement)) {
+      return () => {
+      };
+    }
+    function normalize() {
+      const dialog = document.querySelector(MODAL_QUEUE_SELECTOR);
+      if (!(dialog instanceof HTMLElement)) {
+        return;
+      }
+      for (const element of dialog.querySelectorAll("[aria-label]")) {
+        if (element.childElementCount > 0) {
+          continue;
+        }
+        const match = element.textContent?.trim().match(/^\(\((.+)\)\)$/u);
+        if (match) {
+          element.textContent = `(${match[1]})`;
+        }
+      }
+    }
+    const observer = new MutationObserver(normalize);
+    observer.observe(root, { characterData: true, childList: true, subtree: true });
+    normalize();
+    return () => observer.disconnect();
   }
   function findModalNextButton(dialog) {
     const dialogRect = dialog.getBoundingClientRect();
@@ -2279,13 +2309,14 @@
     const storeItemReader = createDiscoveryQueueStoreItemReader();
     const stopPrefilter = startDiscoveryQueuePrefilter({
       getLocalizedTags: storeItemReader.getLocalizedTags,
-      getStoreItem: storeItemReader.get,
-      loadStoreItems: storeItemReader.loadBatch
+      getStoreItem: storeItemReader.get
     });
     const stopModalQueue = startModalQueue();
     let stopClassicQueue = () => {
     };
     let stopAutoFilter = () => {
+    };
+    let stopReviewCountFix = () => {
     };
     let stopped = false;
     function startQueueControllersWhenReady() {
@@ -2294,6 +2325,7 @@
         stopAutoFilter = startDiscoveryQueueAutoFilter({
           getStoreItem: storeItemReader.get
         });
+        stopReviewCountFix = startModalReviewCountFix();
       }
     }
     if (document.readyState === "loading") {
@@ -2310,6 +2342,7 @@
       stopPrefilter();
       stopClassicQueue();
       stopAutoFilter();
+      stopReviewCountFix();
       storeItemReader.stop();
     };
   }

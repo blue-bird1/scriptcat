@@ -52,10 +52,10 @@
 ### React 预筛选
 
 - `IStoreService/GetDiscoveryQueue` 提供 AppID，`IStoreBrowseService/GetItems` 加载对应 `StoreItem`。
-- 脚本在 `GetDiscoveryQueue` Response 交给 Steam 前确认标准队列请求和包含 `dq=widget` 探索链接的对话框。首页预览没有该对话框，Response 原样交付，不修改忽略列表。
-- 脚本先通过 `QueueMultipleAppRequests` 预载整批 `StoreItem`，再按响应中的 AppID 顺序评估规则。标签使用标签缓存中的本地化名称，并保持缓存顺序。
-- 命中项通过 `POST /recommended/ignorerecommendation` 标记为不感兴趣。只有 HTTP 与响应成功标记均确认后，脚本才从 protobuf Response 移除对应 AppID；Steam 从未持有待删除的队列数组。
-- 整批均成功忽略时，脚本将同一请求改为 `rebuild_queue=true` 并继续获取下一批。服务端不再返回 AppID 时，脚本交付 Steam 当前 React 队列使用的 summary 哨兵，避免原生空队列索引越界。
+- 脚本只克隆 `GetDiscoveryQueue` Response 读取 AppID，并将原始 Response 对象和字节原样交给 Steam。包含 `dq=widget` 探索链接的对话框用于确认真实队列；首页预览不修改忽略列表。
+- Steam 的 `QueueMultipleAppRequests` 完成后，脚本从同一 `StoreItem` 缓存按响应顺序评估规则。标签使用标签缓存中的本地化名称，并保持缓存顺序。
+- 命中项通过 `POST /recommended/ignorerecommendation` 标记为不感兴趣。只有 HTTP 与响应成功标记均确认后，脚本才在 React 接收队列前从页面局部 AppID 数组移除对应项目。
+- 整批均成功忽略时，脚本使用原始请求的认证参数发起 `rebuild_queue=true` 请求，加载并筛选后续批次。服务端不再返回 AppID 时，脚本交付 Steam 当前 React 队列使用的 summary 哨兵，避免原生空队列索引越界。
 - 预筛选不调用 `SkipDiscoveryQueueItem` 或 impression 接口。未渲染项目不产生浏览记录。
 - 请求解析、缓存、规则评估或忽略请求失败时保留项目，并交给 Steam 原生流程。
 
@@ -70,6 +70,7 @@
 
 ### React 后置动作
 
+- 当前 Steam 评测数组件会把已带括号的截断计数再次包裹，产生 `((306))`。脚本只在探索队列对话框内将这类叶子文本恢复为 `(306)`。
 - 队列对话框通过包含 `dq=widget` 的 `/explore` 链接识别。操作按钮按结构和位置识别，不依赖本地化 `aria-label` 文本。
 - 后置命中使用 Steam 原生忽略控件，并在点击事件派发完成后进入下一项。未命中或数据缺失时停留当前项目。
 - 愿望单使用 `POST /api/addtowishlist`。响应成功且按钮选中类稳定后，脚本点击右侧轮播按钮进入下一项。

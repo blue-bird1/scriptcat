@@ -39,6 +39,16 @@ test("unknown protobuf fields are skipped without changing queue appids", () => 
 
 const INITIAL_QUEUE_URL =
   "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1/?input_protobuf_encoded=EgJDTjAB&access_token=token";
+const DISCOVERY_QUEUE_DATA_REQUEST = {
+  include_assets: true,
+  include_trailers: true,
+  include_basic_info: true,
+  include_tag_count: 20,
+  include_release: true,
+  include_platforms: true,
+  include_screenshots: true,
+  include_reviews: true,
+};
 
 function encodeQueueResponse(appIds, extraFields = []) {
   const payload = appIds.flatMap((appId) => {
@@ -72,6 +82,7 @@ async function runPrefilter({
       "content-type": "application/octet-stream",
     },
   }));
+  const initialResponse = responses[0];
   const originalGlobals = {
     document: globalThis.document,
     HTMLElement: globalThis.HTMLElement,
@@ -119,6 +130,12 @@ async function runPrefilter({
     },
   };
   globalThis.window = {
+    StoreItemCache: {
+      async QueueMultipleAppRequests(appIds) {
+        calls.push(["store-items", [...appIds]]);
+        return 1;
+      },
+    },
     fetch: originalFetch,
     g_sessionID: "session",
   };
@@ -132,17 +149,20 @@ async function runPrefilter({
         isFree: matchingAppIds.includes(numericAppId),
       };
     },
-    async loadStoreItems(appIds) {
-      calls.push(["store-items", [...appIds]]);
-      return true;
-    },
   });
   try {
     const response = await window.fetch(INITIAL_QUEUE_URL);
+    const body = new Uint8Array(await response.clone().arrayBuffer());
+    const appIds = decodeDiscoveryQueueAppIds(body);
+    await window.StoreItemCache.QueueMultipleAppRequests(
+      appIds,
+      DISCOVERY_QUEUE_DATA_REQUEST,
+    );
     return {
-      appIds: decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer()),
-      body: new Uint8Array(await response.arrayBuffer()),
+      appIds,
+      body,
       calls,
+      initialResponse,
       response,
     };
   } finally {
@@ -155,19 +175,29 @@ async function runPrefilter({
   }
 }
 
-test("fully filtered batches rebuild before Steam receives a queue", async () => {
+test("original protobuf response stays untouched while fully filtered batches rebuild", async () => {
+  const initialBody = encodeQueueResponse([42]);
   const result = await runPrefilter({
-    queueBodies: [encodeQueueResponse([42]), encodeQueueResponse([43])],
-    successfulIgnores: [42],
-    matchingAppIds: [42],
+    queueBodies: [
+      initialBody,
+      encodeQueueResponse([43]),
+      encodeQueueResponse([44]),
+    ],
+    successfulIgnores: [42, 43],
+    matchingAppIds: [42, 43],
   });
-  assert.deepEqual(result.appIds, [43]);
+  assert.strictEqual(result.response, result.initialResponse);
+  assert.deepEqual(result.body, initialBody);
+  assert.deepEqual(result.appIds, [44]);
   assert.deepEqual(result.calls, [
     ["queue", false],
     ["store-items", [42]],
     ["ignore", 42],
     ["queue", true],
     ["store-items", [43]],
+    ["ignore", 43],
+    ["queue", true],
+    ["store-items", [44]],
   ]);
 });
 
@@ -186,10 +216,16 @@ test("successful ignores are removed before delivery while failures stay ordered
   assert.deepEqual(result.appIds, [43, 44]);
   assert.deepEqual([...result.body], [
     0x12, 0x03, 0x75, 0x6e, 0x6b,
-    0x0a, 0x02, 0x2b, 0x2c,
+    0x0a, 0x03, 0x2a, 0x2b, 0x2c,
     0x28, 0x01,
   ]);
-  assert.equal(result.response.headers.has("content-length"), false);
+  assert.strictEqual(result.response, result.initialResponse);
+  assert.deepEqual(result.calls, [
+    ["queue", false],
+    ["store-items", [42, 43, 44]],
+    ["ignore", 42],
+    ["ignore", 43],
+  ]);
 });
 
 test("queue exhaustion delivers Steam's summary sentinel instead of an empty queue", async () => {
@@ -216,6 +252,10 @@ test("background preview responses pass through without loading or ignoring", as
     matchingAppIds: [42],
   });
   assert.deepEqual(result.appIds, [42]);
-  assert.deepEqual(result.calls, [["queue", false]]);
+  assert.deepEqual(result.calls, [
+    ["queue", false],
+    ["store-items", [42]],
+  ]);
   assert.deepEqual(result.body, body);
+  assert.strictEqual(result.response, result.initialResponse);
 });

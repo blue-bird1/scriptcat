@@ -10,6 +10,8 @@ const ADVANCE_DELAY_MS = 50;
 const CLASSIC_NEXT_SELECTOR =
   "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
 const MODAL_WISHLIST_PATH = "/api/addtowishlist";
+const MODAL_QUEUE_SELECTOR =
+  '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
 
 function isVisible(element) {
   return Boolean(
@@ -138,6 +140,34 @@ function startClassicQueue() {
   queueActions.addEventListener("click", handleClick, true);
   window.addEventListener("pagehide", stop, { once: true });
   return stop;
+}
+
+function startModalReviewCountFix() {
+  const root = document.body;
+  if (!(root instanceof HTMLElement)) {
+    return () => {};
+  }
+
+  function normalize() {
+    const dialog = document.querySelector(MODAL_QUEUE_SELECTOR);
+    if (!(dialog instanceof HTMLElement)) {
+      return;
+    }
+    for (const element of dialog.querySelectorAll("[aria-label]")) {
+      if (element.childElementCount > 0) {
+        continue;
+      }
+      const match = element.textContent?.trim().match(/^\(\((.+)\)\)$/u);
+      if (match) {
+        element.textContent = `(${match[1]})`;
+      }
+    }
+  }
+
+  const observer = new MutationObserver(normalize);
+  observer.observe(root, { characterData: true, childList: true, subtree: true });
+  normalize();
+  return () => observer.disconnect();
 }
 
 function findModalNextButton(dialog) {
@@ -401,11 +431,11 @@ export function startSteamDiscoveryQueue() {
   const stopPrefilter = startDiscoveryQueuePrefilter({
     getLocalizedTags: storeItemReader.getLocalizedTags,
     getStoreItem: storeItemReader.get,
-    loadStoreItems: storeItemReader.loadBatch,
   });
   const stopModalQueue = startModalQueue();
   let stopClassicQueue = () => {};
   let stopAutoFilter = () => {};
+  let stopReviewCountFix = () => {};
   let stopped = false;
 
   function startQueueControllersWhenReady() {
@@ -414,6 +444,7 @@ export function startSteamDiscoveryQueue() {
       stopAutoFilter = startDiscoveryQueueAutoFilter({
         getStoreItem: storeItemReader.get,
       });
+      stopReviewCountFix = startModalReviewCountFix();
     }
   }
 
@@ -432,6 +463,7 @@ export function startSteamDiscoveryQueue() {
     stopPrefilter();
     stopClassicQueue();
     stopAutoFilter();
+    stopReviewCountFix();
     storeItemReader.stop();
   };
 }
