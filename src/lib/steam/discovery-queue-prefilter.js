@@ -316,6 +316,7 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
   }
 
   const permits = new Map();
+  const deliveredDialogs = new WeakSet();
   const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
   const originalFetch = window.fetch;
   let stopped = false;
@@ -325,12 +326,11 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
   let originalQueueMultiple;
   let queueMultipleWrapper;
 
-  function grantPermit(appIds, request, args, receiver, dialog) {
+  function grantPermit(appIds, request, args, receiver) {
     const key = appIdKey(appIds);
-    if (key !== undefined && appIds.length > 0 && dialog) {
+    if (key !== undefined && appIds.length > 0) {
       permits.set(key, {
         args,
-        dialog,
         expiresAt: Date.now() + PERMIT_DURATION_MS,
         receiver,
         request,
@@ -472,7 +472,6 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
       return responsePromise;
     }
     const receiver = this;
-    const dialog = getDiscoveryQueueDialog();
     return Promise.resolve(responsePromise).then(async (response) => {
       if (stopped || !response?.ok || !isOctetStream(response)) {
         return response;
@@ -480,7 +479,7 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
       try {
         const appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
         if (!stopped && appIds) {
-          grantPermit(appIds, request, args, receiver, dialog);
+          grantPermit(appIds, request, args, receiver);
         }
       } catch {
         return response;
@@ -513,9 +512,10 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
         }
 
         const permit = takePermit(snapshot);
-        if (!permit || permit.dialog !== dialog) {
+        if (deliveredDialogs.has(dialog) && !permit?.request.queueRequest.rebuild) {
           return result;
         }
+        deliveredDialogs.add(dialog);
 
         let config;
         try {
@@ -536,6 +536,10 @@ export function startDiscoveryQueuePrefilter({ getStoreItem, getLocalizedTags } 
           }
           if (retainedAppIds.length > 0) {
             replaceAppIds(appIds, retainedAppIds);
+            return value;
+          }
+          if (!permit) {
+            replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
             return value;
           }
           const nextAppIds = await loadNextVisibleBatch(

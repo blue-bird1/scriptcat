@@ -1498,6 +1498,7 @@
       };
     }
     const permits = /* @__PURE__ */ new Map();
+    const deliveredDialogs = /* @__PURE__ */ new WeakSet();
     const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
     const originalFetch = window.fetch;
     let stopped = false;
@@ -1506,12 +1507,11 @@
     let queueCache;
     let originalQueueMultiple;
     let queueMultipleWrapper;
-    function grantPermit(appIds, request, args, receiver, dialog) {
+    function grantPermit(appIds, request, args, receiver) {
       const key = appIdKey(appIds);
-      if (key !== void 0 && appIds.length > 0 && dialog) {
+      if (key !== void 0 && appIds.length > 0) {
         permits.set(key, {
           args,
-          dialog,
           expiresAt: Date.now() + PERMIT_DURATION_MS,
           receiver,
           request
@@ -1635,7 +1635,6 @@
         return responsePromise;
       }
       const receiver = this;
-      const dialog = getDiscoveryQueueDialog();
       return Promise.resolve(responsePromise).then(async (response) => {
         if (stopped || !response?.ok || !isOctetStream(response)) {
           return response;
@@ -1643,7 +1642,7 @@
         try {
           const appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
           if (!stopped && appIds) {
-            grantPermit(appIds, request, args, receiver, dialog);
+            grantPermit(appIds, request, args, receiver);
           }
         } catch {
           return response;
@@ -1669,9 +1668,10 @@
             return result;
           }
           const permit = takePermit(snapshot);
-          if (!permit || permit.dialog !== dialog) {
+          if (deliveredDialogs.has(dialog) && !permit?.request.queueRequest.rebuild) {
             return result;
           }
+          deliveredDialogs.add(dialog);
           let config;
           try {
             config = loadDiscoveryQueueConfig();
@@ -1690,6 +1690,10 @@
             }
             if (retainedAppIds.length > 0) {
               replaceAppIds(appIds, retainedAppIds);
+              return value;
+            }
+            if (!permit) {
+              replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
               return value;
             }
             const nextAppIds = await loadNextVisibleBatch(

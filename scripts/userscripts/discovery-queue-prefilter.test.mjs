@@ -71,12 +71,10 @@ function encodeQueueResponse(appIds, extraFields = []) {
 
 async function runPrefilter({
   dialogPresent = true,
-  showDialogWhileFetchPending = false,
   queueBodies,
   successfulIgnores = [],
   matchingAppIds = [],
 }) {
-  let dialogVisible = dialogPresent;
   const calls = [];
   const responses = queueBodies.map((body) => new Response(body, {
     headers: {
@@ -105,10 +103,6 @@ async function runPrefilter({
       ]);
       const response = responses.shift();
       assert.ok(response, "unexpected extra queue rebuild");
-      if (showDialogWhileFetchPending) {
-        await Promise.resolve();
-        dialogVisible = true;
-      }
       return response;
     }
     assert.equal(url, "/recommended/ignorerecommendation");
@@ -117,19 +111,18 @@ async function runPrefilter({
     calls.push(["ignore", appId]);
     return Response.json({ success: successfulIgnores.includes(appId) ? 1 : 2 });
   };
-  globalThis.HTMLElement = class HTMLElement {};
-  const dialog = new globalThis.HTMLElement();
   globalThis.document = {
     querySelector(selector) {
       if (selector.startsWith("#application_config")) {
         return { dataset: { config: JSON.stringify({ SNR: "1_4_4_" }) } };
       }
       if (selector.startsWith('[role="dialog"]')) {
-        return dialogVisible ? dialog : null;
+        return dialogPresent ? new globalThis.HTMLElement() : null;
       }
       return null;
     },
   };
+  globalThis.HTMLElement = class HTMLElement {};
   globalThis.location = { href: "https://store.steampowered.com/" };
   globalThis.localStorage = {
     getItem() {
@@ -254,24 +247,6 @@ test("background preview responses pass through without loading or ignoring", as
   const body = encodeQueueResponse([42]);
   const result = await runPrefilter({
     dialogPresent: false,
-    queueBodies: [body],
-    successfulIgnores: [42],
-    matchingAppIds: [42],
-  });
-  assert.deepEqual(result.appIds, [42]);
-  assert.deepEqual(result.calls, [
-    ["queue", false],
-    ["store-items", [42]],
-  ]);
-  assert.deepEqual(result.body, body);
-  assert.strictEqual(result.response, result.initialResponse);
-});
-
-test("a pending homepage preview stays ineligible when the dialog opens", async () => {
-  const body = encodeQueueResponse([42]);
-  const result = await runPrefilter({
-    dialogPresent: false,
-    showDialogWhileFetchPending: true,
     queueBodies: [body],
     successfulIgnores: [42],
     matchingAppIds: [42],
