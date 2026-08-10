@@ -42,14 +42,45 @@
 
 ## Steam 商店探索队列 (store.steampowered.com)
 
-- **页面与启动**：Steam 同时提供首页 React 探索队列和经典应用页队列。首页在 `https://store.steampowered.com/` 原 URL 内打开 `[role="dialog"]` 模态框；经典队列位于查询参数含 `queue=1` 的 `/app/<appid>/...` 页面。自动筛选和队列结束后自动继续均默认关闭；DLC 过滤受自动筛选总开关控制，自动继续使用独立开关。
-- **筛选规则**：筛选器保存为规则集合；每条规则描述一个可比较字段及其条件，项目满足任一规则即命中（OR）。缺少规则所需数据的项目不命中并跳过，不以默认值、猜测值或失败响应代替数据。
-- **项目数据与 React 预筛选**：首页队列通过 `IStoreService/GetDiscoveryQueue` 取得 AppID，并通过 `IStoreBrowseService/GetItems` 载入 `StoreItem`。首次打开 React 队列时，预筛选以包含 `dq=widget` 探索链接的队列对话框和 Steam 队列数据请求字段共同确认用户已启动队列；首页预览没有队列对话框，因此只加载数据而不修改忽略列表。后续批次以 `GetDiscoveryQueue` 的 `rebuild_queue=true`、`queue_type=0` 响应与同一批 AppID 建立一次性对应关系。确认后的 `QueueMultipleAppRequests` 在 React 渲染卡片前读取 `StoreItem` 数据并按规则评估。标签来自 `StoreItem` 标签缓存的本地化名称，保持缓存中的标签顺序。命中的 AppID 直接提交同源 `POST /recommended/ignorerecommendation`；只有响应成功且返回成功标记时才从待渲染批次移除，未调用 `SkipDiscoveryQueueItem` 或 impression 接口，因此从未渲染的项目不会产生浏览记录。请求解析、缓存、规则评估或忽略请求失败时保留原批次数据并交给 Steam 原生流程。
-- **项目数据与后置回退**：`StoreItem` 的 `GetAppType()` 返回 `4` 表示 DLC；字段缺失时通过 `QueueAppRequest({ include_basic_info: true })` 补齐，仍未知时才由同源 `appdetails` 的明确 `type` 字段兜底。价格、免费状态、发行日期、评论数和好评率优先复用队列数据，其中评论口径跟随 Steam 当前的评测偏好，与首页评论悬浮提示一致。语言规则允许多选必须包含的语言；`GetAllLanguagesWithSomeSupport` 返回的语言只要任一项与所选语言相同，即表示该游戏至少以界面、字幕或完整音频中的一种形式支持玩家可读语言并予以保留。选择简体中文、繁体中文或 Steam 中国简体中文时，若 `GetShortDescription` 含 Han 字符，脚本直接判定为可读，不补载语言字段；其余项目缺少语言数据时，将 `include_supported_languages` 合并到缓存自身按需执行的 `QueueAppRequest`。语言数据仍未知时不自动忽略。其他缓存字段缺失时同样先由 `QueueAppRequest` 补齐，缓存不可用或字段仍缺失时才分别回退同源 `appdetails` 或 `appreviews`。预筛选不可用时，React 队列按渲染后的 DOM 运行原有后置筛选，未知项目保持可见。经典 `?queue=1` 商品页读取当前页面展示的 `user_reviews_summary_row`：microdata `reviewCount` 提供评论数，`data-tooltip-html` 提供按整数显示的好评率；经典队列行为不受 React 预筛选影响。规则集合和自动化开关通过 `localStorage` 持久化，页面和队列切换后继续使用同一配置。
-- **个人资料功能限制**：商品页以 `bVetted` 决定显示“个人资料功能受限”或“Steam 正在了解此游戏”；`StoreItem` 和 `appdetails` 不提供该字段。对应规则仅在所有既有规则均未命中后，通过已登录商店页的 WebAPI 凭据调用 `IPlayerService/GetAchievementsProgress/v1/`，并设置 `include_unvetted_apps`。返回项目的 `vetted=true` 表示正常，`false` 或 protobuf 默认值省略表示功能受限；缺少项目或响应异常时保持未知并不忽略。请求按 AppID 缓存且串行执行，出现 `429` 后本页不再发起该检查。
-- **自动动作时序**：预筛选命中的项目在 React 渲染前直接忽略；后置筛选仅处理已渲染卡片。后置命中触发当前队列的原生忽略控件；愿望单请求成功且按钮选中类稳定后进入下一项，忽略点击在当前事件派发完成后直接进入下一项，不等待忽略请求响应。未命中或数据缺失时停留当前项目。自动继续不增加定时延迟，并以控件节点为单位防止重复点击。
-- **首页模态框动作**：队列对话框包含 `dq=widget` 的 `/explore` 说明链接。当前卡片操作区由商店页面链接、愿望单按钮和忽略按钮依次组成；按钮的 `aria-label` 会随站点语言变化，因此按操作区内的位置识别，不依赖翻译文本。愿望单请求为 `POST /api/addtowishlist`，后置忽略使用 Steam 原生控件。脚本在 `document-start` 监控愿望单请求；响应成功且操作按钮的选中类稳定后，从尺寸和水平位置成对的轮播按钮中点击右侧按钮进入下一项。每批队列末尾是 summary 卡；启用自动继续时，仅在同时存在 Done 和 Continue 的 summary 卡上点击原生 Continue 加载下一批，已耗尽且仅有 Done 时不再继续。
-- **经典队列动作**：Steam 通过 `POST /api/addtowishlist` 处理 `#add_to_wishlist_area a.add_to_wishlist` 的操作；成功状态为 `#add_to_wishlist_area_success` 可见，失败状态为 `#add_to_wishlist_area_fail` 可见。忽略通过 `POST /recommended/ignorerecommendation/` 提交 `sessionid`、`appid`、`snr`、`ignore_reason`；忽略前控件为 `.queue_btn_ignore .queue_btn_inactive`，菜单项为 `#queue_ignore_menu_option_not_interested` 和 `#queue_ignore_menu_option_owned_elsewhere`。愿望单成功后点击 `#nextInDiscoveryQueue .btn_next_in_queue_trigger`；忽略点击在当前事件派发完成后直接点击该控件，不等待忽略请求响应。下一项控件由其所属的 `#next_in_queue_form` 提交并进入下一项。队列结束时 Steam 显示 `.discover_queue_empty`，普通探索队列通过其中同源 `/explore/startnew/0/` 链接开始下一批。
+### 页面与规则
+
+- Steam 首页在当前 URL 内打开 React `[role="dialog"]` 队列。经典队列位于查询参数含 `queue=1` 的 `/app/<appid>/...` 页面。
+- 自动筛选和队列结束后自动继续均默认关闭。DLC 规则受自动筛选总开关控制，自动继续使用独立开关。
+- 多条启用规则按 OR 匹配。规则所需数据缺失时不命中，不使用默认值、猜测值或失败响应代替数据。
+- 规则和自动化开关通过 `localStorage` 持久化，并在页面和队列切换后继续生效。
+
+### React 预筛选
+
+- `IStoreService/GetDiscoveryQueue` 提供 AppID，`IStoreBrowseService/GetItems` 加载对应 `StoreItem`。
+- 首次打开队列时，脚本同时检查包含 `dq=widget` 探索链接的对话框和 Steam 队列数据请求字段。首页预览没有该对话框，只加载数据，不修改忽略列表。
+- 后续批次使用 `queue_type=0`、`rebuild_queue=true` 的 `GetDiscoveryQueue` 响应，与同序 AppID 批次建立一次性对应关系。
+- 对应的 `QueueMultipleAppRequests` 完成后，脚本在 React 渲染前读取 `StoreItem` 并评估规则。标签使用标签缓存中的本地化名称，并保持缓存顺序。
+- 命中项通过 `POST /recommended/ignorerecommendation` 标记为不感兴趣。只有 HTTP 与响应成功标记均确认后，AppID 才从待渲染批次移除。
+- 预筛选不调用 `SkipDiscoveryQueueItem` 或 impression 接口。未渲染项目不产生浏览记录。
+- 请求解析、缓存、规则评估或忽略请求失败时保留项目，并交给 Steam 原生流程。
+
+### 数据与回退
+
+- `StoreItem.GetAppType()` 返回 `4` 表示 DLC。字段缺失时先请求 `include_basic_info`，仍未知时再读取同源 `appdetails` 的 `type`。
+- 价格、免费状态、发行日期、评论数和好评率优先使用队列数据。评论口径跟随 Steam 当前评测偏好。
+- 语言规则使用 `GetAllLanguagesWithSomeSupport()`。所选中文语言可由包含 Han 字符的短描述直接满足；其他缺失语言字段通过 `include_supported_languages` 补齐。
+- 缓存字段缺失时先使用 `QueueAppRequest`。缓存不可用或字段仍缺失时，详情与评论分别回退到同源 `appdetails` 和 `appreviews`。
+- 个人资料功能限制规则最后调用 `IPlayerService/GetAchievementsProgress/v1/`。请求按 AppID 缓存并串行执行；收到 `429` 后本页停止该检查。未知结果不命中。
+- 预筛选不可用时，React 队列对已渲染卡片执行后置筛选。未知项目保持可见。
+
+### React 后置动作
+
+- 队列对话框通过包含 `dq=widget` 的 `/explore` 链接识别。操作按钮按结构和位置识别，不依赖本地化 `aria-label` 文本。
+- 后置命中使用 Steam 原生忽略控件，并在点击事件派发完成后进入下一项。未命中或数据缺失时停留当前项目。
+- 愿望单使用 `POST /api/addtowishlist`。响应成功且按钮选中类稳定后，脚本点击右侧轮播按钮进入下一项。
+- 每批末尾显示 summary 卡。启用自动继续时，仅在同时存在 Done 和 Continue 时点击 Continue；已耗尽且仅有 Done 时停止。
+
+### 经典队列
+
+- 商品页评论数来自 `user_reviews_summary_row` 的 `reviewCount`，整数好评率来自 `data-tooltip-html`。经典队列不使用 React 预筛选。
+- 愿望单使用 `POST /api/addtowishlist`。成功或失败状态分别由 `#add_to_wishlist_area_success` 和 `#add_to_wishlist_area_fail` 表示。
+- 忽略使用 `POST /recommended/ignorerecommendation/`，提交 `sessionid`、`appid`、`snr` 和 `ignore_reason`。忽略点击完成后立即进入下一项，不等待响应。
+- `#nextInDiscoveryQueue .btn_next_in_queue_trigger` 通过 `#next_in_queue_form` 提交下一项。队列结束后，`.discover_queue_empty` 中的 `/explore/startnew/0/` 链接开始下一批。
 
 ## SteamPy (steampy.com)
 
