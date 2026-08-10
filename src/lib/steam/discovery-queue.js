@@ -427,8 +427,8 @@ export function startSteamDiscoveryQueue() {
   return () => {
     stopped = true;
     document.removeEventListener("DOMContentLoaded", startQueueControllersWhenReady);
-    stopPrefilter();
     stopModalQueue();
+    stopPrefilter();
     stopClassicQueue();
     stopAutoFilter();
     storeItemReader.stop();
