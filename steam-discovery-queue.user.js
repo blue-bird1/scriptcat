@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.17
+// @version      0.3.18
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -1499,7 +1499,11 @@
     let total = 0;
     let batches = 0;
     let element;
+    let closed = false;
     function ensureElement() {
+      if (closed) {
+        return void 0;
+      }
       if (element?.isConnected) {
         return element;
       }
@@ -1544,29 +1548,38 @@
       beginEvaluation() {
         render(`正在筛选第 ${batches} 批`);
       },
-      record(appId, result) {
+      recordEvaluation(appId, result) {
         checked += 1;
-        if (result?.ignored === true) {
-          ignored += 1;
-        }
         render(`正在筛选第 ${batches} 批`);
         if (result?.matched === true) {
           console.info("[Steam 探索队列] 规则命中", {
             appId,
-            ignored: result.ignored === true,
             reasons: result.reasons
           });
         }
       },
-      finishBatch(retainedAppIds) {
-        console.info("[Steam 探索队列] 批次完成", {
+      recordIgnore(appId, succeeded) {
+        if (succeeded) {
+          ignored += 1;
+          render(`正在忽略第 ${batches} 批命中项`);
+          console.info("[Steam 探索队列] 忽略成功", { appId });
+        } else {
+          console.warn("[Steam 探索队列] 忽略失败，已从当前展示中筛除", {
+            appId
+          });
+        }
+      },
+      finishBatch(retainedAppIds, matchedAppIds) {
+        console.info("[Steam 探索队列] 批次筛选完成", {
           batch: batches,
           checked,
           ignored,
+          matchedAppIds: [...matchedAppIds],
           retainedAppIds: [...retainedAppIds]
         });
       },
       close() {
+        closed = true;
         element?.remove();
         element = void 0;
       }
@@ -1656,7 +1669,7 @@
       }
       reporter?.beginEvaluation();
       const matches = await runWithConcurrency(appIds, async (appId) => {
-        let report = { ignored: false, matched: false, reasons: [] };
+        let report = { matched: false, reasons: [] };
         try {
           const tags = config.excludedTags?.enabled && typeof getLocalizedTags === "function" ? await getLocalizedTags(String(appId)) : [];
           const result = await ruleEngine.evaluate({
@@ -1667,25 +1680,29 @@
           if (!result?.matched || stopped || currentGeneration !== generation) {
             return false;
           }
-          const ignored = await ignoreApp(appId);
           report = {
-            ignored,
             matched: true,
             reasons: Array.isArray(result.reasons) ? result.reasons : []
           };
-          return ignored;
+          return true;
         } catch {
           return false;
         } finally {
-          reporter?.record(appId, report);
+          reporter?.recordEvaluation(appId, report);
         }
       });
       if (stopped || currentGeneration !== generation) {
         return void 0;
       }
       const retainedAppIds = appIds.filter((_, index) => matches[index] !== true);
-      reporter?.finishBatch(retainedAppIds);
-      return retainedAppIds;
+      const matchedAppIds = appIds.filter((_, index) => matches[index] === true);
+      reporter?.finishBatch(retainedAppIds, matchedAppIds);
+      const ignoreCompletion = runWithConcurrency(matchedAppIds, async (appId) => {
+        const succeeded = await ignoreApp(appId);
+        reporter?.recordIgnore(appId, succeeded);
+        return succeeded;
+      });
+      return { ignoreCompletion, retainedAppIds };
     }
     function replaceAppIds(target, replacement) {
       target.splice(0, target.length, ...replacement);
@@ -1722,18 +1739,19 @@
         } catch {
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
-        const retainedAppIds = await prefilter(
+        const filteredBatch = await prefilter(
           appIds,
           config,
           currentGeneration,
           reporter
         );
-        if (!retainedAppIds) {
+        if (!filteredBatch) {
           return appIds;
         }
-        if (retainedAppIds.length > 0) {
-          return retainedAppIds;
+        if (filteredBatch.retainedAppIds.length > 0) {
+          return filteredBatch.retainedAppIds;
         }
+        await filteredBatch.ignoreCompletion;
       }
       return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
     }
@@ -1800,17 +1818,21 @@
           const reporter = createPrefilterReporter();
           reporter.beginBatch(snapshot);
           return Promise.resolve(result).then(async (value) => {
-            const retainedAppIds = await prefilter(
+            const filteredBatch = await prefilter(
               snapshot,
               config,
               currentGeneration,
               reporter
             );
-            if (!retainedAppIds || stopped || currentGeneration !== generation) {
+            if (!filteredBatch || stopped || currentGeneration !== generation) {
               return value;
             }
-            if (retainedAppIds.length > 0) {
-              replaceAppIds(appIds, retainedAppIds);
+            if (filteredBatch.retainedAppIds.length > 0) {
+              replaceAppIds(appIds, filteredBatch.retainedAppIds);
+              return value;
+            }
+            await filteredBatch.ignoreCompletion;
+            if (stopped || currentGeneration !== generation) {
               return value;
             }
             if (!permit) {

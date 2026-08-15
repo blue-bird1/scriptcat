@@ -218,8 +218,18 @@ function encodeQueueResponse(appIds, extraFields = []) {
   ]);
 }
 
+function createDeferred() {
+  let resolve;
+  const promise = new Promise((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 async function runPrefilter({
+  beforeQueueSettles,
   dialogPresent = true,
+  ignoreResponses = new Map(),
   queueBodies,
   successfulIgnores = [],
   matchingAppIds = [],
@@ -258,6 +268,9 @@ async function runPrefilter({
     assert.equal(init?.method, "POST");
     const appId = Number(init.body.get("appid"));
     calls.push(["ignore", appId]);
+    if (ignoreResponses.has(appId)) {
+      return await ignoreResponses.get(appId);
+    }
     return Response.json({ success: successfulIgnores.includes(appId) ? 1 : 2 });
   };
   globalThis.document = {
@@ -311,10 +324,12 @@ async function runPrefilter({
     const response = await window.fetch(INITIAL_QUEUE_URL);
     const body = new Uint8Array(await response.clone().arrayBuffer());
     const appIds = decodeDiscoveryQueueAppIds(body);
-    await window.StoreItemCache.QueueMultipleAppRequests(
+    const queueResult = window.StoreItemCache.QueueMultipleAppRequests(
       appIds,
       DISCOVERY_QUEUE_DATA_REQUEST,
     );
+    await beforeQueueSettles?.({ appIds, calls, queueResult });
+    await queueResult;
     return {
       appIds,
       body,
@@ -361,7 +376,7 @@ test("original protobuf response stays untouched while fully filtered batches re
   ]);
 });
 
-test("successful ignores are removed before delivery while failures stay ordered", async () => {
+test("rule matches are removed before delivery even when ignores fail", async () => {
   const result = await runPrefilter({
     queueBodies: [
       Uint8Array.from([
@@ -373,7 +388,7 @@ test("successful ignores are removed before delivery while failures stay ordered
     successfulIgnores: [42],
     matchingAppIds: [42, 43],
   });
-  assert.deepEqual(result.appIds, [43, 44]);
+  assert.deepEqual(result.appIds, [44]);
   assert.deepEqual([...result.body], [
     0x12, 0x03, 0x75, 0x6e, 0x6b,
     0x0a, 0x03, 0x2a, 0x2b, 0x2c,
@@ -386,6 +401,41 @@ test("successful ignores are removed before delivery while failures stay ordered
     ["prepare", [42, 43, 44], [6, 7]],
     ["ignore", 42],
     ["ignore", 43],
+  ]);
+});
+
+test("retained apps are delivered without waiting for matched app ignores", async () => {
+  const ignoreResponse = createDeferred();
+  const result = await runPrefilter({
+    beforeQueueSettles: async ({ appIds, queueResult }) => {
+      let timer;
+      try {
+        await Promise.race([
+          queueResult,
+          new Promise((_, reject) => {
+            timer = setTimeout(
+              () => reject(new Error("retained apps stayed blocked by ignore")),
+              100,
+            );
+          }),
+        ]);
+      } finally {
+        clearTimeout(timer);
+      }
+      assert.deepEqual(appIds, [44]);
+      ignoreResponse.resolve(Response.json({ success: 1 }));
+    },
+    ignoreResponses: new Map([[42, ignoreResponse.promise]]),
+    matchingAppIds: [42],
+    queueBodies: [encodeQueueResponse([42, 44])],
+  });
+
+  assert.deepEqual(result.appIds, [44]);
+  assert.deepEqual(result.calls, [
+    ["queue", false],
+    ["store-items", [42, 44]],
+    ["prepare", [42, 44], [6, 7]],
+    ["ignore", 42],
   ]);
 });
 
