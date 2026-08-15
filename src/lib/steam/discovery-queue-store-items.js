@@ -14,7 +14,7 @@ function getStoreItemCache() {
     : undefined;
 }
 
-async function waitForStoreItemCache(logger) {
+async function waitForStoreItemCache() {
   const existing = getStoreItemCache();
   if (existing) {
     return existing;
@@ -28,7 +28,6 @@ async function waitForStoreItemCache(logger) {
       return cache;
     }
   }
-  logger?.warn("cache.unavailable", { waitedMs: CACHE_WAIT_MS });
   return undefined;
 }
 
@@ -37,53 +36,19 @@ function toSafeNonNegativeInteger(value) {
   return Number.isSafeInteger(number) && number >= 0 ? number : undefined;
 }
 
-function readArray(getter, logger, field, appId) {
+function readArray(getter, appId, fieldName) {
   try {
     const value = getter();
     return Array.isArray(value)
       ? value.filter((entry) => Number.isSafeInteger(entry) && entry > 0)
       : [];
   } catch (error) {
-    logger?.error("item.read.error", error, { appId, field });
+    console.error(`[Steam 探索队列] 读取 App ${appId} 的${fieldName}时出错`, error);
     return [];
   }
 }
 
-function readTagIds(item, logger, appId) {
-  if (!item) {
-    logger?.warn("tags.unavailable", {
-      appId,
-      reason: "store-item-missing",
-    });
-    return undefined;
-  }
-  if (typeof item.GetTagIDs !== "function") {
-    logger?.warn("tags.unavailable", {
-      appId,
-      reason: "getter-missing",
-    });
-    return undefined;
-  }
-  try {
-    const value = item.GetTagIDs();
-    if (!Array.isArray(value)) {
-      logger?.warn("tags.unavailable", {
-        appId,
-        reason: "getter-returned-non-array",
-        value,
-      });
-      return undefined;
-    }
-    return value.filter(
-      (entry) => Number.isSafeInteger(entry) && entry > 0,
-    );
-  } catch (error) {
-    logger?.error("tags.read.error", error, { appId });
-    return undefined;
-  }
-}
-
-function readSupportedLanguages(item, logger, appId) {
+function readSupportedLanguages(item, appId) {
   if (typeof item.GetAllLanguagesWithSomeSupport !== "function") {
     return undefined;
   }
@@ -100,15 +65,12 @@ function readSupportedLanguages(item, logger, appId) {
         ]
       : undefined;
   } catch (error) {
-    logger?.error("item.read.error", error, {
-      appId,
-      field: "supportedLanguages",
-    });
+    console.error(`[Steam 探索队列] 读取 App ${appId} 的支持语言时出错`, error);
     return undefined;
   }
 }
 
-function readDescriptionHasChinese(item, logger, appId) {
+function readDescriptionHasChinese(item, appId) {
   if (typeof item.GetShortDescription !== "function") {
     return undefined;
   }
@@ -119,15 +81,12 @@ function readDescriptionHasChinese(item, logger, appId) {
       ? /\p{Script=Han}/u.test(description)
       : undefined;
   } catch (error) {
-    logger?.error("item.read.error", error, {
-      appId,
-      field: "descriptionHasChinese",
-    });
+    console.error(`[Steam 探索队列] 读取 App ${appId} 的商店简介时出错`, error);
     return undefined;
   }
 }
 
-function readAppType(item, logger, appId) {
+function readAppType(item, appId) {
   if (typeof item?.GetAppType !== "function") {
     return undefined;
   }
@@ -136,7 +95,7 @@ function readAppType(item, logger, appId) {
     const appType = item.GetAppType();
     return Number.isSafeInteger(appType) && appType >= 0 ? appType : undefined;
   } catch (error) {
-    logger?.error("item.read.error", error, { appId, field: "appType" });
+    console.error(`[Steam 探索队列] 读取 App ${appId} 的应用类型时出错`, error);
     return undefined;
   }
 }
@@ -156,7 +115,7 @@ function buildStoreItemRequest(requirements, appType) {
   return request;
 }
 
-function readReviewSummary(item, logger, appId) {
+function readReviewSummary(item, appId) {
   const preferUnfiltered =
     window.GDynamicStore?.s_preferences?.review_score_preference === 1;
   const summaryGetter = preferUnfiltered
@@ -167,10 +126,7 @@ function readReviewSummary(item, logger, appId) {
   try {
     summary = summaryGetter?.call(item);
   } catch (error) {
-    logger?.error("item.read.error", error, {
-      appId,
-      field: "reviewSummary",
-    });
+    console.error(`[Steam 探索队列] 读取 App ${appId} 的评测摘要时出错`, error);
     return {};
   }
 
@@ -189,7 +145,7 @@ function readReviewSummary(item, logger, appId) {
   };
 }
 
-function readStoreItem(item, appId, logger) {
+function readStoreItem(item, appId) {
   if (!item || typeof item !== "object") {
     return undefined;
   }
@@ -201,21 +157,33 @@ function readStoreItem(item, appId, logger) {
 
     const purchase = item.GetBestPurchaseOption?.();
     const comingSoon = item.BIsComingSoon?.();
-    const appType = readAppType(item, logger, appId);
-    const reviews = readReviewSummary(item, logger, appId);
+    const appType = readAppType(item, appId);
+    const reviews = readReviewSummary(item, appId);
     const storeItem = {
       appId,
       success: 1,
       isFree: item.BIsFree?.(),
       comingSoon,
-      descriptionHasChinese: readDescriptionHasChinese(item, logger, appId),
+      descriptionHasChinese: readDescriptionHasChinese(item, appId),
       isDlc: appType === undefined ? undefined : appType === DLC_APP_TYPE,
-      supportedLanguages: readSupportedLanguages(item, logger, appId),
-      tagIds: readArray(() => item.GetTagIDs?.(), logger, "tagIds", appId),
+      supportedLanguages: readSupportedLanguages(item, appId),
+      tagIds: readArray(() => item.GetTagIDs?.(), appId, "标签"),
       categoryIds: {
-        supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.(), logger, "supportedPlayers", appId),
-        features: readArray(() => item.GetStoreCategories_Features?.(), logger, "features", appId),
-        controllers: readArray(() => item.GetStoreCategories_Controller?.(), logger, "controllers", appId),
+        supportedPlayers: readArray(
+          () => item.GetStoreCategories_SupportedPlayers?.(),
+          appId,
+          "玩家模式分类",
+        ),
+        features: readArray(
+          () => item.GetStoreCategories_Features?.(),
+          appId,
+          "功能分类",
+        ),
+        controllers: readArray(
+          () => item.GetStoreCategories_Controller?.(),
+          appId,
+          "控制器分类",
+        ),
       },
       ...reviews,
     };
@@ -232,15 +200,13 @@ function readStoreItem(item, appId, logger) {
     }
     return storeItem;
   } catch (error) {
-    logger?.error("item.read.error", error, { appId, field: "storeItem" });
+    console.error(`[Steam 探索队列] 读取 App ${appId} 的 Steam 商店缓存时出错`, error);
     return undefined;
   }
 }
 
-export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
-  const tagCatalog = createDiscoveryQueueTagCatalog({
-    logger: logger?.child?.("tags") ?? logger,
-  });
+export function createDiscoveryQueueStoreItemReader() {
+  const tagCatalog = createDiscoveryQueueTagCatalog();
   let stopped = false;
 
   return {
@@ -253,7 +219,7 @@ export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
       ) {
         return;
       }
-      const cache = await waitForStoreItemCache(logger);
+      const cache = await waitForStoreItemCache();
       if (
         !cache ||
         typeof cache.QueueMultipleAppRequests !== "function" ||
@@ -265,39 +231,32 @@ export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
       const acceptsChineseDescription = requiredLanguages.some((language) =>
         CHINESE_LANGUAGE_IDS.has(language),
       );
-      const missingAppIds = appIds.filter((appId) => {
-        const item = cache.GetApp(appId);
-        return !(
-          acceptsChineseDescription &&
-          readDescriptionHasChinese(item, logger, appId) === true
-        ) && !item?.BContainDataRequest?.(SUPPORTED_LANGUAGES_REQUEST);
-      });
+      let missingAppIds;
+      try {
+        missingAppIds = appIds.filter((appId) => {
+          const item = cache.GetApp(appId);
+          return !(
+            acceptsChineseDescription &&
+            readDescriptionHasChinese(item, appId) === true
+          ) && !item?.BContainDataRequest?.(SUPPORTED_LANGUAGES_REQUEST);
+        });
+      } catch (error) {
+        console.error("[Steam 探索队列] 检查本批支持语言缓存时出错", error);
+        return;
+      }
       if (missingAppIds.length === 0) {
         return;
       }
-      const startedAt = performance.now();
-      logger?.info("batch.request.started", {
-        appIds: [...missingAppIds],
-        request: SUPPORTED_LANGUAGES_REQUEST,
-        requiredLanguages: [...requiredLanguages],
-      });
       try {
         await cache.QueueMultipleAppRequests(
           missingAppIds,
           SUPPORTED_LANGUAGES_REQUEST,
         );
-        logger?.info("batch.request.completed", {
-          appIds: [...missingAppIds],
-          durationMs: performance.now() - startedAt,
-          requiredLanguages: [...requiredLanguages],
-        });
       } catch (error) {
-        logger?.error("batch.request.error", error, {
-          appIds: [...missingAppIds],
-          durationMs: performance.now() - startedAt,
-          request: SUPPORTED_LANGUAGES_REQUEST,
-          requiredLanguages: [...requiredLanguages],
-        });
+        console.error(
+          `[Steam 探索队列] 批量补齐 ${missingAppIds.length} 个 App 的支持语言时出错`,
+          error,
+        );
         return;
       }
     },
@@ -311,7 +270,7 @@ export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
         return undefined;
       }
 
-      const cache = await waitForStoreItemCache(logger);
+      const cache = await waitForStoreItemCache();
       if (!cache || stopped) {
         return undefined;
       }
@@ -320,39 +279,18 @@ export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
         let item = cache.GetApp(numericAppId);
         const request = buildStoreItemRequest(
           requirements,
-          readAppType(item, logger, numericAppId),
+          readAppType(item, numericAppId),
         );
         if (
           Object.keys(request).length > 0 &&
           !item?.BContainDataRequest?.(request)
         ) {
-          const startedAt = performance.now();
-          logger?.debug("item.request.started", {
-            appId: numericAppId,
-            request,
-            requirements,
-          });
           await cache.QueueAppRequest(numericAppId, request);
           item = cache.GetApp(numericAppId);
-          logger?.debug("item.request.completed", {
-            appId: numericAppId,
-            durationMs: performance.now() - startedAt,
-            request,
-            requirements,
-          });
         }
-        const result = readStoreItem(item, numericAppId, logger);
-        logger?.debug("item.result", {
-          appId: numericAppId,
-          requirements,
-          result,
-        });
-        return result;
+        return readStoreItem(item, numericAppId);
       } catch (error) {
-        logger?.error("item.request.error", error, {
-          appId: numericAppId,
-          requirements,
-        });
+        console.error(`[Steam 探索队列] 请求或读取 App ${appId} 的 Steam 商店数据时出错`, error);
         return undefined;
       }
     },
@@ -366,31 +304,25 @@ export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
         return [];
       }
 
-      const cache = await waitForStoreItemCache(logger);
+      const cache = await waitForStoreItemCache();
       if (!cache || stopped) {
         return [];
       }
 
       try {
-        const tagIds = readTagIds(cache.GetApp(numericAppId), logger, numericAppId);
-        if (!tagIds) {
-          return [];
-        }
+        const tagIds = readArray(
+          () => cache.GetApp(numericAppId)?.GetTagIDs?.(),
+          numericAppId,
+          "标签",
+        );
         const uniqueTagIds = [...new Set(tagIds)];
         if (uniqueTagIds.length === 0) {
-          logger?.debug("tags.empty", { appId: numericAppId });
           return [];
         }
 
-        const names = await tagCatalog.getNames(uniqueTagIds);
-        logger?.debug("tags.resolved", {
-          appId: numericAppId,
-          names,
-          tagIds: uniqueTagIds,
-        });
-        return names;
+        return await tagCatalog.getNames(uniqueTagIds);
       } catch (error) {
-        logger?.error("tags.resolve.error", error, { appId: numericAppId });
+        console.error(`[Steam 探索队列] 读取 App ${appId} 的本地化标签时出错`, error);
         return [];
       }
     },

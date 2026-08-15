@@ -106,7 +106,8 @@ function parseDetails(payload, appId) {
       if (isNonNegativeInteger(priceOverview.discount_percent)) {
         result.discount = priceOverview.discount_percent;
       }
-    } catch {
+    } catch (error) {
+      console.error(`[Steam 探索队列] 解析 App ${appId} 的价格币种时出错`, error);
       result.price = undefined;
     }
   }
@@ -228,43 +229,19 @@ function parseStoreItem(storeItem, appId) {
   return result;
 }
 
-async function loadJson(url, logger, source, appId) {
-  const startedAt = performance.now();
-  logger?.debug("request.started", { appId, source, url });
+async function loadJson(url) {
   try {
     const response = await fetch(url);
     if (!response.ok) {
-      const diagnostic = {
-        kind: "http",
-        status: response.status,
-        statusText: response.statusText,
-      };
-      logger?.warn("request.http-error", {
-        appId,
-        durationMs: performance.now() - startedAt,
-        source,
-        url,
-        ...diagnostic,
-      });
-      return { diagnostic, payload: undefined };
+      console.error(
+        `[Steam 探索队列] 读取筛选数据失败：${url} 返回 HTTP ${response.status} ${response.statusText}`.trim(),
+      );
+      return undefined;
     }
-    const payload = await response.json();
-    logger?.debug("request.completed", {
-      appId,
-      durationMs: performance.now() - startedAt,
-      source,
-      status: response.status,
-      url,
-    });
-    return { diagnostic: undefined, payload };
+    return await response.json();
   } catch (error) {
-    logger?.error("request.error", error, {
-      appId,
-      durationMs: performance.now() - startedAt,
-      source,
-      url,
-    });
-    return { diagnostic: { error, kind: "exception" }, payload: undefined };
+    console.error(`[Steam 探索队列] 请求或解析筛选数据失败：${url}`, error);
+    return undefined;
   }
 }
 
@@ -310,49 +287,18 @@ function isIsoDate(value) {
   return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
 }
 
-function getUnresolved(requirements, data, profileFeaturesChecked) {
-  const unresolved = [];
-  const requiredFields = [
-    [requirements.needsPositiveRate, "positiveRate"],
-    [requirements.needsReviewCount, "reviewCount"],
-    [requirements.needsPrice, "price"],
-    [requirements.needsDiscount, "discount"],
-    [requirements.needsReleaseDate, "releaseDate"],
-    [requirements.needsFreeStatus, "isFree"],
-    [requirements.needsDlc, "isDlc"],
-  ];
-  for (const [required, field] of requiredFields) {
-    if (required && data[field] === undefined) {
-      unresolved.push(field);
-    }
-  }
-  if (
-    requirements.needsSupportedLanguages &&
-    data.descriptionHasChinese !== true &&
-    data.supportedLanguages === undefined
-  ) {
-    unresolved.push("supportedLanguages");
-  }
-  if (profileFeaturesChecked && data.profileFeaturesLimited === undefined) {
-    unresolved.push("profileFeaturesLimited");
-  }
-  return unresolved;
-}
-
-export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
+export function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
   const reviewsCache = new Map();
   const detailsCache = new Map();
-  const profileFeaturesLimitedReader = createProfileFeaturesLimitedReader({
-    logger: logger?.child?.("profile-features") ?? logger,
-  });
+  const profileFeaturesLimitedReader = createProfileFeaturesLimitedReader();
 
-  function loadCached(cache, appId, url, source) {
+  function loadCached(cache, appId, url) {
     let payloadPromise = cache.get(appId);
     if (!payloadPromise) {
-      payloadPromise = loadJson(url, logger, source, appId);
+      payloadPromise = loadJson(url);
       cache.set(appId, payloadPromise);
-      payloadPromise.then((result) => {
-        if (result.payload === undefined && cache.get(appId) === payloadPromise) {
+      payloadPromise.then((payload) => {
+        if (payload === undefined && cache.get(appId) === payloadPromise) {
           cache.delete(appId);
         }
       });
@@ -362,20 +308,14 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
 
   async function loadStoreItem(appId, requirements) {
     if (typeof getStoreItem !== "function") {
-      return {
-        data: {},
-        diagnostic: { kind: "unavailable", reason: "reader-missing" },
-      };
+      return {};
     }
 
     try {
-      return {
-        data: parseStoreItem(await getStoreItem(appId, requirements), appId),
-        diagnostic: undefined,
-      };
+      return parseStoreItem(await getStoreItem(appId, requirements), appId);
     } catch (error) {
-      logger?.error("store-item.error", error, { appId, requirements });
-      return { data: {}, diagnostic: { error, kind: "exception" } };
+      console.error(`[Steam 探索队列] 读取 App ${appId} 的 Steam 商店缓存时出错`, error);
+      return {};
     }
   }
 
@@ -385,18 +325,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
         throw new TypeError("appId must be a positive integer string");
       }
       if (config?.enabled === false) {
-        const result = { matched: false, reasons: [], data: createEmptyData() };
-        logger?.info("evaluation.completed", {
-          appId,
-          config,
-          data: result.data,
-          matched: false,
-          reasons: [],
-          requirements: { enabled: false },
-          sourceErrors: [],
-          unresolved: [],
-        });
-        return result;
+        return { matched: false, reasons: [], data: createEmptyData() };
       }
 
       const needsPositiveRate = isEnabledNumber(config?.minimumPositiveRate);
@@ -414,20 +343,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
       const requiredLanguages = getRequiredLanguages(config?.requiredLanguages);
       const needsSupportedLanguages = requiredLanguages.length > 0;
 
-      const requirements = {
-        needsDetails,
-        needsDiscount,
-        needsDlc,
-        needsFreeStatus,
-        needsPositiveRate,
-        needsPrice,
-        needsReleaseDate,
-        needsReviewCount,
-        needsReviews,
-        needsSupportedLanguages,
-        requiredLanguages,
-      };
-      const storeItemResult =
+      const storeItem =
         needsReviews || needsDetails || needsSupportedLanguages
           ? await loadStoreItem(appId, {
               needsReviews,
@@ -435,33 +351,13 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
               needsDlc,
               requiredLanguages,
             })
-          : { data: {}, diagnostic: undefined };
-      const storeItem = storeItemResult.data;
+          : {};
       const missingStoreItemReviews =
         (needsPositiveRate && storeItem.positiveRate === undefined) ||
         (needsReviewCount && storeItem.reviewCount === undefined);
       const reviewsPromise = missingStoreItemReviews
-        ? loadCached(
-            reviewsCache,
-            appId,
-            `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`,
-            "reviews",
-          )
-        : Promise.resolve({ diagnostic: undefined, payload: undefined });
-      if (missingStoreItemReviews) {
-        logger?.info("fallback.selected", {
-          appId,
-          missing: [
-            needsPositiveRate && storeItem.positiveRate === undefined
-              ? "positiveRate"
-              : undefined,
-            needsReviewCount && storeItem.reviewCount === undefined
-              ? "reviewCount"
-              : undefined,
-          ].filter(Boolean),
-          source: "reviews",
-        });
-      }
+        ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews)
+        : Promise.resolve({});
       const missingStoreItemData =
         (needsPrice && storeItem.price === undefined) ||
         (needsDiscount && storeItem.discount === undefined) ||
@@ -469,31 +365,9 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
         (needsFreeStatus && storeItem.isFree === undefined) ||
         (needsDlc && storeItem.isDlc === undefined);
       const detailsPromise = missingStoreItemData
-        ? loadCached(
-            detailsCache,
-            appId,
-            `/api/appdetails?appids=${appId}&l=english`,
-            "details",
-          )
-        : Promise.resolve({ diagnostic: undefined, payload: undefined });
-      if (missingStoreItemData) {
-        logger?.info("fallback.selected", {
-          appId,
-          missing: [
-            needsPrice && storeItem.price === undefined ? "price" : undefined,
-            needsDiscount && storeItem.discount === undefined ? "discount" : undefined,
-            needsReleaseDate && storeItem.releaseDate === undefined
-              ? "releaseDate"
-              : undefined,
-            needsFreeStatus && storeItem.isFree === undefined ? "isFree" : undefined,
-            needsDlc && storeItem.isDlc === undefined ? "isDlc" : undefined,
-          ].filter(Boolean),
-          source: "details",
-        });
-      }
-      const [reviewsResult, detailsResult] = await Promise.all([reviewsPromise, detailsPromise]);
-      const reviews = parseReviews(reviewsResult.payload);
-      const details = parseDetails(detailsResult.payload, appId);
+        ? loadCached(detailsCache, appId, `/api/appdetails?appids=${appId}&l=english`).then((payload) => parseDetails(payload, appId))
+        : Promise.resolve({});
+      const [reviews, details] = await Promise.all([reviewsPromise, detailsPromise]);
       const data = {
         ...createEmptyData(),
         ...reviews,
@@ -551,23 +425,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
       }
 
       if (reasons.length > 0 || config?.ignoreProfileFeaturesLimited !== true) {
-        const result = { matched: reasons.length > 0, reasons, data };
-        const sourceErrors = [
-          ["store-item", storeItemResult.diagnostic],
-          ["reviews", reviewsResult.diagnostic],
-          ["details", detailsResult.diagnostic],
-        ].filter(([, diagnostic]) => diagnostic !== undefined).map(([source, diagnostic]) => ({ source, ...diagnostic }));
-        logger?.info("evaluation.completed", {
-          appId,
-          config,
-          data,
-          matched: result.matched,
-          reasons: [...reasons],
-          requirements,
-          sourceErrors,
-          unresolved: getUnresolved(requirements, data, false),
-        });
-        return result;
+        return { matched: reasons.length > 0, reasons, data };
       }
 
       const profileFeaturesLimited =
@@ -579,23 +437,7 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
         reasons.push("profile-features-limited");
       }
 
-      const result = { matched: reasons.length > 0, reasons, data };
-      const sourceErrors = [
-        ["store-item", storeItemResult.diagnostic],
-        ["reviews", reviewsResult.diagnostic],
-        ["details", detailsResult.diagnostic],
-      ].filter(([, diagnostic]) => diagnostic !== undefined).map(([source, diagnostic]) => ({ source, ...diagnostic }));
-      logger?.info("evaluation.completed", {
-        appId,
-        config,
-        data,
-        matched: result.matched,
-        reasons: [...reasons],
-        requirements,
-        sourceErrors,
-        unresolved: getUnresolved(requirements, data, true),
-      });
-      return result;
+      return { matched: reasons.length > 0, reasons, data };
     },
     clear() {
       reviewsCache.clear();

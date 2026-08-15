@@ -224,6 +224,9 @@ function getFetchRequest(input, init) {
     }
     const encoded = url.searchParams.get("input_protobuf_encoded");
     const queueRequest = parseDiscoveryQueueRequest(encoded);
+    if (!queueRequest) {
+      console.warn("[Steam 探索队列] 无法解析探索队列请求中的 protobuf 参数，保留 Steam 原始处理");
+    }
     return queueRequest ? { url, encoded, queueRequest } : undefined;
   } catch {
     return undefined;
@@ -257,7 +260,8 @@ function readSnr() {
     const config = document.querySelector("#application_config[data-config]")?.dataset.config;
     const snr = config ? JSON.parse(config).SNR : undefined;
     return typeof snr === "string" && snr ? snr : undefined;
-  } catch {
+  } catch (error) {
+    console.warn("[Steam 探索队列] 页面 SNR 配置不可解析，忽略请求将不携带 SNR", error);
     return undefined;
   }
 }
@@ -297,7 +301,7 @@ function getDiscoveryQueueDialog() {
   return dialog instanceof HTMLElement ? dialog : undefined;
 }
 
-function createPrefilterReporter(logger, lifecycleId) {
+function createPrefilterReporter() {
   let checked = 0;
   let ignored = 0;
   let total = 0;
@@ -347,11 +351,6 @@ function createPrefilterReporter(logger, lifecycleId) {
       batches += 1;
       total += appIds.length;
       render(`正在加载第 ${batches} 批（${appIds.length} 项）`);
-      logger?.info("batch.started", {
-        appIds: [...appIds],
-        batch: batches,
-        lifecycleId,
-      });
     },
     beginEvaluation() {
       render(`正在筛选第 ${batches} 批`);
@@ -360,34 +359,24 @@ function createPrefilterReporter(logger, lifecycleId) {
       checked += 1;
       render(`正在筛选第 ${batches} 批`);
       if (result?.matched === true) {
-        logger?.info("app.matched", {
-          appId,
-          lifecycleId,
-          reasons: result.reasons,
-        });
+        console.info(
+          `[Steam 探索队列] App ${appId} 命中筛选规则：${result.reasons.join("、")}`,
+        );
       }
     },
     recordIgnore(appId, succeeded) {
       if (succeeded) {
         ignored += 1;
         render(`正在忽略第 ${batches} 批命中项`);
-        logger?.info("ignore.succeeded", { appId, lifecycleId });
+        console.info(`[Steam 探索队列] 已忽略 App ${appId}`);
       } else {
-        logger?.warn("ignore.failed", {
-          appId,
-          lifecycleId,
-        });
+        console.warn(`[Steam 探索队列] App ${appId} 忽略失败，但仍从当前展示中筛除`);
       }
     },
     finishBatch(retainedAppIds, matchedAppIds) {
-      logger?.info("batch.partitioned", {
-        batch: batches,
-        checked,
-        ignored,
-        lifecycleId,
-        matchedAppIds: [...matchedAppIds],
-        retainedAppIds: [...retainedAppIds],
-      });
+      console.info(
+        `[Steam 探索队列] 第 ${batches} 批筛选完成：筛除 ${matchedAppIds.length} 项，保留 ${retainedAppIds.length} 项`,
+      );
     },
     close() {
       closed = true;
@@ -413,21 +402,15 @@ function isDiscoveryQueueDataRequest(value) {
 export function startDiscoveryQueuePrefilter({
   getStoreItem,
   getLocalizedTags,
-  logger,
   prepareStoreItems,
 } = {}) {
   if (typeof window !== "object" || typeof window.fetch !== "function") {
     return () => {};
   }
 
-  const lifecycleId = logger?.nextId?.("prefilter") ?? "prefilter";
-  const prefilterLogger = logger?.child?.("prefilter", { lifecycleId }) ?? logger;
   const permits = new Map();
   const deliveredDialogs = new WeakSet();
-  const ruleEngine = createDiscoveryQueueRuleEngine({
-    getStoreItem,
-    logger: prefilterLogger?.child?.("rules", { lifecycleId }) ?? prefilterLogger,
-  });
+  const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
   const originalFetch = window.fetch;
   let stopped = false;
   let generation = 0;
@@ -435,7 +418,6 @@ export function startDiscoveryQueuePrefilter({
   let queueCache;
   let originalQueueMultiple;
   let queueMultipleWrapper;
-  prefilterLogger?.info("lifecycle.started", { lifecycleId });
 
   function grantPermit(appIds, request, args, receiver) {
     const key = appIdKey(appIds);
@@ -445,12 +427,6 @@ export function startDiscoveryQueuePrefilter({
         expiresAt: Date.now() + PERMIT_DURATION_MS,
         receiver,
         request,
-      });
-      prefilterLogger?.debug("permit.granted", {
-        appIds: [...appIds],
-        expiresInMs: PERMIT_DURATION_MS,
-        lifecycleId,
-        rebuild: request.queueRequest.rebuild,
       });
     }
   }
@@ -462,22 +438,12 @@ export function startDiscoveryQueuePrefilter({
     }
     const permit = permits.get(key);
     permits.delete(key);
-    const valid = permit?.expiresAt >= Date.now();
-    prefilterLogger?.debug("permit.taken", {
-      appIds: [...appIds],
-      lifecycleId,
-      result: !permit ? "missing" : valid ? "accepted" : "expired",
-    });
-    return valid ? permit : undefined;
+    return permit?.expiresAt >= Date.now() ? permit : undefined;
   }
 
   async function ignoreApp(appId) {
     if (typeof window.g_sessionID !== "string" || !window.g_sessionID) {
-      prefilterLogger?.warn("ignore.skipped", {
-        appId,
-        lifecycleId,
-        reason: "missing-session",
-      });
+      console.warn(`[Steam 探索队列] 无法忽略 App ${appId}：页面缺少 Steam 会话 ID`);
       return false;
     }
     const form = new FormData();
@@ -489,8 +455,6 @@ export function startDiscoveryQueuePrefilter({
       form.set("snr", snr);
     }
     form.set("ignore_reason", "0");
-    const startedAt = performance.now();
-    prefilterLogger?.debug("ignore.request.started", { appId, lifecycleId });
     try {
       const response = await Reflect.apply(originalFetch, window, [
         "/recommended/ignorerecommendation",
@@ -500,47 +464,27 @@ export function startDiscoveryQueuePrefilter({
         },
       ]);
       if (!response.ok) {
-        prefilterLogger?.warn("ignore.request.http-error", {
-          appId,
-          durationMs: performance.now() - startedAt,
-          lifecycleId,
-          status: response.status,
-          statusText: response.statusText,
-        });
+        console.error(
+          `[Steam 探索队列] 忽略 App ${appId} 失败：HTTP ${response.status} ${response.statusText}`.trim(),
+        );
         return false;
       }
       let payload;
       try {
         payload = await response.json();
       } catch (error) {
-        prefilterLogger?.error("ignore.response.parse-error", error, {
-          appId,
-          durationMs: performance.now() - startedAt,
-          lifecycleId,
-          status: response.status,
-        });
+        console.error(`[Steam 探索队列] 无法解析 App ${appId} 的忽略响应`, error);
         return false;
       }
       const succeeded = payload?.success === true || payload?.success === 1;
-      const data = {
-        appId,
-        durationMs: performance.now() - startedAt,
-        lifecycleId,
-        payload,
-        status: response.status,
-      };
-      if (succeeded) {
-        prefilterLogger?.debug("ignore.request.completed", data);
-      } else {
-        prefilterLogger?.warn("ignore.response.rejected", data);
+      if (!succeeded) {
+        console.warn(
+          `[Steam 探索队列] Steam 未接受 App ${appId} 的忽略请求（success=${String(payload?.success)}）`,
+        );
       }
       return succeeded;
     } catch (error) {
-      prefilterLogger?.error("ignore.request.error", error, {
-        appId,
-        durationMs: performance.now() - startedAt,
-        lifecycleId,
-      });
+      console.error(`[Steam 探索队列] 请求忽略 App ${appId} 时出错`, error);
       return false;
     }
   }
@@ -550,36 +494,14 @@ export function startDiscoveryQueuePrefilter({
       ? config.requiredLanguages.value
       : [];
     if (typeof prepareStoreItems === "function") {
-      prefilterLogger?.debug("batch.prepare.started", {
-        appIds: [...appIds],
-        currentGeneration,
-        lifecycleId,
-        requiredLanguages: [...requiredLanguages],
-      });
       try {
         await prepareStoreItems(appIds, requiredLanguages);
-        prefilterLogger?.debug("batch.prepare.completed", {
-          appIds: [...appIds],
-          currentGeneration,
-          lifecycleId,
-        });
       } catch (error) {
-        prefilterLogger?.error("batch.prepare.error", error, {
-          appIds: [...appIds],
-          currentGeneration,
-          lifecycleId,
-        });
+        console.error("[Steam 探索队列] 批量读取商店数据失败，无法完成本批筛选", error);
         throw error;
       }
     }
     if (stopped || currentGeneration !== generation) {
-      prefilterLogger?.info("generation.cancelled", {
-        currentGeneration,
-        generation,
-        lifecycleId,
-        stage: "after-prepare",
-        stopped,
-      });
       return undefined;
     }
     reporter?.beginEvaluation();
@@ -603,24 +525,13 @@ export function startDiscoveryQueuePrefilter({
         };
         return true;
       } catch (error) {
-        prefilterLogger?.error("app.evaluation.error", error, {
-          appId,
-          currentGeneration,
-          lifecycleId,
-        });
+        console.error(`[Steam 探索队列] 筛选 App ${appId} 时出错，保留该项目供用户查看`, error);
         return false;
       } finally {
         reporter?.recordEvaluation(appId, report);
       }
     });
     if (stopped || currentGeneration !== generation) {
-      prefilterLogger?.info("generation.cancelled", {
-        currentGeneration,
-        generation,
-        lifecycleId,
-        stage: "after-evaluation",
-        stopped,
-      });
       return undefined;
     }
     const retainedAppIds = appIds.filter((_, index) => matches[index] !== true);
@@ -630,11 +541,6 @@ export function startDiscoveryQueuePrefilter({
       const succeeded = await ignoreApp(appId);
       reporter?.recordIgnore(appId, succeeded);
       return succeeded;
-    });
-    prefilterLogger?.info("batch.ignore.deferred", {
-      appIds: [...matchedAppIds],
-      lifecycleId,
-      retainedAppIds: [...retainedAppIds],
     });
     return { ignoreCompletion, retainedAppIds };
   }
@@ -654,10 +560,7 @@ export function startDiscoveryQueuePrefilter({
   ) {
     let fetchArgs = createRebuildFetchArgs(permit.args, permit.request);
     if (!fetchArgs) {
-      prefilterLogger?.warn("summary.selected", {
-        lifecycleId,
-        reason: "rebuild-request-unavailable",
-      });
+      console.warn("[Steam 探索队列] 无法构造下一批队列请求，改为展示队列结束页");
       return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
     }
 
@@ -666,20 +569,17 @@ export function startDiscoveryQueuePrefilter({
       try {
         response = await Reflect.apply(originalFetch, permit.receiver, fetchArgs);
       } catch (error) {
-        prefilterLogger?.error("rebuild.request.error", error, { lifecycleId });
-        prefilterLogger?.warn("summary.selected", {
-          lifecycleId,
-          reason: "rebuild-request-error",
-        });
+        console.error("[Steam 探索队列] 请求下一批探索队列失败，改为展示队列结束页", error);
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       if (!response?.ok || !isOctetStream(response)) {
-        prefilterLogger?.warn("summary.selected", {
-          contentType: response?.headers?.get?.("content-type"),
-          lifecycleId,
-          reason: "rebuild-invalid-response",
-          status: response?.status,
-        });
+        const status = response
+          ? `HTTP ${response.status} ${response.statusText}`.trim()
+          : "没有收到响应";
+        const contentType = response?.headers?.get?.("content-type") ?? "未知内容类型";
+        console.warn(
+          `[Steam 探索队列] 下一批队列响应不可用（${status}，${contentType}），改为展示队列结束页`,
+        );
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
 
@@ -687,29 +587,20 @@ export function startDiscoveryQueuePrefilter({
       try {
         appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
       } catch (error) {
-        prefilterLogger?.error("rebuild.response.decode-error", error, {
-          lifecycleId,
-          status: response.status,
-        });
-        prefilterLogger?.warn("summary.selected", {
-          lifecycleId,
-          reason: "rebuild-decode-error",
-        });
+        console.error("[Steam 探索队列] 无法解析下一批探索队列，改为展示队列结束页", error);
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       const key = appIdKey(appIds);
-      if (!appIds || appIds.length === 0 || key === undefined || seenBatches.has(key)) {
-        prefilterLogger?.warn("summary.selected", {
-          appIds,
-          lifecycleId,
-          reason: !appIds
-            ? "rebuild-invalid-appids"
-            : appIds.length === 0
-              ? "queue-exhausted"
-              : key === undefined
-                ? "rebuild-invalid-appid-key"
-                : "rebuild-repeated-batch",
-        });
+      if (!appIds || key === undefined) {
+        console.warn("[Steam 探索队列] 下一批队列没有有效的 AppID，改为展示队列结束页");
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+      if (appIds.length === 0) {
+        console.info("[Steam 探索队列] Steam 返回空队列，展示队列结束页");
+        return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
+      }
+      if (seenBatches.has(key)) {
+        console.warn("[Steam 探索队列] Steam 重复返回同一批项目，为避免循环而展示队列结束页");
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       seenBatches.add(key);
@@ -718,14 +609,7 @@ export function startDiscoveryQueuePrefilter({
       try {
         await Reflect.apply(originalQueueMultiple, queueReceiver, [appIds, dataRequest]);
       } catch (error) {
-        prefilterLogger?.error("rebuild.store-items.error", error, {
-          appIds: [...appIds],
-          lifecycleId,
-        });
-        prefilterLogger?.warn("summary.selected", {
-          lifecycleId,
-          reason: "rebuild-store-items-error",
-        });
+        console.error("[Steam 探索队列] 下一批商店数据读取失败，改为展示队列结束页", error);
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       const filteredBatch = await prefilter(
@@ -735,36 +619,19 @@ export function startDiscoveryQueuePrefilter({
         reporter,
       );
       if (!filteredBatch) {
-        prefilterLogger?.info("display.original-batch", {
-          appIds: [...appIds],
-          lifecycleId,
-          reason: "generation-cancelled",
-        });
+        console.info("[Steam 探索队列] 页面状态已变化，停止继续换批并保留 Steam 当前队列");
         return appIds;
       }
       if (filteredBatch.retainedAppIds.length > 0) {
-        prefilterLogger?.info("display.retained", {
-          appIds: [...filteredBatch.retainedAppIds],
-          lifecycleId,
-          source: "rebuild",
-        });
         return filteredBatch.retainedAppIds;
       }
-      prefilterLogger?.info("rebuild.next-batch", {
-        lifecycleId,
-        reason: "batch-fully-filtered",
-      });
       await filteredBatch.ignoreCompletion;
     }
-    prefilterLogger?.warn("summary.selected", {
-      currentGeneration,
-      generation,
-      lifecycleId,
-      reason: stopped
-        ? "stopped-during-rebuild"
-        : "generation-changed-during-rebuild",
-      stopped,
-    });
+    console.info(
+      stopped
+        ? "[Steam 探索队列] 预筛选已停止，展示队列结束页"
+        : "[Steam 探索队列] 页面队列已变化，停止换批并展示队列结束页",
+    );
     return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
   }
 
@@ -774,7 +641,7 @@ export function startDiscoveryQueuePrefilter({
     try {
       request = getFetchRequest(args[0], args[1]);
     } catch (error) {
-      prefilterLogger?.error("fetch.intercept.parse-error", error, { lifecycleId });
+      console.error("[Steam 探索队列] 无法解析探索队列请求，保留 Steam 原始处理", error);
       return responsePromise;
     }
     if (!request?.queueRequest.standard) {
@@ -791,10 +658,7 @@ export function startDiscoveryQueuePrefilter({
           grantPermit(appIds, request, args, receiver);
         }
       } catch (error) {
-        prefilterLogger?.error("fetch.response.decode-error", error, {
-          lifecycleId,
-          status: response.status,
-        });
+        console.error("[Steam 探索队列] 无法解析 Steam 返回的探索队列，保留原始响应", error);
         return response;
       }
       return response;
@@ -811,18 +675,8 @@ export function startDiscoveryQueuePrefilter({
       queueCache = cache;
       originalQueueMultiple = current;
       queueMultipleWrapper = function wrappedQueueMultiple(appIds, ...args) {
+        const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
         const snapshot = Array.isArray(appIds) ? [...appIds] : undefined;
-        let result;
-        try {
-          result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
-        } catch (error) {
-          prefilterLogger?.error("queue.store-items.sync-error", error, {
-            appIds: snapshot,
-            dataRequest: args[0],
-            lifecycleId,
-          });
-          throw error;
-        }
         const expectedKey = snapshot && appIdKey(snapshot);
         const dialog = getDiscoveryQueueDialog();
         if (
@@ -831,125 +685,66 @@ export function startDiscoveryQueuePrefilter({
           !dialog ||
           !isDiscoveryQueueDataRequest(args[0])
         ) {
-          if (expectedKey !== undefined && snapshot.length > 0) {
-            prefilterLogger?.debug("queue.intercept.skipped", {
-              appIds: snapshot,
-              hasDialog: Boolean(dialog),
-              isDiscoveryQueueDataRequest: isDiscoveryQueueDataRequest(args[0]),
-              lifecycleId,
-              reason: !dialog ? "dialog-missing" : "data-request-mismatch",
-            });
-          }
           return result;
         }
 
         const permit = takePermit(snapshot);
         if (deliveredDialogs.has(dialog) && !permit?.request.queueRequest.rebuild) {
-          prefilterLogger?.info("queue.intercept.skipped", {
-            appIds: snapshot,
-            lifecycleId,
-            reason: "dialog-already-delivered",
-          });
           return result;
         }
         deliveredDialogs.add(dialog);
 
         let config;
         try {
-          config = loadDiscoveryQueueConfig(
-            prefilterLogger?.child?.("config", { lifecycleId }) ?? prefilterLogger,
-          );
+          config = loadDiscoveryQueueConfig();
         } catch (error) {
-          prefilterLogger?.error("config.load.error", error, { lifecycleId });
+          console.error("[Steam 探索队列] 无法读取自动筛选配置，保留 Steam 原始队列", error);
           return result;
         }
         if (config?.enabled !== true || !hasActiveRules(config)) {
-          prefilterLogger?.info("queue.intercept.skipped", {
-            appIds: snapshot,
-            lifecycleId,
-            reason: config?.enabled !== true ? "disabled" : "no-active-rules",
-          });
           return result;
         }
 
         const currentGeneration = generation;
         const queueReceiver = this;
-        const reporter = createPrefilterReporter(prefilterLogger, lifecycleId);
-        prefilterLogger?.info("queue.intercepted", {
-          appIds: snapshot,
-          generation: currentGeneration,
-          hasPermit: Boolean(permit),
-          lifecycleId,
-        });
+        const reporter = createPrefilterReporter();
         reporter.beginBatch(snapshot);
-        return Promise.resolve(result).then(
-          async (value) => {
-            const filteredBatch = await prefilter(
-              snapshot,
-              config,
-              currentGeneration,
-              reporter,
-            );
-            if (!filteredBatch || stopped || currentGeneration !== generation) {
-              prefilterLogger?.info("display.original-batch", {
-                appIds: snapshot,
-                lifecycleId,
-                reason: "generation-cancelled",
-              });
-              return value;
-            }
-            if (filteredBatch.retainedAppIds.length > 0) {
-              replaceAppIds(appIds, filteredBatch.retainedAppIds);
-              prefilterLogger?.info("display.retained", {
-                appIds: [...filteredBatch.retainedAppIds],
-                lifecycleId,
-                source: "initial",
-              });
-              return value;
-            }
-            await filteredBatch.ignoreCompletion;
-            if (stopped || currentGeneration !== generation) {
-              prefilterLogger?.info("display.original-batch", {
-                appIds: snapshot,
-                currentGeneration,
-                generation,
-                lifecycleId,
-                reason: stopped
-                  ? "stopped-after-ignore"
-                  : "generation-changed-after-ignore",
-                stopped,
-              });
-              return value;
-            }
-            if (!permit) {
-              prefilterLogger?.warn("summary.selected", {
-                lifecycleId,
-                reason: "fully-filtered-without-permit",
-              });
-              replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-              return value;
-            }
-            const nextAppIds = await loadNextVisibleBatch(
-              permit,
-              args[0],
-              queueReceiver,
-              config,
-              currentGeneration,
-              new Set([expectedKey]),
-              reporter,
-            );
-            replaceAppIds(appIds, nextAppIds);
+        return Promise.resolve(result).then(async (value) => {
+          const filteredBatch = await prefilter(
+            snapshot,
+            config,
+            currentGeneration,
+            reporter,
+          );
+          if (!filteredBatch || stopped || currentGeneration !== generation) {
             return value;
-          },
-          (error) => {
-            prefilterLogger?.error("queue.store-items.async-error", error, {
-              appIds: snapshot,
-              dataRequest: args[0],
-              lifecycleId,
-            });
-            throw error;
-          },
-        ).finally(() => reporter.close());
+          }
+          if (filteredBatch.retainedAppIds.length > 0) {
+            replaceAppIds(appIds, filteredBatch.retainedAppIds);
+            return value;
+          }
+          await filteredBatch.ignoreCompletion;
+          if (stopped || currentGeneration !== generation) {
+            console.info("[Steam 探索队列] 页面状态已变化，停止换批并保留 Steam 当前队列");
+            return value;
+          }
+          if (!permit) {
+            console.warn("[Steam 探索队列] 缺少可复用的队列请求，无法获取下一批，改为展示队列结束页");
+            replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
+            return value;
+          }
+          const nextAppIds = await loadNextVisibleBatch(
+            permit,
+            args[0],
+            queueReceiver,
+            config,
+            currentGeneration,
+            new Set([expectedKey]),
+            reporter,
+          );
+          replaceAppIds(appIds, nextAppIds);
+          return value;
+        }).finally(() => reporter.close());
       };
       cache.QueueMultipleAppRequests = queueMultipleWrapper;
     }
@@ -965,7 +760,6 @@ export function startDiscoveryQueuePrefilter({
     }
     stopped = true;
     generation += 1;
-    prefilterLogger?.info("lifecycle.stopped", { generation, lifecycleId });
     permits.clear();
     clearTimeout(pollTimer);
     ruleEngine.clear();

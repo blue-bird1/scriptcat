@@ -82,43 +82,6 @@ test("supported languages are supplemented once for the whole queue batch", asyn
   }
 });
 
-test("missing StoreItem tags log why excluded-tag evaluation has no data", async () => {
-  const originalWindow = globalThis.window;
-  const logs = [];
-  globalThis.window = {
-    StoreItemCache: {
-      GetApp() {
-        return undefined;
-      },
-      async QueueAppRequest() {},
-    },
-  };
-  const reader = createDiscoveryQueueStoreItemReader({
-    logger: {
-      debug(event, data) {
-        logs.push({ data, event });
-      },
-      error(event, error, data) {
-        logs.push({ data, error, event });
-      },
-      warn(event, data) {
-        logs.push({ data, event });
-      },
-    },
-  });
-  try {
-    assert.deepEqual(await reader.getLocalizedTags("42"), []);
-    assert.deepEqual(logs.find((entry) => entry.event === "tags.unavailable"), {
-      data: { appId: 42, reason: "store-item-missing" },
-      event: "tags.unavailable",
-    });
-    assert.equal(logs.some((entry) => entry.event === "tags.empty"), false);
-  } finally {
-    reader.stop();
-    globalThis.window = originalWindow;
-  }
-});
-
 test("Steam's persisted tag catalog resolves names without tag requests", async () => {
   const originalGlobals = {
     document: globalThis.document,
@@ -267,34 +230,11 @@ async function runPrefilter({
   beforeQueueSettles,
   dialogPresent = true,
   ignoreResponses = new Map(),
-  logEntries,
   queueBodies,
-  storeItemsRequest = () => 1,
   successfulIgnores = [],
   matchingAppIds = [],
 }) {
   const calls = [];
-  const logs = logEntries ?? [];
-  const logger = {
-    child() {
-      return this;
-    },
-    debug(event, data) {
-      logs.push({ data, event, level: "debug" });
-    },
-    error(event, error, data) {
-      logs.push({ data, error, event, level: "error" });
-    },
-    info(event, data) {
-      logs.push({ data, event, level: "info" });
-    },
-    nextId() {
-      return "prefilter-test";
-    },
-    warn(event, data) {
-      logs.push({ data, event, level: "warn" });
-    },
-  };
   const responses = queueBodies.map((body) => new Response(body, {
     headers: {
       "content-length": String(body.length),
@@ -358,9 +298,9 @@ async function runPrefilter({
   };
   globalThis.window = {
     StoreItemCache: {
-      QueueMultipleAppRequests(appIds, ...args) {
+      async QueueMultipleAppRequests(appIds) {
         calls.push(["store-items", [...appIds]]);
-        return storeItemsRequest(appIds, ...args);
+        return 1;
       },
     },
     fetch: originalFetch,
@@ -379,7 +319,6 @@ async function runPrefilter({
     async prepareStoreItems(appIds, requiredLanguages) {
       calls.push(["prepare", [...appIds], [...requiredLanguages]]);
     },
-    logger,
   });
   try {
     const response = await window.fetch(INITIAL_QUEUE_URL);
@@ -389,15 +328,13 @@ async function runPrefilter({
       appIds,
       DISCOVERY_QUEUE_DATA_REQUEST,
     );
-    await beforeQueueSettles?.({ appIds, calls, logs, queueResult });
+    await beforeQueueSettles?.({ appIds, calls, queueResult });
     await queueResult;
-    await new Promise((resolve) => setImmediate(resolve));
     return {
       appIds,
       body,
       calls,
       initialResponse,
-      logs,
       response,
     };
   } finally {
@@ -465,19 +402,12 @@ test("rule matches are removed before delivery even when ignores fail", async ()
     ["ignore", 42],
     ["ignore", 43],
   ]);
-  const rejected = result.logs.find((entry) =>
-    entry.event === "ignore.response.rejected" && entry.data.appId === 43
-  );
-  assert.deepEqual(rejected?.data.payload, { success: 2 });
-  assert.ok(result.logs.some((entry) =>
-    entry.event === "ignore.failed" && entry.data.appId === 43
-  ));
 });
 
 test("retained apps are delivered without waiting for matched app ignores", async () => {
   const ignoreResponse = createDeferred();
   const result = await runPrefilter({
-    beforeQueueSettles: async ({ appIds, logs, queueResult }) => {
+    beforeQueueSettles: async ({ appIds, queueResult }) => {
       let timer;
       try {
         await Promise.race([
@@ -493,11 +423,6 @@ test("retained apps are delivered without waiting for matched app ignores", asyn
         clearTimeout(timer);
       }
       assert.deepEqual(appIds, [44]);
-      assert.ok(logs.some((entry) => entry.event === "display.retained"));
-      assert.equal(
-        logs.some((entry) => entry.event === "ignore.request.completed"),
-        false,
-      );
       ignoreResponse.resolve(Response.json({ success: 1 }));
     },
     ignoreResponses: new Map([[42, ignoreResponse.promise]]),
@@ -513,34 +438,6 @@ test("retained apps are delivered without waiting for matched app ignores", asyn
     ["ignore", 42],
   ]);
 });
-
-for (const failureMode of ["sync-throw", "async-rejection"]) {
-  test(`initial StoreItem batch ${failureMode} logs and preserves the error`, async () => {
-    const error = new Error(`protobuf ${failureMode}`);
-    const logs = [];
-    const storeItemsRequest = failureMode === "sync-throw"
-      ? () => {
-          throw error;
-        }
-      : () => Promise.reject(error);
-
-    await assert.rejects(
-      runPrefilter({
-        logEntries: logs,
-        queueBodies: [encodeQueueResponse([42])],
-        storeItemsRequest,
-      }),
-      (received) => received === error,
-    );
-
-    const expectedEvent = failureMode === "sync-throw"
-      ? "queue.store-items.sync-error"
-      : "queue.store-items.async-error";
-    const failure = logs.find((entry) => entry.event === expectedEvent);
-    assert.strictEqual(failure?.error, error);
-    assert.deepEqual(failure?.data.appIds, [42]);
-  });
-}
 
 test("queue exhaustion delivers Steam's summary sentinel instead of an empty queue", async () => {
   const result = await runPrefilter({

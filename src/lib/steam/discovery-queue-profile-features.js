@@ -1,7 +1,7 @@
 const PROFILE_PROGRESS_ENDPOINT =
   "https://api.steampowered.com/IPlayerService/GetAchievementsProgress/v1/";
 
-function readApplicationConfig(logger) {
+function readApplicationConfig() {
   const applicationConfig = document.getElementById("application_config");
   if (!(applicationConfig instanceof HTMLElement)) {
     return undefined;
@@ -21,7 +21,7 @@ function readApplicationConfig(logger) {
       ? { steamId, accessToken }
       : undefined;
   } catch (error) {
-    logger?.error("credentials.parse.error", error);
+    console.error("[Steam 探索队列] 无法解析页面中的 Steam 用户配置，跳过受限个人资料功能筛选", error);
     return undefined;
   }
 }
@@ -42,7 +42,7 @@ function parseProfileFeaturesLimited(payload, appId) {
   return typeof matching.vetted === "boolean" ? !matching.vetted : undefined;
 }
 
-export function createProfileFeaturesLimitedReader({ logger } = {}) {
+export function createProfileFeaturesLimitedReader() {
   const cache = new Map();
   let requestChain = Promise.resolve();
   let requestGeneration = 0;
@@ -50,21 +50,11 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
 
   async function request(appId, generation) {
     if (requestsBlocked || generation !== requestGeneration) {
-      logger?.debug("request.skipped", {
-        appId,
-        generation,
-        reason: requestsBlocked ? "rate-limited" : "generation-cancelled",
-        requestGeneration,
-      });
       return undefined;
     }
 
-    const credentials = readApplicationConfig(logger);
+    const credentials = readApplicationConfig();
     if (!credentials) {
-      logger?.warn("request.skipped", {
-        appId,
-        reason: "credentials-unavailable",
-      });
       return undefined;
     }
 
@@ -84,63 +74,28 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
       }),
     );
 
-    const startedAt = performance.now();
-    logger?.debug("request.started", { appId, generation });
     try {
       const response = await fetch(url, {
         method: "POST",
         body,
       });
       if (generation !== requestGeneration) {
-        logger?.info("request.cancelled", {
-          appId,
-          durationMs: performance.now() - startedAt,
-          generation,
-          requestGeneration,
-          stage: "response",
-        });
         return undefined;
       }
       if (response.status === 429) {
         requestsBlocked = true;
-        logger?.warn("request.rate-limited", {
-          appId,
-          durationMs: performance.now() - startedAt,
-          status: response.status,
-          statusText: response.statusText,
-        });
+        console.warn("[Steam 探索队列] Steam 限制了个人资料功能查询，本轮不再继续请求");
         return undefined;
       }
       if (!response.ok) {
-        logger?.warn("request.http-error", {
-          appId,
-          durationMs: performance.now() - startedAt,
-          status: response.status,
-          statusText: response.statusText,
-        });
+        console.error(
+          `[Steam 探索队列] 查询 App ${appId} 的个人资料功能失败：HTTP ${response.status} ${response.statusText}`.trim(),
+        );
         return undefined;
       }
-      const value = parseProfileFeaturesLimited(await response.json(), appId);
-      if (value === undefined) {
-        logger?.warn("response.unresolved", {
-          appId,
-          durationMs: performance.now() - startedAt,
-          reason: "profile-status-unresolved",
-          status: response.status,
-        });
-      }
-      logger?.debug("request.completed", {
-        appId,
-        durationMs: performance.now() - startedAt,
-        status: response.status,
-        value,
-      });
-      return value;
+      return parseProfileFeaturesLimited(await response.json(), appId);
     } catch (error) {
-      logger?.error("request.error", error, {
-        appId,
-        durationMs: performance.now() - startedAt,
-      });
+      console.error(`[Steam 探索队列] 查询或解析 App ${appId} 的个人资料功能时出错`, error);
       return undefined;
     }
   }
@@ -161,7 +116,6 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
     },
     clear() {
       requestGeneration += 1;
-      logger?.info("generation.cleared", { requestGeneration });
       cache.clear();
       requestChain = Promise.resolve();
       requestsBlocked = false;
