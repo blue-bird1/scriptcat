@@ -25,16 +25,14 @@ function matchesAction(target, selector) {
   return target instanceof Element && target.closest(selector) !== null;
 }
 
-function startClassicQueue(logger) {
+function startClassicQueue() {
   if (new URLSearchParams(location.search).get("queue") !== "1") {
-    logger?.debug("controller.skipped", { reason: "not-classic-queue" });
     return () => {};
   }
 
   const queueActions = document.querySelector("#queueActionsCtn");
   const nextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
   if (!(queueActions instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
-    logger?.debug("controller.skipped", { reason: "controls-not-found" });
     return () => {};
   }
 
@@ -42,7 +40,6 @@ function startClassicQueue(logger) {
   let timer;
   let frame;
   const pendingActions = new Set();
-  let activeAdvance;
   let advancing = false;
 
   function stopWaiting() {
@@ -55,22 +52,9 @@ function startClassicQueue(logger) {
     pendingActions.clear();
   }
 
-  function advance(pending, delay = ADVANCE_DELAY_MS) {
-    if (advancing) {
-      logger?.debug("advance.suppressed", {
-        actionId: pending?.actionId,
-        reason: "already-advancing",
-      });
-      return;
-    }
+  function advance(reason, delay = ADVANCE_DELAY_MS) {
     stopWaiting();
     advancing = true;
-    activeAdvance = pending;
-    logger?.info("advance.scheduled", {
-      action: pending?.action,
-      actionId: pending?.actionId,
-      delay,
-    });
     timer = setTimeout(() => {
       timer = undefined;
       const triggerNext = () => {
@@ -78,18 +62,13 @@ function startClassicQueue(logger) {
         const currentNextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
         if (currentNextButton instanceof HTMLElement) {
           currentNextButton.click();
-          logger?.info("advance.clicked", {
-            action: pending?.action,
-            actionId: pending?.actionId,
-          });
         } else {
-          logger?.warn("advance.button_missing", {
-            action: pending?.action,
-            actionId: pending?.actionId,
-          });
+          const appId = location.pathname.match(/^\/app\/(\d+)(?:\/|$)/)?.[1];
+          console.warn(
+            `[Steam 探索队列] 应用 ${appId ?? "未知"}：${reason}，但没有找到“下一项”按钮，无法继续。`,
+          );
         }
         advancing = false;
-        activeAdvance = undefined;
       };
       if (delay === 0) {
         triggerNext();
@@ -108,16 +87,18 @@ function startClassicQueue(logger) {
   }
 
   function checkResults() {
-    for (const pending of pendingActions) {
+    for (const action of pendingActions) {
       if (hasSucceeded()) {
-        logger?.info("wishlist.succeeded", { actionId: pending.actionId });
-        advance(pending);
+        advance("加入愿望单成功");
         return;
       }
 
       if (hasFailed()) {
-        logger?.warn("wishlist.failed", { actionId: pending.actionId });
-        pendingActions.delete(pending);
+        const appId = location.pathname.match(/^\/app\/(\d+)(?:\/|$)/)?.[1];
+        console.warn(
+          `[Steam 探索队列] 应用 ${appId ?? "未知"} 加入愿望单失败，当前项目不会自动跳过。`,
+        );
+        pendingActions.delete(action);
       }
     }
 
@@ -126,26 +107,12 @@ function startClassicQueue(logger) {
     }
   }
 
-  function waitForResult(pending) {
+  function waitForResult(action) {
     if (advancing) {
-      logger?.debug("action.suppressed", {
-        action: pending.action,
-        actionId: pending.actionId,
-        reason: "advancing",
-      });
-      return;
-    }
-    if ([...pendingActions].some((action) => action.action === pending.action)) {
-      logger?.debug("action.suppressed", {
-        action: pending.action,
-        actionId: pending.actionId,
-        reason: "already-pending",
-      });
       return;
     }
 
-    pendingActions.add(pending);
-    logger?.info("wishlist.waiting", { actionId: pending.actionId });
+    pendingActions.add(action);
     if (observer) {
       return;
     }
@@ -158,9 +125,10 @@ function startClassicQueue(logger) {
       subtree: true,
     });
     timer = setTimeout(() => {
-      for (const action of pendingActions) {
-        logger?.warn("wishlist.timeout", { actionId: action.actionId });
-      }
+      const appId = location.pathname.match(/^\/app\/(\d+)(?:\/|$)/)?.[1];
+      console.warn(
+        `[Steam 探索队列] 等待应用 ${appId ?? "未知"} 加入愿望单结果超时，当前项目不会自动跳过。`,
+      );
       stopWaiting();
     }, QUEUE_TIMEOUT_MS);
   }
@@ -168,58 +136,28 @@ function startClassicQueue(logger) {
   function handleClick(event) {
     const { target } = event;
     if (matchesAction(target, "#add_to_wishlist_area a.add_to_wishlist")) {
-      const pending = {
-        action: "wishlist",
-        actionId: logger?.nextId("classic-action"),
-      };
-      logger?.info("action.clicked", pending);
-      waitForResult(pending);
+      waitForResult("wishlist");
     } else if (
       matchesAction(target, ".queue_btn_ignore .queue_btn_inactive") ||
       matchesAction(target, "#queue_ignore_menu_option_not_interested") ||
       matchesAction(target, "#queue_ignore_menu_option_owned_elsewhere")
     ) {
-      const pending = {
-        action: "ignore",
-        actionId: logger?.nextId("classic-action"),
-      };
-      logger?.info("action.clicked", pending);
-      advance(pending, 0);
+      advance("忽略操作已提交", 0);
     }
   }
 
   function stop() {
-    logger?.info("controller.stopping", {
-      advancing,
-      pendingCount: pendingActions.size,
-    });
-    if (activeAdvance) {
-      logger?.info("advance.cancelled", {
-        action: activeAdvance.action,
-        actionId: activeAdvance.actionId,
-        reason: "controller-stop",
-      });
-    }
-    for (const pending of pendingActions) {
-      logger?.info("action.cancelled", {
-        action: pending.action,
-        actionId: pending.actionId,
-        reason: "controller-stop",
-      });
-    }
     stopWaiting();
-    activeAdvance = undefined;
     queueActions.removeEventListener("click", handleClick, true);
     window.removeEventListener("pagehide", stop);
   }
 
   queueActions.addEventListener("click", handleClick, true);
   window.addEventListener("pagehide", stop, { once: true });
-  logger?.info("controller.started");
   return stop;
 }
 
-function startModalReviewCountFix(logger) {
+function startModalReviewCountFix() {
   const root = document.body;
   if (!(root instanceof HTMLElement)) {
     return () => {};
@@ -236,13 +174,7 @@ function startModalReviewCountFix(logger) {
       }
       const match = element.textContent?.trim().match(/^\(\((.+)\)\)$/u);
       if (match) {
-        const previousText = element.textContent;
         element.textContent = `(${match[1]})`;
-        logger?.info("review_count.corrected", {
-          correctedText: element.textContent,
-          previousText,
-          reviewCount: match[1],
-        });
       }
     }
   }
@@ -310,66 +242,54 @@ function getMonitoredPath(input, init) {
   return pathname === MODAL_WISHLIST_PATH ? pathname : undefined;
 }
 
-function monitorActionRequests(logger, takePending, handleResult) {
+function monitorActionRequests(takePending, handleResult) {
   if (typeof window.fetch !== "function") {
-    logger?.warn("fetch.monitor_unavailable");
     return () => {};
   }
 
   const originalFetch = window.fetch;
   function monitoredFetch(...args) {
+    let pathname;
+    try {
+      pathname = getMonitoredPath(args[0], args[1]);
+    } catch {
+      return Reflect.apply(originalFetch, this, args);
+    }
+
+    if (!pathname) {
+      return Reflect.apply(originalFetch, this, args);
+    }
+
+    const pending = takePending(pathname);
     let response;
     try {
       response = Reflect.apply(originalFetch, this, args);
     } catch (error) {
-      logger?.error("fetch.call_failed", error, {
-        input: args[0],
-        init: args[1],
-      });
+      if (pending) {
+        console.error(
+          `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 的加入愿望单请求未能发出。`,
+          error,
+        );
+        handleResult(pending);
+      }
       throw error;
     }
-    let pathname;
-    try {
-      pathname = getMonitoredPath(args[0], args[1]);
-    } catch (error) {
-      logger?.error("fetch.inspect_failed", error, {
-        input: args[0],
-        init: args[1],
-      });
-      return response;
-    }
 
-    if (!pathname) {
-      return response;
-    }
-
-    const pending = takePending(pathname);
     if (!pending) {
-      logger?.warn("fetch.pending_missing", { pathname });
       return response;
     }
-    logger?.info("fetch.matched", {
-      actionId: pending.actionId,
-      pathname,
-    });
 
     return response.then(
       (result) => {
-        logger?.info("fetch.completed", {
-          actionId: pending.actionId,
-          ok: result.ok,
-          pathname,
-          status: result.status,
-        });
-        handleResult(pending, result.ok);
+        handleResult(pending, result);
         return result;
       },
       (error) => {
-        logger?.error("fetch.failed", error, {
-          actionId: pending.actionId,
-          pathname,
-        });
-        handleResult(pending, false);
+        console.error(
+          `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 的加入愿望单请求失败，当前项目不会自动跳过。`,
+          error,
+        );
+        handleResult(pending);
         throw error;
       },
     );
@@ -383,11 +303,10 @@ function monitorActionRequests(logger, takePending, handleResult) {
   };
 }
 
-function startModalQueue(logger) {
+function startModalQueue() {
   const requestQueues = new Map();
   const pendingActions = new Set();
   let advanceFrame;
-  let activeAdvance;
   let advancing = false;
 
   function removePending(pending) {
@@ -414,32 +333,20 @@ function startModalQueue(logger) {
 
   function advance(pending, immediate = false) {
     if (advancing) {
-      logger?.debug("advance.suppressed", {
-        actionId: pending.actionId,
-        reason: "already-advancing",
-      });
       return;
     }
 
     advancing = true;
-    activeAdvance = pending;
     clearPending();
     const deadline = performance.now() + QUEUE_TIMEOUT_MS;
-    logger?.info("advance.started", {
-      action: pending.action,
-      actionId: pending.actionId,
-      immediate,
-    });
 
     const triggerNext = () => {
       advanceFrame = undefined;
       if (!pending.dialog.isConnected) {
         advancing = false;
-        activeAdvance = undefined;
-        logger?.warn("advance.cancelled", {
-          actionId: pending.actionId,
-          reason: "dialog-disconnected",
-        });
+        console.warn(
+          `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 执行${pending.action === "wishlist" ? "加入愿望单" : "忽略"}后，队列对话框已经消失，无法点击“下一项”。`,
+        );
         return;
       }
 
@@ -447,15 +354,14 @@ function startModalQueue(logger) {
       if (nextButton) {
         nextButton.click();
         advancing = false;
-        activeAdvance = undefined;
-        logger?.info("advance.clicked", { actionId: pending.actionId });
         return;
       }
 
       if (performance.now() >= deadline) {
         advancing = false;
-        activeAdvance = undefined;
-        logger?.warn("advance.timeout", { actionId: pending.actionId });
+        console.warn(
+          `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 执行${pending.action === "wishlist" ? "加入愿望单" : "忽略"}后，等待“下一项”按钮超时，无法自动继续。`,
+        );
         return;
       }
       advanceFrame = requestAnimationFrame(triggerNext);
@@ -470,17 +376,15 @@ function startModalQueue(logger) {
   function waitForSelectedState(pending) {
     function checkState() {
       clearTimeout(pending.stabilityTimer);
-      if (
-        !pending.button.isConnected ||
-        pending.button.className === pending.initialClassName
-      ) {
+      if (!pending.button.isConnected) {
+        console.warn(
+          `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 加入愿望单请求成功，但操作按钮已经消失，无法确认页面状态。`,
+        );
+        removePending(pending);
         return;
       }
-      if (!pending.selectedStateDetected) {
-        pending.selectedStateDetected = true;
-        logger?.debug("selected_state.detected", {
-          actionId: pending.actionId,
-        });
+      if (pending.button.className === pending.initialClassName) {
+        return;
       }
 
       pending.stabilityTimer = setTimeout(() => {
@@ -488,9 +392,6 @@ function startModalQueue(logger) {
           pending.button.isConnected &&
           pending.button.className !== pending.initialClassName
         ) {
-          logger?.info("selected_state.confirmed", {
-            actionId: pending.actionId,
-          });
           advance(pending);
         }
       }, ADVANCE_DELAY_MS);
@@ -505,7 +406,6 @@ function startModalQueue(logger) {
   }
 
   const stopMonitoringRequests = monitorActionRequests(
-    logger,
     (pathname) => {
       const queue = requestQueues.get(pathname);
       const pending = queue?.shift();
@@ -518,49 +418,36 @@ function startModalQueue(logger) {
       }
       return pending;
     },
-    (pending, succeeded) => {
+    (pending, response) => {
       if (!pendingActions.has(pending)) {
-        logger?.debug("fetch.result_ignored", {
-          actionId: pending.actionId,
-          reason: "pending-cancelled",
-        });
         return;
       }
 
-      if (succeeded) {
-        logger?.info("action.request_succeeded", {
-          actionId: pending.actionId,
-        });
+      if (response?.ok) {
+        clearTimeout(pending.timer);
+        pending.timer = setTimeout(() => {
+          console.warn(
+            `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 加入愿望单请求成功，但等待页面确认超时，当前项目不会自动跳过。`,
+          );
+          removePending(pending);
+        }, QUEUE_TIMEOUT_MS);
         waitForSelectedState(pending);
       } else {
-        logger?.warn("action.request_failed", {
-          actionId: pending.actionId,
-        });
+        if (response) {
+          console.error(
+            `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 的加入愿望单请求返回 HTTP ${response.status}，当前项目不会自动跳过。`,
+          );
+        }
         removePending(pending);
       }
     },
   );
 
   function handleClick(event) {
-    const modalAction = getModalQueueAction(event.target, logger);
-    if (!modalAction) {
+    const modalAction = getModalQueueAction(event.target);
+    if (!modalAction || advancing) {
       return;
     }
-    modalAction.actionId = logger?.nextId("modal-action");
-    if (advancing) {
-      logger?.debug("action.suppressed", {
-        action: modalAction.action,
-        actionId: modalAction.actionId,
-        appId: modalAction.appId,
-        reason: "advancing",
-      });
-      return;
-    }
-    logger?.info("action.clicked", {
-      action: modalAction.action,
-      actionId: modalAction.actionId,
-      appId: modalAction.appId,
-    });
 
     if (modalAction.action === "ignore") {
       advance(modalAction, true);
@@ -572,10 +459,9 @@ function startModalQueue(logger) {
       pathname: MODAL_WISHLIST_PATH,
     };
     pending.timer = setTimeout(() => {
-      logger?.warn("action.pending_timeout", {
-        actionId: pending.actionId,
-        pathname: pending.pathname,
-      });
+      console.warn(
+        `[Steam 探索队列] 等待应用 ${pending.appId ?? "未知"} 的加入愿望单请求超时，当前项目不会自动跳过。`,
+      );
       removePending(pending);
     }, QUEUE_TIMEOUT_MS);
     pendingActions.add(pending);
@@ -585,27 +471,8 @@ function startModalQueue(logger) {
   }
 
   function stop() {
-    logger?.info("controller.stopping", {
-      advancing,
-      pendingCount: pendingActions.size,
-    });
-    if (activeAdvance) {
-      logger?.info("advance.cancelled", {
-        actionId: activeAdvance.actionId,
-        reason: "controller-stop",
-      });
-    }
-    for (const pending of pendingActions) {
-      logger?.info("action.cancelled", {
-        action: pending.action,
-        actionId: pending.actionId,
-        appId: pending.appId,
-        reason: "controller-stop",
-      });
-    }
     cancelAnimationFrame(advanceFrame);
     advanceFrame = undefined;
-    activeAdvance = undefined;
     advancing = false;
     stopMonitoringRequests();
     clearPending();
@@ -615,25 +482,17 @@ function startModalQueue(logger) {
 
   document.addEventListener("click", handleClick, true);
   window.addEventListener("pagehide", stop, { once: true });
-  logger?.info("controller.started");
   return stop;
 }
 
-export function startSteamDiscoveryQueue({ logger } = {}) {
-  const runLogger = logger?.child("run");
-  runLogger?.info("lifecycle.started", {
-    documentReadyState: document.readyState,
-  });
-  const storeItemReader = createDiscoveryQueueStoreItemReader({
-    logger: runLogger?.child("store-items"),
-  });
+export function startSteamDiscoveryQueue() {
+  const storeItemReader = createDiscoveryQueueStoreItemReader();
   const stopPrefilter = startDiscoveryQueuePrefilter({
     getLocalizedTags: storeItemReader.getLocalizedTags,
     getStoreItem: storeItemReader.get,
     prepareStoreItems: storeItemReader.prepareBatch,
-    logger: runLogger?.child("prefilter"),
   });
-  const stopModalQueue = startModalQueue(runLogger?.child("modal"));
+  const stopModalQueue = startModalQueue();
   let stopClassicQueue = () => {};
   let stopAutoFilter = () => {};
   let stopReviewCountFix = () => {};
@@ -641,18 +500,11 @@ export function startSteamDiscoveryQueue({ logger } = {}) {
 
   function startQueueControllersWhenReady() {
     if (!stopped) {
-      runLogger?.info("controllers.starting", {
-        documentReadyState: document.readyState,
-      });
-      stopClassicQueue = startClassicQueue(runLogger?.child("classic"));
+      stopClassicQueue = startClassicQueue();
       stopAutoFilter = startDiscoveryQueueAutoFilter({
         getStoreItem: storeItemReader.get,
-        logger: runLogger,
       });
-      stopReviewCountFix = startModalReviewCountFix(
-        runLogger?.child("modal-review-count"),
-      );
-      runLogger?.info("controllers.started");
+      stopReviewCountFix = startModalReviewCountFix();
     }
   }
 
@@ -665,7 +517,6 @@ export function startSteamDiscoveryQueue({ logger } = {}) {
   }
 
   return () => {
-    runLogger?.info("lifecycle.stopping");
     stopped = true;
     document.removeEventListener("DOMContentLoaded", startQueueControllersWhenReady);
     stopModalQueue();
@@ -674,6 +525,5 @@ export function startSteamDiscoveryQueue({ logger } = {}) {
     stopAutoFilter();
     stopReviewCountFix();
     storeItemReader.stop();
-    runLogger?.info("lifecycle.stopped");
   };
 }
