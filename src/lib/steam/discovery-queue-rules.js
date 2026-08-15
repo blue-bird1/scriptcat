@@ -572,8 +572,6 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
 
       const profileFeaturesLimited =
         await profileFeaturesLimitedReader.get(appId);
-      const profileDiagnostic =
-        profileFeaturesLimitedReader.getDiagnostic(appId);
       if (typeof profileFeaturesLimited === "boolean") {
         data.profileFeaturesLimited = profileFeaturesLimited;
       }
@@ -586,7 +584,6 @@ export function createDiscoveryQueueRuleEngine({ getStoreItem, logger } = {}) {
         ["store-item", storeItemResult.diagnostic],
         ["reviews", reviewsResult.diagnostic],
         ["details", detailsResult.diagnostic],
-        ["profile-features", profileDiagnostic],
       ].filter(([, diagnostic]) => diagnostic !== undefined).map(([source, diagnostic]) => ({ source, ...diagnostic }));
       logger?.info("evaluation.completed", {
         appId,

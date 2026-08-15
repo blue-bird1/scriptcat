@@ -262,7 +262,10 @@ function getClassicContinueLink(logger) {
 
 export function startDiscoveryQueueAutoFilter({ getStoreItem, logger } = {}) {
   const autoLogger = logger?.child("auto-filter");
-  const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
+  const ruleEngine = createDiscoveryQueueRuleEngine({
+    getStoreItem,
+    logger: autoLogger?.child("rules"),
+  });
   const continuedModalButtons = new WeakSet();
   const continuedClassicLinks = new WeakSet();
   const loggedModalSuppressions = new WeakSet();

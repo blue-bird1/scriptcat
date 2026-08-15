@@ -44,17 +44,12 @@ function parseProfileFeaturesLimited(payload, appId) {
 
 export function createProfileFeaturesLimitedReader({ logger } = {}) {
   const cache = new Map();
-  const diagnostics = new Map();
   let requestChain = Promise.resolve();
   let requestGeneration = 0;
   let requestsBlocked = false;
 
   async function request(appId, generation) {
     if (requestsBlocked || generation !== requestGeneration) {
-      diagnostics.set(appId, {
-        kind: "unavailable",
-        reason: requestsBlocked ? "rate-limited" : "generation-cancelled",
-      });
       logger?.debug("request.skipped", {
         appId,
         generation,
@@ -66,10 +61,6 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
 
     const credentials = readApplicationConfig(logger);
     if (!credentials) {
-      diagnostics.set(appId, {
-        kind: "unavailable",
-        reason: "credentials-unavailable",
-      });
       logger?.warn("request.skipped", {
         appId,
         reason: "credentials-unavailable",
@@ -101,10 +92,6 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
         body,
       });
       if (generation !== requestGeneration) {
-        diagnostics.set(appId, {
-          kind: "unavailable",
-          reason: "generation-cancelled",
-        });
         logger?.info("request.cancelled", {
           appId,
           durationMs: performance.now() - startedAt,
@@ -116,11 +103,6 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
       }
       if (response.status === 429) {
         requestsBlocked = true;
-        diagnostics.set(appId, {
-          kind: "http",
-          status: response.status,
-          statusText: response.statusText,
-        });
         logger?.warn("request.rate-limited", {
           appId,
           durationMs: performance.now() - startedAt,
@@ -130,11 +112,6 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
         return undefined;
       }
       if (!response.ok) {
-        diagnostics.set(appId, {
-          kind: "http",
-          status: response.status,
-          statusText: response.statusText,
-        });
         logger?.warn("request.http-error", {
           appId,
           durationMs: performance.now() - startedAt,
@@ -145,12 +122,12 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
       }
       const value = parseProfileFeaturesLimited(await response.json(), appId);
       if (value === undefined) {
-        diagnostics.set(appId, {
-          kind: "invalid-response",
+        logger?.warn("response.unresolved", {
+          appId,
+          durationMs: performance.now() - startedAt,
           reason: "profile-status-unresolved",
+          status: response.status,
         });
-      } else {
-        diagnostics.delete(appId);
       }
       logger?.debug("request.completed", {
         appId,
@@ -160,7 +137,6 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
       });
       return value;
     } catch (error) {
-      diagnostics.set(appId, { error, kind: "exception" });
       logger?.error("request.error", error, {
         appId,
         durationMs: performance.now() - startedAt,
@@ -183,14 +159,10 @@ export function createProfileFeaturesLimitedReader({ logger } = {}) {
       }
       return statusPromise;
     },
-    getDiagnostic(appId) {
-      return diagnostics.get(appId);
-    },
     clear() {
       requestGeneration += 1;
       logger?.info("generation.cleared", { requestGeneration });
       cache.clear();
-      diagnostics.clear();
       requestChain = Promise.resolve();
       requestsBlocked = false;
     },

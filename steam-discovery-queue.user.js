@@ -567,16 +567,11 @@
   }
   function createProfileFeaturesLimitedReader({ logger: logger2 } = {}) {
     const cache = /* @__PURE__ */ new Map();
-    const diagnostics = /* @__PURE__ */ new Map();
     let requestChain = Promise.resolve();
     let requestGeneration = 0;
     let requestsBlocked = false;
     async function request(appId, generation) {
       if (requestsBlocked || generation !== requestGeneration) {
-        diagnostics.set(appId, {
-          kind: "unavailable",
-          reason: requestsBlocked ? "rate-limited" : "generation-cancelled"
-        });
         logger2?.debug("request.skipped", {
           appId,
           generation,
@@ -587,10 +582,6 @@
       }
       const credentials = readApplicationConfig(logger2);
       if (!credentials) {
-        diagnostics.set(appId, {
-          kind: "unavailable",
-          reason: "credentials-unavailable"
-        });
         logger2?.warn("request.skipped", {
           appId,
           reason: "credentials-unavailable"
@@ -617,10 +608,6 @@
           body
         });
         if (generation !== requestGeneration) {
-          diagnostics.set(appId, {
-            kind: "unavailable",
-            reason: "generation-cancelled"
-          });
           logger2?.info("request.cancelled", {
             appId,
             durationMs: performance.now() - startedAt,
@@ -632,11 +619,6 @@
         }
         if (response.status === 429) {
           requestsBlocked = true;
-          diagnostics.set(appId, {
-            kind: "http",
-            status: response.status,
-            statusText: response.statusText
-          });
           logger2?.warn("request.rate-limited", {
             appId,
             durationMs: performance.now() - startedAt,
@@ -646,11 +628,6 @@
           return void 0;
         }
         if (!response.ok) {
-          diagnostics.set(appId, {
-            kind: "http",
-            status: response.status,
-            statusText: response.statusText
-          });
           logger2?.warn("request.http-error", {
             appId,
             durationMs: performance.now() - startedAt,
@@ -661,12 +638,12 @@
         }
         const value = parseProfileFeaturesLimited(await response.json(), appId);
         if (value === void 0) {
-          diagnostics.set(appId, {
-            kind: "invalid-response",
-            reason: "profile-status-unresolved"
+          logger2?.warn("response.unresolved", {
+            appId,
+            durationMs: performance.now() - startedAt,
+            reason: "profile-status-unresolved",
+            status: response.status
           });
-        } else {
-          diagnostics.delete(appId);
         }
         logger2?.debug("request.completed", {
           appId,
@@ -676,7 +653,6 @@
         });
         return value;
       } catch (error) {
-        diagnostics.set(appId, { error, kind: "exception" });
         logger2?.error("request.error", error, {
           appId,
           durationMs: performance.now() - startedAt
@@ -698,14 +674,10 @@
         }
         return statusPromise;
       },
-      getDiagnostic(appId) {
-        return diagnostics.get(appId);
-      },
       clear() {
         requestGeneration += 1;
         logger2?.info("generation.cleared", { requestGeneration });
         cache.clear();
-        diagnostics.clear();
         requestChain = Promise.resolve();
         requestsBlocked = false;
       }
@@ -1168,7 +1140,6 @@
           return result2;
         }
         const profileFeaturesLimited = await profileFeaturesLimitedReader.get(appId);
-        const profileDiagnostic = profileFeaturesLimitedReader.getDiagnostic(appId);
         if (typeof profileFeaturesLimited === "boolean") {
           data.profileFeaturesLimited = profileFeaturesLimited;
         }
@@ -1179,8 +1150,7 @@
         const sourceErrors = [
           ["store-item", storeItemResult.diagnostic],
           ["reviews", reviewsResult.diagnostic],
-          ["details", detailsResult.diagnostic],
-          ["profile-features", profileDiagnostic]
+          ["details", detailsResult.diagnostic]
         ].filter(([, diagnostic]) => diagnostic !== void 0).map(([source, diagnostic]) => ({ source, ...diagnostic }));
         logger2?.info("evaluation.completed", {
           appId,
@@ -1397,7 +1367,10 @@
   }
   function startDiscoveryQueueAutoFilter({ getStoreItem, logger: logger2 } = {}) {
     const autoLogger = logger2?.child("auto-filter");
-    const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
+    const ruleEngine = createDiscoveryQueueRuleEngine({
+      getStoreItem,
+      logger: autoLogger?.child("rules")
+    });
     const continuedModalButtons = /* @__PURE__ */ new WeakSet();
     const continuedClassicLinks = /* @__PURE__ */ new WeakSet();
     const loggedModalSuppressions = /* @__PURE__ */ new WeakSet();
@@ -2263,6 +2236,13 @@
         });
         await filteredBatch.ignoreCompletion;
       }
+      prefilterLogger?.warn("summary.selected", {
+        currentGeneration,
+        generation,
+        lifecycleId,
+        reason: stopped ? "stopped-during-rebuild" : "generation-changed-during-rebuild",
+        stopped
+      });
       return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
     }
     function wrappedFetch(...args) {
@@ -2307,8 +2287,18 @@
         queueCache = cache;
         originalQueueMultiple = current;
         queueMultipleWrapper = function wrappedQueueMultiple(appIds, ...args) {
-          const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
           const snapshot = Array.isArray(appIds) ? [...appIds] : void 0;
+          let result;
+          try {
+            result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
+          } catch (error) {
+            prefilterLogger?.error("queue.store-items.sync-error", error, {
+              appIds: snapshot,
+              dataRequest: args[0],
+              lifecycleId
+            });
+            throw error;
+          }
           const expectedKey = snapshot && appIdKey(snapshot);
           const dialog = getDiscoveryQueueDialog();
           if (expectedKey === void 0 || snapshot.length === 0 || !dialog || !isDiscoveryQueueDataRequest(args[0])) {
@@ -2360,54 +2350,72 @@
             lifecycleId
           });
           reporter.beginBatch(snapshot);
-          return Promise.resolve(result).then(async (value) => {
-            const filteredBatch = await prefilter(
-              snapshot,
-              config,
-              currentGeneration,
-              reporter
-            );
-            if (!filteredBatch || stopped || currentGeneration !== generation) {
-              prefilterLogger?.info("display.original-batch", {
+          return Promise.resolve(result).then(
+            async (value) => {
+              const filteredBatch = await prefilter(
+                snapshot,
+                config,
+                currentGeneration,
+                reporter
+              );
+              if (!filteredBatch || stopped || currentGeneration !== generation) {
+                prefilterLogger?.info("display.original-batch", {
+                  appIds: snapshot,
+                  lifecycleId,
+                  reason: "generation-cancelled"
+                });
+                return value;
+              }
+              if (filteredBatch.retainedAppIds.length > 0) {
+                replaceAppIds(appIds, filteredBatch.retainedAppIds);
+                prefilterLogger?.info("display.retained", {
+                  appIds: [...filteredBatch.retainedAppIds],
+                  lifecycleId,
+                  source: "initial"
+                });
+                return value;
+              }
+              await filteredBatch.ignoreCompletion;
+              if (stopped || currentGeneration !== generation) {
+                prefilterLogger?.info("display.original-batch", {
+                  appIds: snapshot,
+                  currentGeneration,
+                  generation,
+                  lifecycleId,
+                  reason: stopped ? "stopped-after-ignore" : "generation-changed-after-ignore",
+                  stopped
+                });
+                return value;
+              }
+              if (!permit) {
+                prefilterLogger?.warn("summary.selected", {
+                  lifecycleId,
+                  reason: "fully-filtered-without-permit"
+                });
+                replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
+                return value;
+              }
+              const nextAppIds = await loadNextVisibleBatch(
+                permit,
+                args[0],
+                queueReceiver,
+                config,
+                currentGeneration,
+                /* @__PURE__ */ new Set([expectedKey]),
+                reporter
+              );
+              replaceAppIds(appIds, nextAppIds);
+              return value;
+            },
+            (error) => {
+              prefilterLogger?.error("queue.store-items.async-error", error, {
                 appIds: snapshot,
-                lifecycleId,
-                reason: "generation-cancelled"
+                dataRequest: args[0],
+                lifecycleId
               });
-              return value;
+              throw error;
             }
-            if (filteredBatch.retainedAppIds.length > 0) {
-              replaceAppIds(appIds, filteredBatch.retainedAppIds);
-              prefilterLogger?.info("display.retained", {
-                appIds: [...filteredBatch.retainedAppIds],
-                lifecycleId,
-                source: "initial"
-              });
-              return value;
-            }
-            await filteredBatch.ignoreCompletion;
-            if (stopped || currentGeneration !== generation) {
-              return value;
-            }
-            if (!permit) {
-              prefilterLogger?.warn("summary.selected", {
-                lifecycleId,
-                reason: "fully-filtered-without-permit"
-              });
-              replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-              return value;
-            }
-            const nextAppIds = await loadNextVisibleBatch(
-              permit,
-              args[0],
-              queueReceiver,
-              config,
-              currentGeneration,
-              /* @__PURE__ */ new Set([expectedKey]),
-              reporter
-            );
-            replaceAppIds(appIds, nextAppIds);
-            return value;
-          }).finally(() => reporter.close());
+          ).finally(() => reporter.close());
         };
         cache.QueueMultipleAppRequests = queueMultipleWrapper;
       }
@@ -2626,6 +2634,39 @@
     } catch (error) {
       logger2?.error("item.read.error", error, { appId, field });
       return [];
+    }
+  }
+  function readTagIds(item, logger2, appId) {
+    if (!item) {
+      logger2?.warn("tags.unavailable", {
+        appId,
+        reason: "store-item-missing"
+      });
+      return void 0;
+    }
+    if (typeof item.GetTagIDs !== "function") {
+      logger2?.warn("tags.unavailable", {
+        appId,
+        reason: "getter-missing"
+      });
+      return void 0;
+    }
+    try {
+      const value = item.GetTagIDs();
+      if (!Array.isArray(value)) {
+        logger2?.warn("tags.unavailable", {
+          appId,
+          reason: "getter-returned-non-array",
+          value
+        });
+        return void 0;
+      }
+      return value.filter(
+        (entry) => Number.isSafeInteger(entry) && entry > 0
+      );
+    } catch (error) {
+      logger2?.error("tags.read.error", error, { appId });
+      return void 0;
     }
   }
   function readSupportedLanguages(item, logger2, appId) {
@@ -2865,14 +2906,13 @@
           return [];
         }
         try {
-          const tagIds = readArray(
-            () => cache.GetApp(numericAppId)?.GetTagIDs?.(),
-            logger2,
-            "tagIds",
-            numericAppId
-          );
+          const tagIds = readTagIds(cache.GetApp(numericAppId), logger2, numericAppId);
+          if (!tagIds) {
+            return [];
+          }
           const uniqueTagIds = [...new Set(tagIds)];
           if (uniqueTagIds.length === 0) {
+            logger2?.debug("tags.empty", { appId: numericAppId });
             return [];
           }
           const names = await tagCatalog.getNames(uniqueTagIds);

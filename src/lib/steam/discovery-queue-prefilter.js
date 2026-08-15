@@ -756,6 +756,15 @@ export function startDiscoveryQueuePrefilter({
       });
       await filteredBatch.ignoreCompletion;
     }
+    prefilterLogger?.warn("summary.selected", {
+      currentGeneration,
+      generation,
+      lifecycleId,
+      reason: stopped
+        ? "stopped-during-rebuild"
+        : "generation-changed-during-rebuild",
+      stopped,
+    });
     return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
   }
 
@@ -802,8 +811,18 @@ export function startDiscoveryQueuePrefilter({
       queueCache = cache;
       originalQueueMultiple = current;
       queueMultipleWrapper = function wrappedQueueMultiple(appIds, ...args) {
-        const result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
         const snapshot = Array.isArray(appIds) ? [...appIds] : undefined;
+        let result;
+        try {
+          result = Reflect.apply(originalQueueMultiple, this, [appIds, ...args]);
+        } catch (error) {
+          prefilterLogger?.error("queue.store-items.sync-error", error, {
+            appIds: snapshot,
+            dataRequest: args[0],
+            lifecycleId,
+          });
+          throw error;
+        }
         const expectedKey = snapshot && appIdKey(snapshot);
         const dialog = getDiscoveryQueueDialog();
         if (
@@ -863,54 +882,74 @@ export function startDiscoveryQueuePrefilter({
           lifecycleId,
         });
         reporter.beginBatch(snapshot);
-        return Promise.resolve(result).then(async (value) => {
-          const filteredBatch = await prefilter(
-            snapshot,
-            config,
-            currentGeneration,
-            reporter,
-          );
-          if (!filteredBatch || stopped || currentGeneration !== generation) {
-            prefilterLogger?.info("display.original-batch", {
+        return Promise.resolve(result).then(
+          async (value) => {
+            const filteredBatch = await prefilter(
+              snapshot,
+              config,
+              currentGeneration,
+              reporter,
+            );
+            if (!filteredBatch || stopped || currentGeneration !== generation) {
+              prefilterLogger?.info("display.original-batch", {
+                appIds: snapshot,
+                lifecycleId,
+                reason: "generation-cancelled",
+              });
+              return value;
+            }
+            if (filteredBatch.retainedAppIds.length > 0) {
+              replaceAppIds(appIds, filteredBatch.retainedAppIds);
+              prefilterLogger?.info("display.retained", {
+                appIds: [...filteredBatch.retainedAppIds],
+                lifecycleId,
+                source: "initial",
+              });
+              return value;
+            }
+            await filteredBatch.ignoreCompletion;
+            if (stopped || currentGeneration !== generation) {
+              prefilterLogger?.info("display.original-batch", {
+                appIds: snapshot,
+                currentGeneration,
+                generation,
+                lifecycleId,
+                reason: stopped
+                  ? "stopped-after-ignore"
+                  : "generation-changed-after-ignore",
+                stopped,
+              });
+              return value;
+            }
+            if (!permit) {
+              prefilterLogger?.warn("summary.selected", {
+                lifecycleId,
+                reason: "fully-filtered-without-permit",
+              });
+              replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
+              return value;
+            }
+            const nextAppIds = await loadNextVisibleBatch(
+              permit,
+              args[0],
+              queueReceiver,
+              config,
+              currentGeneration,
+              new Set([expectedKey]),
+              reporter,
+            );
+            replaceAppIds(appIds, nextAppIds);
+            return value;
+          },
+          (error) => {
+            prefilterLogger?.error("queue.store-items.async-error", error, {
               appIds: snapshot,
+              dataRequest: args[0],
               lifecycleId,
-              reason: "generation-cancelled",
             });
-            return value;
-          }
-          if (filteredBatch.retainedAppIds.length > 0) {
-            replaceAppIds(appIds, filteredBatch.retainedAppIds);
-            prefilterLogger?.info("display.retained", {
-              appIds: [...filteredBatch.retainedAppIds],
-              lifecycleId,
-              source: "initial",
-            });
-            return value;
-          }
-          await filteredBatch.ignoreCompletion;
-          if (stopped || currentGeneration !== generation) {
-            return value;
-          }
-          if (!permit) {
-            prefilterLogger?.warn("summary.selected", {
-              lifecycleId,
-              reason: "fully-filtered-without-permit",
-            });
-            replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
-            return value;
-          }
-          const nextAppIds = await loadNextVisibleBatch(
-            permit,
-            args[0],
-            queueReceiver,
-            config,
-            currentGeneration,
-            new Set([expectedKey]),
-            reporter,
-          );
-          replaceAppIds(appIds, nextAppIds);
-          return value;
-        }).finally(() => reporter.close());
+            throw error;
+          },
+        ).finally(() => reporter.close());
       };
       cache.QueueMultipleAppRequests = queueMultipleWrapper;
     }

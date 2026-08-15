@@ -49,6 +49,40 @@ function readArray(getter, logger, field, appId) {
   }
 }
 
+function readTagIds(item, logger, appId) {
+  if (!item) {
+    logger?.warn("tags.unavailable", {
+      appId,
+      reason: "store-item-missing",
+    });
+    return undefined;
+  }
+  if (typeof item.GetTagIDs !== "function") {
+    logger?.warn("tags.unavailable", {
+      appId,
+      reason: "getter-missing",
+    });
+    return undefined;
+  }
+  try {
+    const value = item.GetTagIDs();
+    if (!Array.isArray(value)) {
+      logger?.warn("tags.unavailable", {
+        appId,
+        reason: "getter-returned-non-array",
+        value,
+      });
+      return undefined;
+    }
+    return value.filter(
+      (entry) => Number.isSafeInteger(entry) && entry > 0,
+    );
+  } catch (error) {
+    logger?.error("tags.read.error", error, { appId });
+    return undefined;
+  }
+}
+
 function readSupportedLanguages(item, logger, appId) {
   if (typeof item.GetAllLanguagesWithSomeSupport !== "function") {
     return undefined;
@@ -338,14 +372,13 @@ export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
       }
 
       try {
-        const tagIds = readArray(
-          () => cache.GetApp(numericAppId)?.GetTagIDs?.(),
-          logger,
-          "tagIds",
-          numericAppId,
-        );
+        const tagIds = readTagIds(cache.GetApp(numericAppId), logger, numericAppId);
+        if (!tagIds) {
+          return [];
+        }
         const uniqueTagIds = [...new Set(tagIds)];
         if (uniqueTagIds.length === 0) {
+          logger?.debug("tags.empty", { appId: numericAppId });
           return [];
         }
 
