@@ -369,8 +369,6 @@ function createPrefilterReporter() {
         ignored += 1;
         render(`正在忽略第 ${batches} 批命中项`);
         console.info(`[Steam 探索队列] 已忽略 App ${appId}`);
-      } else {
-        console.warn(`[Steam 探索队列] App ${appId} 忽略失败，但仍从当前展示中筛除`);
       }
     },
     finishBatch(retainedAppIds, matchedAppIds) {
