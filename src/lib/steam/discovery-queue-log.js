@@ -7,8 +7,8 @@ function defaultNow() {
 }
 
 function createDefaultElapsed() {
-  const start = globalThis.performance?.now?.() ?? Date.now();
-  return () => (globalThis.performance?.now?.() ?? Date.now()) - start;
+  const start = performance?.now?.() ?? Date.now();
+  return () => (performance?.now?.() ?? Date.now()) - start;
 }
 
 function copyContext(context) {
@@ -38,7 +38,7 @@ function safeText(value, fallback) {
 
 export function createDiscoveryQueueLogger({
   scriptVersion,
-  consoleTarget = globalThis.console,
+  consoleTarget = console,
   now = defaultNow,
   elapsed = createDefaultElapsed(),
 } = {}) {
@@ -94,6 +94,7 @@ export function createDiscoveryQueueLogger({
         }
       } catch {
         // Observability must never alter discovery queue behavior.
+        return undefined;
       }
     }
 

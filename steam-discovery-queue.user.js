@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.18
+// @version      0.3.19
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -186,19 +186,28 @@
       }
     };
   }
-  function loadDiscoveryQueueConfig() {
+  function loadDiscoveryQueueConfig(logger2) {
     try {
       const serialized = localStorage.getItem(STORAGE_KEY);
-      return serialized === null ? cloneDefaultConfig() : normalizeConfig(JSON.parse(serialized));
-    } catch {
+      const config = serialized === null ? cloneDefaultConfig() : normalizeConfig(JSON.parse(serialized));
+      logger2?.debug("config.loaded", {
+        source: serialized === null ? "default" : "localStorage"
+      });
+      return config;
+    } catch (error) {
+      logger2?.error("config.load_failed", error, { fallback: "default" });
       return cloneDefaultConfig();
     }
   }
-  function saveDiscoveryQueueConfig(value) {
+  function saveDiscoveryQueueConfig(value, logger2) {
     const config = normalizeConfig(value);
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-    } catch {
+      logger2?.info("config.persisted", { enabled: config.enabled });
+    } catch (error) {
+      logger2?.error("config.persist_failed", error, {
+        enabled: config.enabled
+      });
       return config;
     }
     return config;
@@ -254,8 +263,9 @@
   function readNumber(input) {
     return input.value === "" ? Number.NaN : Number(input.value);
   }
-  function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
-    let config = loadDiscoveryQueueConfig();
+  function createDiscoveryQueueConfigUi({ logger: logger2, onSave, onOpenChange } = {}) {
+    const uiLogger = logger2?.child("config-ui");
+    let config = loadDiscoveryQueueConfig(uiLogger);
     let button;
     let popup;
     let backdrop;
@@ -281,6 +291,7 @@
       backdrop.remove();
       popup = void 0;
       backdrop = void 0;
+      uiLogger?.info("popup.closed");
       notifyOpenChange(false);
     }
     function syncDisconnectedPopup() {
@@ -291,6 +302,7 @@
     function openPopup() {
       syncDisconnectedPopup();
       if (popup) {
+        uiLogger?.debug("popup.open_suppressed", { reason: "already-open" });
         return;
       }
       injectStyles();
@@ -368,6 +380,9 @@
       backdrop.append(popup);
       const popupHost = button?.closest('[role="dialog"]') ?? document.body;
       popupHost.append(backdrop);
+      uiLogger?.info("popup.opened", {
+        host: popupHost === document.body ? "document-body" : "queue-dialog"
+      });
       function renderTags() {
         for (const chip of [...tagContainer.children]) {
           if (chip !== tagInput) {
@@ -460,6 +475,10 @@
             enabled: languageEnabled.checked,
             value: [...selectedLanguages]
           }
+        }, uiLogger);
+        uiLogger?.info("popup.saved", {
+          autoContinueQueue: config.autoContinueQueue,
+          enabled: config.enabled
         });
         closePopup();
         if (typeof onSave === "function") {
@@ -514,7 +533,7 @@
 
   // src/lib/steam/discovery-queue-profile-features.js
   var PROFILE_PROGRESS_ENDPOINT = "https://api.steampowered.com/IPlayerService/GetAchievementsProgress/v1/";
-  function readApplicationConfig() {
+  function readApplicationConfig(logger2) {
     const applicationConfig = document.getElementById("application_config");
     if (!(applicationConfig instanceof HTMLElement)) {
       return void 0;
@@ -527,7 +546,8 @@
       const steamId = userInfo?.steamid;
       const accessToken = storeUserConfig?.webapi_token;
       return typeof steamId === "string" && /^\d{17}$/.test(steamId) && typeof accessToken === "string" && accessToken ? { steamId, accessToken } : void 0;
-    } catch {
+    } catch (error) {
+      logger2?.error("credentials.parse.error", error);
       return void 0;
     }
   }
@@ -545,17 +565,36 @@
     }
     return typeof matching.vetted === "boolean" ? !matching.vetted : void 0;
   }
-  function createProfileFeaturesLimitedReader() {
+  function createProfileFeaturesLimitedReader({ logger: logger2 } = {}) {
     const cache = /* @__PURE__ */ new Map();
+    const diagnostics = /* @__PURE__ */ new Map();
     let requestChain = Promise.resolve();
     let requestGeneration = 0;
     let requestsBlocked = false;
     async function request(appId, generation) {
       if (requestsBlocked || generation !== requestGeneration) {
+        diagnostics.set(appId, {
+          kind: "unavailable",
+          reason: requestsBlocked ? "rate-limited" : "generation-cancelled"
+        });
+        logger2?.debug("request.skipped", {
+          appId,
+          generation,
+          reason: requestsBlocked ? "rate-limited" : "generation-cancelled",
+          requestGeneration
+        });
         return void 0;
       }
-      const credentials = readApplicationConfig();
+      const credentials = readApplicationConfig(logger2);
       if (!credentials) {
+        diagnostics.set(appId, {
+          kind: "unavailable",
+          reason: "credentials-unavailable"
+        });
+        logger2?.warn("request.skipped", {
+          appId,
+          reason: "credentials-unavailable"
+        });
         return void 0;
       }
       const url = new URL(PROFILE_PROGRESS_ENDPOINT);
@@ -570,20 +609,78 @@
           include_unvetted_apps: true
         })
       );
+      const startedAt = performance.now();
+      logger2?.debug("request.started", { appId, generation });
       try {
         const response = await fetch(url, {
           method: "POST",
           body
         });
         if (generation !== requestGeneration) {
+          diagnostics.set(appId, {
+            kind: "unavailable",
+            reason: "generation-cancelled"
+          });
+          logger2?.info("request.cancelled", {
+            appId,
+            durationMs: performance.now() - startedAt,
+            generation,
+            requestGeneration,
+            stage: "response"
+          });
           return void 0;
         }
         if (response.status === 429) {
           requestsBlocked = true;
+          diagnostics.set(appId, {
+            kind: "http",
+            status: response.status,
+            statusText: response.statusText
+          });
+          logger2?.warn("request.rate-limited", {
+            appId,
+            durationMs: performance.now() - startedAt,
+            status: response.status,
+            statusText: response.statusText
+          });
           return void 0;
         }
-        return response.ok ? parseProfileFeaturesLimited(await response.json(), appId) : void 0;
-      } catch {
+        if (!response.ok) {
+          diagnostics.set(appId, {
+            kind: "http",
+            status: response.status,
+            statusText: response.statusText
+          });
+          logger2?.warn("request.http-error", {
+            appId,
+            durationMs: performance.now() - startedAt,
+            status: response.status,
+            statusText: response.statusText
+          });
+          return void 0;
+        }
+        const value = parseProfileFeaturesLimited(await response.json(), appId);
+        if (value === void 0) {
+          diagnostics.set(appId, {
+            kind: "invalid-response",
+            reason: "profile-status-unresolved"
+          });
+        } else {
+          diagnostics.delete(appId);
+        }
+        logger2?.debug("request.completed", {
+          appId,
+          durationMs: performance.now() - startedAt,
+          status: response.status,
+          value
+        });
+        return value;
+      } catch (error) {
+        diagnostics.set(appId, { error, kind: "exception" });
+        logger2?.error("request.error", error, {
+          appId,
+          durationMs: performance.now() - startedAt
+        });
         return void 0;
       }
     }
@@ -601,9 +698,14 @@
         }
         return statusPromise;
       },
+      getDiagnostic(appId) {
+        return diagnostics.get(appId);
+      },
       clear() {
         requestGeneration += 1;
+        logger2?.info("generation.cleared", { requestGeneration });
         cache.clear();
+        diagnostics.clear();
         requestChain = Promise.resolve();
         requestsBlocked = false;
       }
@@ -785,12 +887,43 @@
     }
     return result;
   }
-  async function loadJson(url) {
+  async function loadJson(url, logger2, source, appId) {
+    const startedAt = performance.now();
+    logger2?.debug("request.started", { appId, source, url });
     try {
       const response = await fetch(url);
-      return response.ok ? await response.json() : void 0;
-    } catch {
-      return void 0;
+      if (!response.ok) {
+        const diagnostic = {
+          kind: "http",
+          status: response.status,
+          statusText: response.statusText
+        };
+        logger2?.warn("request.http-error", {
+          appId,
+          durationMs: performance.now() - startedAt,
+          source,
+          url,
+          ...diagnostic
+        });
+        return { diagnostic, payload: void 0 };
+      }
+      const payload = await response.json();
+      logger2?.debug("request.completed", {
+        appId,
+        durationMs: performance.now() - startedAt,
+        source,
+        status: response.status,
+        url
+      });
+      return { diagnostic: void 0, payload };
+    } catch (error) {
+      logger2?.error("request.error", error, {
+        appId,
+        durationMs: performance.now() - startedAt,
+        source,
+        url
+      });
+      return { diagnostic: { error, kind: "exception" }, payload: void 0 };
     }
   }
   function normalizeTags2(tags) {
@@ -822,17 +955,43 @@
     const date = new Date(Date.UTC(year, month - 1, day));
     return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
   }
-  function createDiscoveryQueueRuleEngine({ getStoreItem } = {}) {
+  function getUnresolved(requirements, data, profileFeaturesChecked) {
+    const unresolved = [];
+    const requiredFields = [
+      [requirements.needsPositiveRate, "positiveRate"],
+      [requirements.needsReviewCount, "reviewCount"],
+      [requirements.needsPrice, "price"],
+      [requirements.needsDiscount, "discount"],
+      [requirements.needsReleaseDate, "releaseDate"],
+      [requirements.needsFreeStatus, "isFree"],
+      [requirements.needsDlc, "isDlc"]
+    ];
+    for (const [required, field] of requiredFields) {
+      if (required && data[field] === void 0) {
+        unresolved.push(field);
+      }
+    }
+    if (requirements.needsSupportedLanguages && data.descriptionHasChinese !== true && data.supportedLanguages === void 0) {
+      unresolved.push("supportedLanguages");
+    }
+    if (profileFeaturesChecked && data.profileFeaturesLimited === void 0) {
+      unresolved.push("profileFeaturesLimited");
+    }
+    return unresolved;
+  }
+  function createDiscoveryQueueRuleEngine({ getStoreItem, logger: logger2 } = {}) {
     const reviewsCache = /* @__PURE__ */ new Map();
     const detailsCache = /* @__PURE__ */ new Map();
-    const profileFeaturesLimitedReader = createProfileFeaturesLimitedReader();
-    function loadCached(cache, appId, url) {
+    const profileFeaturesLimitedReader = createProfileFeaturesLimitedReader({
+      logger: logger2?.child?.("profile-features") ?? logger2
+    });
+    function loadCached(cache, appId, url, source) {
       let payloadPromise = cache.get(appId);
       if (!payloadPromise) {
-        payloadPromise = loadJson(url);
+        payloadPromise = loadJson(url, logger2, source, appId);
         cache.set(appId, payloadPromise);
-        payloadPromise.then((payload) => {
-          if (payload === void 0 && cache.get(appId) === payloadPromise) {
+        payloadPromise.then((result) => {
+          if (result.payload === void 0 && cache.get(appId) === payloadPromise) {
             cache.delete(appId);
           }
         });
@@ -841,12 +1000,19 @@
     }
     async function loadStoreItem(appId, requirements) {
       if (typeof getStoreItem !== "function") {
-        return {};
+        return {
+          data: {},
+          diagnostic: { kind: "unavailable", reason: "reader-missing" }
+        };
       }
       try {
-        return parseStoreItem(await getStoreItem(appId, requirements), appId);
-      } catch {
-        return {};
+        return {
+          data: parseStoreItem(await getStoreItem(appId, requirements), appId),
+          diagnostic: void 0
+        };
+      } catch (error) {
+        logger2?.error("store-item.error", error, { appId, requirements });
+        return { data: {}, diagnostic: { error, kind: "exception" } };
       }
     }
     return {
@@ -855,7 +1021,18 @@
           throw new TypeError("appId must be a positive integer string");
         }
         if (config?.enabled === false) {
-          return { matched: false, reasons: [], data: createEmptyData() };
+          const result2 = { matched: false, reasons: [], data: createEmptyData() };
+          logger2?.info("evaluation.completed", {
+            appId,
+            config,
+            data: result2.data,
+            matched: false,
+            reasons: [],
+            requirements: { enabled: false },
+            sourceErrors: [],
+            unresolved: []
+          });
+          return result2;
         }
         const needsPositiveRate = isEnabledNumber(config?.minimumPositiveRate);
         const needsReviewCount = isEnabledNumber(config?.minimumReviewCount) || config?.ignoreUnreviewed === true;
@@ -868,17 +1045,66 @@
         const needsDetails = needsPrice || needsDiscount || needsReleaseDate || needsFreeStatus || needsDlc;
         const requiredLanguages = getRequiredLanguages(config?.requiredLanguages);
         const needsSupportedLanguages = requiredLanguages.length > 0;
-        const storeItem = needsReviews || needsDetails || needsSupportedLanguages ? await loadStoreItem(appId, {
+        const requirements = {
+          needsDetails,
+          needsDiscount,
+          needsDlc,
+          needsFreeStatus,
+          needsPositiveRate,
+          needsPrice,
+          needsReleaseDate,
+          needsReviewCount,
+          needsReviews,
+          needsSupportedLanguages,
+          requiredLanguages
+        };
+        const storeItemResult = needsReviews || needsDetails || needsSupportedLanguages ? await loadStoreItem(appId, {
           needsReviews,
           needsReleaseDate,
           needsDlc,
           requiredLanguages
-        }) : {};
+        }) : { data: {}, diagnostic: void 0 };
+        const storeItem = storeItemResult.data;
         const missingStoreItemReviews = needsPositiveRate && storeItem.positiveRate === void 0 || needsReviewCount && storeItem.reviewCount === void 0;
-        const reviewsPromise = missingStoreItemReviews ? loadCached(reviewsCache, appId, `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`).then(parseReviews) : Promise.resolve({});
+        const reviewsPromise = missingStoreItemReviews ? loadCached(
+          reviewsCache,
+          appId,
+          `/appreviews/${appId}?json=1&language=all&purchase_type=steam&num_per_page=0`,
+          "reviews"
+        ) : Promise.resolve({ diagnostic: void 0, payload: void 0 });
+        if (missingStoreItemReviews) {
+          logger2?.info("fallback.selected", {
+            appId,
+            missing: [
+              needsPositiveRate && storeItem.positiveRate === void 0 ? "positiveRate" : void 0,
+              needsReviewCount && storeItem.reviewCount === void 0 ? "reviewCount" : void 0
+            ].filter(Boolean),
+            source: "reviews"
+          });
+        }
         const missingStoreItemData = needsPrice && storeItem.price === void 0 || needsDiscount && storeItem.discount === void 0 || needsReleaseDate && storeItem.releaseDate === void 0 || needsFreeStatus && storeItem.isFree === void 0 || needsDlc && storeItem.isDlc === void 0;
-        const detailsPromise = missingStoreItemData ? loadCached(detailsCache, appId, `/api/appdetails?appids=${appId}&l=english`).then((payload) => parseDetails(payload, appId)) : Promise.resolve({});
-        const [reviews, details] = await Promise.all([reviewsPromise, detailsPromise]);
+        const detailsPromise = missingStoreItemData ? loadCached(
+          detailsCache,
+          appId,
+          `/api/appdetails?appids=${appId}&l=english`,
+          "details"
+        ) : Promise.resolve({ diagnostic: void 0, payload: void 0 });
+        if (missingStoreItemData) {
+          logger2?.info("fallback.selected", {
+            appId,
+            missing: [
+              needsPrice && storeItem.price === void 0 ? "price" : void 0,
+              needsDiscount && storeItem.discount === void 0 ? "discount" : void 0,
+              needsReleaseDate && storeItem.releaseDate === void 0 ? "releaseDate" : void 0,
+              needsFreeStatus && storeItem.isFree === void 0 ? "isFree" : void 0,
+              needsDlc && storeItem.isDlc === void 0 ? "isDlc" : void 0
+            ].filter(Boolean),
+            source: "details"
+          });
+        }
+        const [reviewsResult, detailsResult] = await Promise.all([reviewsPromise, detailsPromise]);
+        const reviews = parseReviews(reviewsResult.payload);
+        const details = parseDetails(detailsResult.payload, appId);
         const data = {
           ...createEmptyData(),
           ...reviews,
@@ -923,16 +1149,50 @@
           reasons.push(...matchingTags.map((tag) => `tag:${tag}`));
         }
         if (reasons.length > 0 || config?.ignoreProfileFeaturesLimited !== true) {
-          return { matched: reasons.length > 0, reasons, data };
+          const result2 = { matched: reasons.length > 0, reasons, data };
+          const sourceErrors2 = [
+            ["store-item", storeItemResult.diagnostic],
+            ["reviews", reviewsResult.diagnostic],
+            ["details", detailsResult.diagnostic]
+          ].filter(([, diagnostic]) => diagnostic !== void 0).map(([source, diagnostic]) => ({ source, ...diagnostic }));
+          logger2?.info("evaluation.completed", {
+            appId,
+            config,
+            data,
+            matched: result2.matched,
+            reasons: [...reasons],
+            requirements,
+            sourceErrors: sourceErrors2,
+            unresolved: getUnresolved(requirements, data, false)
+          });
+          return result2;
         }
         const profileFeaturesLimited = await profileFeaturesLimitedReader.get(appId);
+        const profileDiagnostic = profileFeaturesLimitedReader.getDiagnostic(appId);
         if (typeof profileFeaturesLimited === "boolean") {
           data.profileFeaturesLimited = profileFeaturesLimited;
         }
         if (profileFeaturesLimited === true) {
           reasons.push("profile-features-limited");
         }
-        return { matched: reasons.length > 0, reasons, data };
+        const result = { matched: reasons.length > 0, reasons, data };
+        const sourceErrors = [
+          ["store-item", storeItemResult.diagnostic],
+          ["reviews", reviewsResult.diagnostic],
+          ["details", detailsResult.diagnostic],
+          ["profile-features", profileDiagnostic]
+        ].filter(([, diagnostic]) => diagnostic !== void 0).map(([source, diagnostic]) => ({ source, ...diagnostic }));
+        logger2?.info("evaluation.completed", {
+          appId,
+          config,
+          data,
+          matched: result.matched,
+          reasons: [...reasons],
+          requirements,
+          sourceErrors,
+          unresolved: getUnresolved(requirements, data, true)
+        });
+        return result;
       },
       clear() {
         reviewsCache.clear();
@@ -949,10 +1209,11 @@
       element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
     );
   }
-  function getAppId(url) {
+  function getAppId(url, logger2) {
     try {
       return new URL(url, location.href).pathname.match(/^\/app\/(\d+)(?:\/|$)/)?.[1];
-    } catch {
+    } catch (error) {
+      logger2?.error("context.app_url_parse_failed", error, { url });
       return void 0;
     }
   }
@@ -993,7 +1254,7 @@
     }
     return reviews;
   }
-  function getModalQueueAction(target) {
+  function getModalQueueAction(target, logger2) {
     if (!(target instanceof Element)) {
       return void 0;
     }
@@ -1014,7 +1275,7 @@
     return {
       action: actionIndex === 0 ? "wishlist" : "ignore",
       actionGroup,
-      appId: getAppId(appLink.href),
+      appId: getAppId(appLink.href, logger2),
       button,
       dialog,
       initialClassName: button.className
@@ -1030,7 +1291,7 @@
     }
     return actionGroup;
   }
-  function getModalContext() {
+  function getModalContext(logger2) {
     const dialogs = [...document.querySelectorAll('[role="dialog"]')];
     for (const dialog of dialogs) {
       const queueLink = dialog.querySelector('a[href*="/explore"][href*="dq=widget"]');
@@ -1039,7 +1300,7 @@
         continue;
       }
       const dialogRect = dialog.getBoundingClientRect();
-      const candidates = [...dialog.querySelectorAll("[aria-label]")].map((element) => getModalQueueAction(element)).filter((action) => action?.action === "ignore" && action.appId).filter(({ button }) => {
+      const candidates = [...dialog.querySelectorAll("[aria-label]")].map((element) => getModalQueueAction(element, logger2)).filter((action) => action?.action === "ignore" && action.appId).filter(({ button }) => {
         const rect = button.getBoundingClientRect();
         return isVisible(button) && rect.left >= dialogRect.left && rect.right <= dialogRect.right;
       }).sort((left, right) => right.button.getBoundingClientRect().left - left.button.getBoundingClientRect().left);
@@ -1111,7 +1372,7 @@
     );
     return actions.length === 2 ? actions[1] : void 0;
   }
-  function getClassicContinueLink() {
+  function getClassicContinueLink(logger2) {
     if (new URLSearchParams(location.search).get("queue") !== "1") {
       return void 0;
     }
@@ -1128,30 +1389,44 @@
       try {
         const url = new URL(link.href, location.href);
         return url.origin === location.origin && /^\/explore\/startnew\/0\/?$/.test(url.pathname);
-      } catch {
+      } catch (error) {
+        logger2?.error("auto_continue.url_parse_failed", error, { href: link.href });
         return false;
       }
     });
   }
-  function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
+  function startDiscoveryQueueAutoFilter({ getStoreItem, logger: logger2 } = {}) {
+    const autoLogger = logger2?.child("auto-filter");
     const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
     const continuedModalButtons = /* @__PURE__ */ new WeakSet();
     const continuedClassicLinks = /* @__PURE__ */ new WeakSet();
+    const loggedModalSuppressions = /* @__PURE__ */ new WeakSet();
+    const loggedClassicSuppressions = /* @__PURE__ */ new WeakSet();
+    const modalContinueActionIds = /* @__PURE__ */ new WeakMap();
+    const classicContinueActionIds = /* @__PURE__ */ new WeakMap();
     let stopped = false;
     let paused = false;
     let scheduled = false;
     let generation = 0;
     let evaluatedKey;
+    let observedContextKey;
     let activeConfig;
     const configUi = createDiscoveryQueueConfigUi({
+      logger: autoLogger,
       onSave() {
         activeConfig = configUi.getConfig();
         generation += 1;
         evaluatedKey = void 0;
+        autoLogger?.info("config.saved", {
+          autoContinueQueue: activeConfig.autoContinueQueue,
+          enabled: activeConfig.enabled,
+          generation
+        });
         schedule();
       },
       onOpenChange(open) {
         paused = open;
+        autoLogger?.info("config.pause_changed", { paused });
         if (!open) {
           schedule();
         }
@@ -1159,31 +1434,59 @@
     });
     activeConfig = configUi.getConfig();
     function getContext() {
-      return getModalContext() ?? getClassicContext();
+      return getModalContext(autoLogger) ?? getClassicContext();
     }
     async function evaluateCurrent() {
       scheduled = false;
       const config = activeConfig ?? configUi.getConfig();
       if (paused) {
+        autoLogger?.debug("evaluation.skipped", { reason: "config-open" });
         return;
       }
       if (config.autoContinueQueue) {
         const modalContinueButton = getModalContinueButton();
         if (modalContinueButton instanceof HTMLElement && !continuedModalButtons.has(modalContinueButton)) {
+          const actionId = autoLogger?.nextId("auto-continue");
           continuedModalButtons.add(modalContinueButton);
+          modalContinueActionIds.set(modalContinueButton, actionId);
+          autoLogger?.info("auto_continue.clicked", { actionId, mode: "modal" });
           modalContinueButton.click();
           return;
+        } else if (modalContinueButton instanceof HTMLElement && !loggedModalSuppressions.has(modalContinueButton)) {
+          loggedModalSuppressions.add(modalContinueButton);
+          autoLogger?.debug("auto_continue.duplicate_suppressed", {
+            actionId: modalContinueActionIds.get(modalContinueButton),
+            mode: "modal"
+          });
         }
-        const classicContinueLink = getClassicContinueLink();
+        const classicContinueLink = getClassicContinueLink(autoLogger);
         if (classicContinueLink instanceof HTMLAnchorElement && !continuedClassicLinks.has(classicContinueLink)) {
+          const actionId = autoLogger?.nextId("auto-continue");
           continuedClassicLinks.add(classicContinueLink);
+          classicContinueActionIds.set(classicContinueLink, actionId);
+          autoLogger?.info("auto_continue.clicked", { actionId, mode: "classic" });
           classicContinueLink.click();
           return;
+        } else if (classicContinueLink instanceof HTMLAnchorElement && !loggedClassicSuppressions.has(classicContinueLink)) {
+          loggedClassicSuppressions.add(classicContinueLink);
+          autoLogger?.debug("auto_continue.duplicate_suppressed", {
+            actionId: classicContinueActionIds.get(classicContinueLink),
+            mode: "classic"
+          });
         }
       }
       const context = getContext();
       if (!context) {
         return;
+      }
+      if (context.key !== observedContextKey) {
+        autoLogger?.info("context.changed", {
+          appId: context.appId,
+          from: observedContextKey,
+          mode: context.key?.split(":", 1)[0],
+          to: context.key
+        });
+        observedContextKey = context.key;
       }
       configUi.ensureButton(context.buttonHost);
       if (!config.enabled || !context.appId || context.key === evaluatedKey) {
@@ -1191,18 +1494,63 @@
       }
       evaluatedKey = context.key;
       const currentGeneration = ++generation;
-      const result = await ruleEngine.evaluate({
+      const evaluationId = autoLogger?.nextId("evaluation");
+      autoLogger?.info("evaluation.started", {
         appId: context.appId,
-        reviews: context.reviews,
-        tags: context.tags,
-        config
+        evaluationId,
+        generation: currentGeneration,
+        key: context.key
       });
-      if (stopped || paused || currentGeneration !== generation || !result.matched) {
+      let result;
+      try {
+        result = await ruleEngine.evaluate({
+          appId: context.appId,
+          reviews: context.reviews,
+          tags: context.tags,
+          config
+        });
+        autoLogger?.info("evaluation.completed", {
+          appId: context.appId,
+          evaluationId,
+          matched: result.matched,
+          result
+        });
+      } catch (error) {
+        autoLogger?.error("evaluation.failed", error, {
+          appId: context.appId,
+          evaluationId,
+          generation: currentGeneration
+        });
+        return;
+      }
+      if (stopped || paused || currentGeneration !== generation) {
+        autoLogger?.info("evaluation.stale", {
+          currentGeneration: generation,
+          evaluationGeneration: currentGeneration,
+          evaluationId,
+          paused,
+          stopped
+        });
+        return;
+      }
+      if (!result.matched) {
         return;
       }
       const current = getContext();
       if (current?.key === context.key && current.ignoreButton instanceof HTMLElement) {
+        autoLogger?.info("evaluation.ignore_clicked", {
+          appId: context.appId,
+          evaluationId,
+          key: context.key
+        });
         current.ignoreButton.click();
+      } else {
+        autoLogger?.info("evaluation.context_changed_before_action", {
+          appId: context.appId,
+          currentKey: current?.key,
+          evaluationId,
+          expectedKey: context.key
+        });
       }
     }
     function schedule() {
@@ -1232,12 +1580,14 @@
       subtree: true
     });
     schedule();
+    autoLogger?.info("controller.started", { enabled: activeConfig.enabled });
     return () => {
       stopped = true;
       generation += 1;
       observer.disconnect();
       configUi.destroy();
       ruleEngine.clear();
+      autoLogger?.info("controller.stopped");
     };
   }
 
@@ -1493,7 +1843,7 @@
     const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
     return dialog instanceof HTMLElement ? dialog : void 0;
   }
-  function createPrefilterReporter() {
+  function createPrefilterReporter(logger2, lifecycleId) {
     let checked = 0;
     let ignored = 0;
     let total = 0;
@@ -1540,9 +1890,10 @@
         batches += 1;
         total += appIds.length;
         render(`正在加载第 ${batches} 批（${appIds.length} 项）`);
-        console.info("[Steam 探索队列] 开始预筛选批次", {
+        logger2?.info("batch.started", {
           appIds: [...appIds],
-          batch: batches
+          batch: batches,
+          lifecycleId
         });
       },
       beginEvaluation() {
@@ -1552,8 +1903,9 @@
         checked += 1;
         render(`正在筛选第 ${batches} 批`);
         if (result?.matched === true) {
-          console.info("[Steam 探索队列] 规则命中", {
+          logger2?.info("app.matched", {
             appId,
+            lifecycleId,
             reasons: result.reasons
           });
         }
@@ -1562,18 +1914,20 @@
         if (succeeded) {
           ignored += 1;
           render(`正在忽略第 ${batches} 批命中项`);
-          console.info("[Steam 探索队列] 忽略成功", { appId });
+          logger2?.info("ignore.succeeded", { appId, lifecycleId });
         } else {
-          console.warn("[Steam 探索队列] 忽略失败，已从当前展示中筛除", {
-            appId
+          logger2?.warn("ignore.failed", {
+            appId,
+            lifecycleId
           });
         }
       },
       finishBatch(retainedAppIds, matchedAppIds) {
-        console.info("[Steam 探索队列] 批次筛选完成", {
+        logger2?.info("batch.partitioned", {
           batch: batches,
           checked,
           ignored,
+          lifecycleId,
           matchedAppIds: [...matchedAppIds],
           retainedAppIds: [...retainedAppIds]
         });
@@ -1593,15 +1947,21 @@
   function startDiscoveryQueuePrefilter({
     getStoreItem,
     getLocalizedTags,
+    logger: logger2,
     prepareStoreItems
   } = {}) {
     if (typeof window !== "object" || typeof window.fetch !== "function") {
       return () => {
       };
     }
+    const lifecycleId = logger2?.nextId?.("prefilter") ?? "prefilter";
+    const prefilterLogger = logger2?.child?.("prefilter", { lifecycleId }) ?? logger2;
     const permits = /* @__PURE__ */ new Map();
     const deliveredDialogs = /* @__PURE__ */ new WeakSet();
-    const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
+    const ruleEngine = createDiscoveryQueueRuleEngine({
+      getStoreItem,
+      logger: prefilterLogger?.child?.("rules", { lifecycleId }) ?? prefilterLogger
+    });
     const originalFetch = window.fetch;
     let stopped = false;
     let generation = 0;
@@ -1609,6 +1969,7 @@
     let queueCache;
     let originalQueueMultiple;
     let queueMultipleWrapper;
+    prefilterLogger?.info("lifecycle.started", { lifecycleId });
     function grantPermit(appIds, request, args, receiver) {
       const key = appIdKey(appIds);
       if (key !== void 0 && appIds.length > 0) {
@@ -1617,6 +1978,12 @@
           expiresAt: Date.now() + PERMIT_DURATION_MS,
           receiver,
           request
+        });
+        prefilterLogger?.debug("permit.granted", {
+          appIds: [...appIds],
+          expiresInMs: PERMIT_DURATION_MS,
+          lifecycleId,
+          rebuild: request.queueRequest.rebuild
         });
       }
     }
@@ -1627,10 +1994,21 @@
       }
       const permit = permits.get(key);
       permits.delete(key);
-      return permit?.expiresAt >= Date.now() ? permit : void 0;
+      const valid = permit?.expiresAt >= Date.now();
+      prefilterLogger?.debug("permit.taken", {
+        appIds: [...appIds],
+        lifecycleId,
+        result: !permit ? "missing" : valid ? "accepted" : "expired"
+      });
+      return valid ? permit : void 0;
     }
     async function ignoreApp(appId) {
       if (typeof window.g_sessionID !== "string" || !window.g_sessionID) {
+        prefilterLogger?.warn("ignore.skipped", {
+          appId,
+          lifecycleId,
+          reason: "missing-session"
+        });
         return false;
       }
       const form = new FormData();
@@ -1642,6 +2020,8 @@
         form.set("snr", snr);
       }
       form.set("ignore_reason", "0");
+      const startedAt = performance.now();
+      prefilterLogger?.debug("ignore.request.started", { appId, lifecycleId });
       try {
         const response = await Reflect.apply(originalFetch, window, [
           "/recommended/ignorerecommendation",
@@ -1651,20 +2031,83 @@
           }
         ]);
         if (!response.ok) {
+          prefilterLogger?.warn("ignore.request.http-error", {
+            appId,
+            durationMs: performance.now() - startedAt,
+            lifecycleId,
+            status: response.status,
+            statusText: response.statusText
+          });
           return false;
         }
-        const payload = await response.json();
-        return payload?.success === true || payload?.success === 1;
-      } catch {
+        let payload;
+        try {
+          payload = await response.json();
+        } catch (error) {
+          prefilterLogger?.error("ignore.response.parse-error", error, {
+            appId,
+            durationMs: performance.now() - startedAt,
+            lifecycleId,
+            status: response.status
+          });
+          return false;
+        }
+        const succeeded = payload?.success === true || payload?.success === 1;
+        const data = {
+          appId,
+          durationMs: performance.now() - startedAt,
+          lifecycleId,
+          payload,
+          status: response.status
+        };
+        if (succeeded) {
+          prefilterLogger?.debug("ignore.request.completed", data);
+        } else {
+          prefilterLogger?.warn("ignore.response.rejected", data);
+        }
+        return succeeded;
+      } catch (error) {
+        prefilterLogger?.error("ignore.request.error", error, {
+          appId,
+          durationMs: performance.now() - startedAt,
+          lifecycleId
+        });
         return false;
       }
     }
     async function prefilter(appIds, config, currentGeneration, reporter) {
       const requiredLanguages = config.requiredLanguages?.enabled === true ? config.requiredLanguages.value : [];
       if (typeof prepareStoreItems === "function") {
-        await prepareStoreItems(appIds, requiredLanguages);
+        prefilterLogger?.debug("batch.prepare.started", {
+          appIds: [...appIds],
+          currentGeneration,
+          lifecycleId,
+          requiredLanguages: [...requiredLanguages]
+        });
+        try {
+          await prepareStoreItems(appIds, requiredLanguages);
+          prefilterLogger?.debug("batch.prepare.completed", {
+            appIds: [...appIds],
+            currentGeneration,
+            lifecycleId
+          });
+        } catch (error) {
+          prefilterLogger?.error("batch.prepare.error", error, {
+            appIds: [...appIds],
+            currentGeneration,
+            lifecycleId
+          });
+          throw error;
+        }
       }
       if (stopped || currentGeneration !== generation) {
+        prefilterLogger?.info("generation.cancelled", {
+          currentGeneration,
+          generation,
+          lifecycleId,
+          stage: "after-prepare",
+          stopped
+        });
         return void 0;
       }
       reporter?.beginEvaluation();
@@ -1685,13 +2128,25 @@
             reasons: Array.isArray(result.reasons) ? result.reasons : []
           };
           return true;
-        } catch {
+        } catch (error) {
+          prefilterLogger?.error("app.evaluation.error", error, {
+            appId,
+            currentGeneration,
+            lifecycleId
+          });
           return false;
         } finally {
           reporter?.recordEvaluation(appId, report);
         }
       });
       if (stopped || currentGeneration !== generation) {
+        prefilterLogger?.info("generation.cancelled", {
+          currentGeneration,
+          generation,
+          lifecycleId,
+          stage: "after-evaluation",
+          stopped
+        });
         return void 0;
       }
       const retainedAppIds = appIds.filter((_, index) => matches[index] !== true);
@@ -1702,6 +2157,11 @@
         reporter?.recordIgnore(appId, succeeded);
         return succeeded;
       });
+      prefilterLogger?.info("batch.ignore.deferred", {
+        appIds: [...matchedAppIds],
+        lifecycleId,
+        retainedAppIds: [...retainedAppIds]
+      });
       return { ignoreCompletion, retainedAppIds };
     }
     function replaceAppIds(target, replacement) {
@@ -1710,33 +2170,69 @@
     async function loadNextVisibleBatch(permit, dataRequest, queueReceiver, config, currentGeneration, seenBatches, reporter) {
       let fetchArgs = createRebuildFetchArgs(permit.args, permit.request);
       if (!fetchArgs) {
+        prefilterLogger?.warn("summary.selected", {
+          lifecycleId,
+          reason: "rebuild-request-unavailable"
+        });
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       while (!stopped && currentGeneration === generation) {
         let response;
         try {
           response = await Reflect.apply(originalFetch, permit.receiver, fetchArgs);
-        } catch {
+        } catch (error) {
+          prefilterLogger?.error("rebuild.request.error", error, { lifecycleId });
+          prefilterLogger?.warn("summary.selected", {
+            lifecycleId,
+            reason: "rebuild-request-error"
+          });
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
         if (!response?.ok || !isOctetStream(response)) {
+          prefilterLogger?.warn("summary.selected", {
+            contentType: response?.headers?.get?.("content-type"),
+            lifecycleId,
+            reason: "rebuild-invalid-response",
+            status: response?.status
+          });
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
         let appIds;
         try {
           appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
-        } catch {
+        } catch (error) {
+          prefilterLogger?.error("rebuild.response.decode-error", error, {
+            lifecycleId,
+            status: response.status
+          });
+          prefilterLogger?.warn("summary.selected", {
+            lifecycleId,
+            reason: "rebuild-decode-error"
+          });
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
         const key = appIdKey(appIds);
         if (!appIds || appIds.length === 0 || key === void 0 || seenBatches.has(key)) {
+          prefilterLogger?.warn("summary.selected", {
+            appIds,
+            lifecycleId,
+            reason: !appIds ? "rebuild-invalid-appids" : appIds.length === 0 ? "queue-exhausted" : key === void 0 ? "rebuild-invalid-appid-key" : "rebuild-repeated-batch"
+          });
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
         seenBatches.add(key);
         reporter?.beginBatch(appIds);
         try {
           await Reflect.apply(originalQueueMultiple, queueReceiver, [appIds, dataRequest]);
-        } catch {
+        } catch (error) {
+          prefilterLogger?.error("rebuild.store-items.error", error, {
+            appIds: [...appIds],
+            lifecycleId
+          });
+          prefilterLogger?.warn("summary.selected", {
+            lifecycleId,
+            reason: "rebuild-store-items-error"
+          });
           return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
         }
         const filteredBatch = await prefilter(
@@ -1746,11 +2242,25 @@
           reporter
         );
         if (!filteredBatch) {
+          prefilterLogger?.info("display.original-batch", {
+            appIds: [...appIds],
+            lifecycleId,
+            reason: "generation-cancelled"
+          });
           return appIds;
         }
         if (filteredBatch.retainedAppIds.length > 0) {
+          prefilterLogger?.info("display.retained", {
+            appIds: [...filteredBatch.retainedAppIds],
+            lifecycleId,
+            source: "rebuild"
+          });
           return filteredBatch.retainedAppIds;
         }
+        prefilterLogger?.info("rebuild.next-batch", {
+          lifecycleId,
+          reason: "batch-fully-filtered"
+        });
         await filteredBatch.ignoreCompletion;
       }
       return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
@@ -1760,7 +2270,8 @@
       let request;
       try {
         request = getFetchRequest(args[0], args[1]);
-      } catch {
+      } catch (error) {
+        prefilterLogger?.error("fetch.intercept.parse-error", error, { lifecycleId });
         return responsePromise;
       }
       if (!request?.queueRequest.standard) {
@@ -1776,7 +2287,11 @@
           if (!stopped && appIds) {
             grantPermit(appIds, request, args, receiver);
           }
-        } catch {
+        } catch (error) {
+          prefilterLogger?.error("fetch.response.decode-error", error, {
+            lifecycleId,
+            status: response.status
+          });
           return response;
         }
         return response;
@@ -1797,25 +2312,53 @@
           const expectedKey = snapshot && appIdKey(snapshot);
           const dialog = getDiscoveryQueueDialog();
           if (expectedKey === void 0 || snapshot.length === 0 || !dialog || !isDiscoveryQueueDataRequest(args[0])) {
+            if (expectedKey !== void 0 && snapshot.length > 0) {
+              prefilterLogger?.debug("queue.intercept.skipped", {
+                appIds: snapshot,
+                hasDialog: Boolean(dialog),
+                isDiscoveryQueueDataRequest: isDiscoveryQueueDataRequest(args[0]),
+                lifecycleId,
+                reason: !dialog ? "dialog-missing" : "data-request-mismatch"
+              });
+            }
             return result;
           }
           const permit = takePermit(snapshot);
           if (deliveredDialogs.has(dialog) && !permit?.request.queueRequest.rebuild) {
+            prefilterLogger?.info("queue.intercept.skipped", {
+              appIds: snapshot,
+              lifecycleId,
+              reason: "dialog-already-delivered"
+            });
             return result;
           }
           deliveredDialogs.add(dialog);
           let config;
           try {
-            config = loadDiscoveryQueueConfig();
-          } catch {
+            config = loadDiscoveryQueueConfig(
+              prefilterLogger?.child?.("config", { lifecycleId }) ?? prefilterLogger
+            );
+          } catch (error) {
+            prefilterLogger?.error("config.load.error", error, { lifecycleId });
             return result;
           }
           if (config?.enabled !== true || !hasActiveRules(config)) {
+            prefilterLogger?.info("queue.intercept.skipped", {
+              appIds: snapshot,
+              lifecycleId,
+              reason: config?.enabled !== true ? "disabled" : "no-active-rules"
+            });
             return result;
           }
           const currentGeneration = generation;
           const queueReceiver = this;
-          const reporter = createPrefilterReporter();
+          const reporter = createPrefilterReporter(prefilterLogger, lifecycleId);
+          prefilterLogger?.info("queue.intercepted", {
+            appIds: snapshot,
+            generation: currentGeneration,
+            hasPermit: Boolean(permit),
+            lifecycleId
+          });
           reporter.beginBatch(snapshot);
           return Promise.resolve(result).then(async (value) => {
             const filteredBatch = await prefilter(
@@ -1825,10 +2368,20 @@
               reporter
             );
             if (!filteredBatch || stopped || currentGeneration !== generation) {
+              prefilterLogger?.info("display.original-batch", {
+                appIds: snapshot,
+                lifecycleId,
+                reason: "generation-cancelled"
+              });
               return value;
             }
             if (filteredBatch.retainedAppIds.length > 0) {
               replaceAppIds(appIds, filteredBatch.retainedAppIds);
+              prefilterLogger?.info("display.retained", {
+                appIds: [...filteredBatch.retainedAppIds],
+                lifecycleId,
+                source: "initial"
+              });
               return value;
             }
             await filteredBatch.ignoreCompletion;
@@ -1836,6 +2389,10 @@
               return value;
             }
             if (!permit) {
+              prefilterLogger?.warn("summary.selected", {
+                lifecycleId,
+                reason: "fully-filtered-without-permit"
+              });
               replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
               return value;
             }
@@ -1864,6 +2421,7 @@
       }
       stopped = true;
       generation += 1;
+      prefilterLogger?.info("lifecycle.stopped", { generation, lifecycleId });
       permits.clear();
       clearTimeout(pollTimer);
       ruleEngine.clear();
@@ -1879,15 +2437,17 @@
   // src/lib/steam/discovery-queue-tags.js
   var TAG_LIST_URL = "https://api.steampowered.com/IStoreService/GetTagList/v1/";
   var TAG_CACHE_PREFIX = "LocalizedTagNames2_";
-  function readSteamLanguage() {
+  function readSteamLanguage(logger2) {
     try {
       const config = document.querySelector("#application_config[data-config]")?.dataset.config;
       const language = config ? JSON.parse(config).LANGUAGE : void 0;
       if (typeof language === "string" && language) {
         return language;
       }
-    } catch {
-      console.debug("[Steam 探索队列] 页面语言配置不可解析，使用 HTML 语言");
+    } catch (error) {
+      logger2?.error("language.config.error", error, {
+        fallback: "window-or-html-language"
+      });
     }
     if (typeof window.g_strLanguage === "string" && window.g_strLanguage) {
       return window.g_strLanguage;
@@ -1916,18 +2476,19 @@
     }
     return tags;
   }
-  function readCachedTags(language) {
+  function readCachedTags(language, logger2) {
     try {
       const value = JSON.parse(
         localStorage.getItem(`${TAG_CACHE_PREFIX}${language}`) ?? "null"
       );
       const tags = parseTags(value?.tags);
       return tags ? { tags, versionHash: String(value.version_hash ?? "") } : void 0;
-    } catch {
+    } catch (error) {
+      logger2?.error("cache.read.error", error, { language });
       return void 0;
     }
   }
-  function saveCachedTags(language, value) {
+  function saveCachedTags(language, value, logger2) {
     try {
       localStorage.setItem(
         `${TAG_CACHE_PREFIX}${language}`,
@@ -1936,27 +2497,40 @@
           version_hash: value.versionHash
         })
       );
-    } catch {
+    } catch (error) {
+      logger2?.error("cache.write.error", error, {
+        language,
+        tagCount: value.tags.length
+      });
       return false;
     }
     return true;
   }
-  async function loadTagNames(language) {
-    const cached = readCachedTags(language);
+  async function loadTagNames(language, logger2) {
+    const cached = readCachedTags(language, logger2);
     if (cached) {
-      console.info("[Steam 探索队列] 使用 Steam 本地标签目录", {
+      logger2?.debug("catalog.cache-hit", {
         language,
-        tags: cached.tags.length
+        tagCount: cached.tags.length,
+        versionHash: cached.versionHash
       });
       return new Map(cached.tags);
     }
     const url = new URL(TAG_LIST_URL);
     url.searchParams.set("language", language);
     url.searchParams.set("origin", location.origin);
+    const startedAt = performance.now();
+    logger2?.info("catalog.request.started", { language, url: url.href });
     try {
-      console.info("[Steam 探索队列] 首次加载完整标签目录", { language });
       const response = await fetch(url);
       if (!response.ok) {
+        logger2?.warn("catalog.request.http-error", {
+          durationMs: performance.now() - startedAt,
+          language,
+          status: response.status,
+          statusText: response.statusText,
+          url: url.href
+        });
         return /* @__PURE__ */ new Map();
       }
       const payload = (await response.json())?.response;
@@ -1966,25 +2540,45 @@
           tags,
           versionHash: String(payload.version_hash ?? "")
         };
-        saveCachedTags(language, value);
+        const persisted = saveCachedTags(language, value, logger2);
+        logger2?.info("catalog.request.completed", {
+          durationMs: performance.now() - startedAt,
+          language,
+          persisted,
+          status: response.status,
+          tagCount: tags.length,
+          url: url.href,
+          versionHash: value.versionHash
+        });
         return new Map(tags);
       }
-    } catch {
+      logger2?.warn("catalog.response.invalid", {
+        durationMs: performance.now() - startedAt,
+        language,
+        status: response.status,
+        url: url.href
+      });
+    } catch (error) {
+      logger2?.error("catalog.request.error", error, {
+        durationMs: performance.now() - startedAt,
+        language,
+        url: url.href
+      });
       return /* @__PURE__ */ new Map();
     }
     return /* @__PURE__ */ new Map();
   }
-  function createDiscoveryQueueTagCatalog() {
+  function createDiscoveryQueueTagCatalog({ logger: logger2 } = {}) {
     const catalogs = /* @__PURE__ */ new Map();
     return {
       async getNames(tagIds) {
         if (!Array.isArray(tagIds) || tagIds.length === 0) {
           return [];
         }
-        const language = readSteamLanguage();
+        const language = readSteamLanguage(logger2);
         let catalogPromise = catalogs.get(language);
         if (!catalogPromise) {
-          catalogPromise = loadTagNames(language);
+          catalogPromise = loadTagNames(language, logger2);
           catalogs.set(language, catalogPromise);
         }
         const catalog = await catalogPromise;
@@ -2005,7 +2599,7 @@
     const cache = window.StoreItemCache;
     return cache && typeof cache.GetApp === "function" && typeof cache.QueueAppRequest === "function" ? cache : void 0;
   }
-  async function waitForStoreItemCache() {
+  async function waitForStoreItemCache(logger2) {
     const existing = getStoreItemCache();
     if (existing) {
       return existing;
@@ -2018,21 +2612,23 @@
         return cache;
       }
     }
+    logger2?.warn("cache.unavailable", { waitedMs: CACHE_WAIT_MS });
     return void 0;
   }
   function toSafeNonNegativeInteger(value) {
     const number = typeof value === "string" && /^\d+$/.test(value) ? Number(value) : value;
     return Number.isSafeInteger(number) && number >= 0 ? number : void 0;
   }
-  function readArray(getter) {
+  function readArray(getter, logger2, field, appId) {
     try {
       const value = getter();
       return Array.isArray(value) ? value.filter((entry) => Number.isSafeInteger(entry) && entry > 0) : [];
-    } catch {
+    } catch (error) {
+      logger2?.error("item.read.error", error, { appId, field });
       return [];
     }
   }
-  function readSupportedLanguages(item) {
+  function readSupportedLanguages(item, logger2, appId) {
     if (typeof item.GetAllLanguagesWithSomeSupport !== "function") {
       return void 0;
     }
@@ -2045,29 +2641,38 @@
           )
         )
       ] : void 0;
-    } catch {
+    } catch (error) {
+      logger2?.error("item.read.error", error, {
+        appId,
+        field: "supportedLanguages"
+      });
       return void 0;
     }
   }
-  function readDescriptionHasChinese(item) {
+  function readDescriptionHasChinese(item, logger2, appId) {
     if (typeof item.GetShortDescription !== "function") {
       return void 0;
     }
     try {
       const description = item.GetShortDescription();
       return typeof description === "string" ? /\p{Script=Han}/u.test(description) : void 0;
-    } catch {
+    } catch (error) {
+      logger2?.error("item.read.error", error, {
+        appId,
+        field: "descriptionHasChinese"
+      });
       return void 0;
     }
   }
-  function readAppType(item) {
+  function readAppType(item, logger2, appId) {
     if (typeof item?.GetAppType !== "function") {
       return void 0;
     }
     try {
       const appType = item.GetAppType();
       return Number.isSafeInteger(appType) && appType >= 0 ? appType : void 0;
-    } catch {
+    } catch (error) {
+      logger2?.error("item.read.error", error, { appId, field: "appType" });
       return void 0;
     }
   }
@@ -2084,13 +2689,17 @@
     }
     return request;
   }
-  function readReviewSummary(item) {
+  function readReviewSummary(item, logger2, appId) {
     const preferUnfiltered = window.GDynamicStore?.s_preferences?.review_score_preference === 1;
     const summaryGetter = preferUnfiltered ? item.GetUnfilteredReviewSummary : item.GetFilteredReviewSummary;
     let summary;
     try {
       summary = summaryGetter?.call(item);
-    } catch {
+    } catch (error) {
+      logger2?.error("item.read.error", error, {
+        appId,
+        field: "reviewSummary"
+      });
       return {};
     }
     const reviewCount = toSafeNonNegativeInteger(summary?.review_count);
@@ -2100,7 +2709,7 @@
       positiveRate: reviewCount !== 0 && typeof positiveRate === "number" && Number.isFinite(positiveRate) && positiveRate >= 0 && positiveRate <= 100 ? positiveRate : void 0
     };
   }
-  function readStoreItem(item, appId) {
+  function readStoreItem(item, appId, logger2) {
     if (!item || typeof item !== "object") {
       return void 0;
     }
@@ -2110,21 +2719,21 @@
       }
       const purchase = item.GetBestPurchaseOption?.();
       const comingSoon = item.BIsComingSoon?.();
-      const appType = readAppType(item);
-      const reviews = readReviewSummary(item);
+      const appType = readAppType(item, logger2, appId);
+      const reviews = readReviewSummary(item, logger2, appId);
       const storeItem = {
         appId,
         success: 1,
         isFree: item.BIsFree?.(),
         comingSoon,
-        descriptionHasChinese: readDescriptionHasChinese(item),
+        descriptionHasChinese: readDescriptionHasChinese(item, logger2, appId),
         isDlc: appType === void 0 ? void 0 : appType === DLC_APP_TYPE,
-        supportedLanguages: readSupportedLanguages(item),
-        tagIds: readArray(() => item.GetTagIDs?.()),
+        supportedLanguages: readSupportedLanguages(item, logger2, appId),
+        tagIds: readArray(() => item.GetTagIDs?.(), logger2, "tagIds", appId),
         categoryIds: {
-          supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.()),
-          features: readArray(() => item.GetStoreCategories_Features?.()),
-          controllers: readArray(() => item.GetStoreCategories_Controller?.())
+          supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.(), logger2, "supportedPlayers", appId),
+          features: readArray(() => item.GetStoreCategories_Features?.(), logger2, "features", appId),
+          controllers: readArray(() => item.GetStoreCategories_Controller?.(), logger2, "controllers", appId)
         },
         ...reviews
       };
@@ -2139,19 +2748,22 @@
         storeItem.discount = toSafeNonNegativeInteger(purchase.discount_pct);
       }
       return storeItem;
-    } catch {
+    } catch (error) {
+      logger2?.error("item.read.error", error, { appId, field: "storeItem" });
       return void 0;
     }
   }
-  function createDiscoveryQueueStoreItemReader() {
-    const tagCatalog = createDiscoveryQueueTagCatalog();
+  function createDiscoveryQueueStoreItemReader({ logger: logger2 } = {}) {
+    const tagCatalog = createDiscoveryQueueTagCatalog({
+      logger: logger2?.child?.("tags") ?? logger2
+    });
     let stopped = false;
     return {
       async prepareBatch(appIds, requiredLanguages) {
         if (stopped || !Array.isArray(appIds) || !Array.isArray(requiredLanguages) || requiredLanguages.length === 0) {
           return;
         }
-        const cache = await waitForStoreItemCache();
+        const cache = await waitForStoreItemCache(logger2);
         if (!cache || typeof cache.QueueMultipleAppRequests !== "function" || stopped) {
           return;
         }
@@ -2160,21 +2772,34 @@
         );
         const missingAppIds = appIds.filter((appId) => {
           const item = cache.GetApp(appId);
-          return !(acceptsChineseDescription && readDescriptionHasChinese(item) === true) && !item?.BContainDataRequest?.(SUPPORTED_LANGUAGES_REQUEST);
+          return !(acceptsChineseDescription && readDescriptionHasChinese(item, logger2, appId) === true) && !item?.BContainDataRequest?.(SUPPORTED_LANGUAGES_REQUEST);
         });
         if (missingAppIds.length === 0) {
           return;
         }
+        const startedAt = performance.now();
+        logger2?.info("batch.request.started", {
+          appIds: [...missingAppIds],
+          request: SUPPORTED_LANGUAGES_REQUEST,
+          requiredLanguages: [...requiredLanguages]
+        });
         try {
-          console.info("[Steam 探索队列] 批量补齐支持语言", {
-            appIds: [...missingAppIds],
-            requiredLanguages: [...requiredLanguages]
-          });
           await cache.QueueMultipleAppRequests(
             missingAppIds,
             SUPPORTED_LANGUAGES_REQUEST
           );
-        } catch {
+          logger2?.info("batch.request.completed", {
+            appIds: [...missingAppIds],
+            durationMs: performance.now() - startedAt,
+            requiredLanguages: [...requiredLanguages]
+          });
+        } catch (error) {
+          logger2?.error("batch.request.error", error, {
+            appIds: [...missingAppIds],
+            durationMs: performance.now() - startedAt,
+            request: SUPPORTED_LANGUAGES_REQUEST,
+            requiredLanguages: [...requiredLanguages]
+          });
           return;
         }
       },
@@ -2186,7 +2811,7 @@
         if (!Number.isSafeInteger(numericAppId)) {
           return void 0;
         }
-        const cache = await waitForStoreItemCache();
+        const cache = await waitForStoreItemCache(logger2);
         if (!cache || stopped) {
           return void 0;
         }
@@ -2194,14 +2819,36 @@
           let item = cache.GetApp(numericAppId);
           const request = buildStoreItemRequest(
             requirements,
-            readAppType(item)
+            readAppType(item, logger2, numericAppId)
           );
           if (Object.keys(request).length > 0 && !item?.BContainDataRequest?.(request)) {
+            const startedAt = performance.now();
+            logger2?.debug("item.request.started", {
+              appId: numericAppId,
+              request,
+              requirements
+            });
             await cache.QueueAppRequest(numericAppId, request);
             item = cache.GetApp(numericAppId);
+            logger2?.debug("item.request.completed", {
+              appId: numericAppId,
+              durationMs: performance.now() - startedAt,
+              request,
+              requirements
+            });
           }
-          return readStoreItem(item, numericAppId);
-        } catch {
+          const result = readStoreItem(item, numericAppId, logger2);
+          logger2?.debug("item.result", {
+            appId: numericAppId,
+            requirements,
+            result
+          });
+          return result;
+        } catch (error) {
+          logger2?.error("item.request.error", error, {
+            appId: numericAppId,
+            requirements
+          });
           return void 0;
         }
       },
@@ -2213,18 +2860,30 @@
         if (!Number.isSafeInteger(numericAppId)) {
           return [];
         }
-        const cache = await waitForStoreItemCache();
+        const cache = await waitForStoreItemCache(logger2);
         if (!cache || stopped) {
           return [];
         }
         try {
-          const tagIds = readArray(() => cache.GetApp(numericAppId)?.GetTagIDs?.());
+          const tagIds = readArray(
+            () => cache.GetApp(numericAppId)?.GetTagIDs?.(),
+            logger2,
+            "tagIds",
+            numericAppId
+          );
           const uniqueTagIds = [...new Set(tagIds)];
           if (uniqueTagIds.length === 0) {
             return [];
           }
-          return await tagCatalog.getNames(uniqueTagIds);
-        } catch {
+          const names = await tagCatalog.getNames(uniqueTagIds);
+          logger2?.debug("tags.resolved", {
+            appId: numericAppId,
+            names,
+            tagIds: uniqueTagIds
+          });
+          return names;
+        } catch (error) {
+          logger2?.error("tags.resolve.error", error, { appId: numericAppId });
           return [];
         }
       },
@@ -2249,14 +2908,16 @@
   function matchesAction(target, selector) {
     return target instanceof Element && target.closest(selector) !== null;
   }
-  function startClassicQueue() {
+  function startClassicQueue(logger2) {
     if (new URLSearchParams(location.search).get("queue") !== "1") {
+      logger2?.debug("controller.skipped", { reason: "not-classic-queue" });
       return () => {
       };
     }
     const queueActions = document.querySelector("#queueActionsCtn");
     const nextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
     if (!(queueActions instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
+      logger2?.debug("controller.skipped", { reason: "controls-not-found" });
       return () => {
       };
     }
@@ -2264,6 +2925,7 @@
     let timer;
     let frame;
     const pendingActions = /* @__PURE__ */ new Set();
+    let activeAdvance;
     let advancing = false;
     function stopWaiting() {
       observer?.disconnect();
@@ -2274,9 +2936,22 @@
       frame = void 0;
       pendingActions.clear();
     }
-    function advance(delay = ADVANCE_DELAY_MS) {
+    function advance(pending, delay = ADVANCE_DELAY_MS) {
+      if (advancing) {
+        logger2?.debug("advance.suppressed", {
+          actionId: pending?.actionId,
+          reason: "already-advancing"
+        });
+        return;
+      }
       stopWaiting();
       advancing = true;
+      activeAdvance = pending;
+      logger2?.info("advance.scheduled", {
+        action: pending?.action,
+        actionId: pending?.actionId,
+        delay
+      });
       timer = setTimeout(() => {
         timer = void 0;
         const triggerNext = () => {
@@ -2284,8 +2959,18 @@
           const currentNextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
           if (currentNextButton instanceof HTMLElement) {
             currentNextButton.click();
+            logger2?.info("advance.clicked", {
+              action: pending?.action,
+              actionId: pending?.actionId
+            });
+          } else {
+            logger2?.warn("advance.button_missing", {
+              action: pending?.action,
+              actionId: pending?.actionId
+            });
           }
           advancing = false;
+          activeAdvance = void 0;
         };
         if (delay === 0) {
           triggerNext();
@@ -2301,24 +2986,40 @@
       return isVisible2(document.querySelector("#add_to_wishlist_area_fail"));
     }
     function checkResults() {
-      for (const action of pendingActions) {
+      for (const pending of pendingActions) {
         if (hasSucceeded()) {
-          advance();
+          logger2?.info("wishlist.succeeded", { actionId: pending.actionId });
+          advance(pending);
           return;
         }
         if (hasFailed()) {
-          pendingActions.delete(action);
+          logger2?.warn("wishlist.failed", { actionId: pending.actionId });
+          pendingActions.delete(pending);
         }
       }
       if (pendingActions.size === 0) {
         stopWaiting();
       }
     }
-    function waitForResult(action) {
+    function waitForResult(pending) {
       if (advancing) {
+        logger2?.debug("action.suppressed", {
+          action: pending.action,
+          actionId: pending.actionId,
+          reason: "advancing"
+        });
         return;
       }
-      pendingActions.add(action);
+      if ([...pendingActions].some((action) => action.action === pending.action)) {
+        logger2?.debug("action.suppressed", {
+          action: pending.action,
+          actionId: pending.actionId,
+          reason: "already-pending"
+        });
+        return;
+      }
+      pendingActions.add(pending);
+      logger2?.info("wishlist.waiting", { actionId: pending.actionId });
       if (observer) {
         return;
       }
@@ -2329,26 +3030,61 @@
         childList: true,
         subtree: true
       });
-      timer = setTimeout(stopWaiting, QUEUE_TIMEOUT_MS);
+      timer = setTimeout(() => {
+        for (const action of pendingActions) {
+          logger2?.warn("wishlist.timeout", { actionId: action.actionId });
+        }
+        stopWaiting();
+      }, QUEUE_TIMEOUT_MS);
     }
     function handleClick(event) {
       const { target } = event;
       if (matchesAction(target, "#add_to_wishlist_area a.add_to_wishlist")) {
-        waitForResult("wishlist");
+        const pending = {
+          action: "wishlist",
+          actionId: logger2?.nextId("classic-action")
+        };
+        logger2?.info("action.clicked", pending);
+        waitForResult(pending);
       } else if (matchesAction(target, ".queue_btn_ignore .queue_btn_inactive") || matchesAction(target, "#queue_ignore_menu_option_not_interested") || matchesAction(target, "#queue_ignore_menu_option_owned_elsewhere")) {
-        advance(0);
+        const pending = {
+          action: "ignore",
+          actionId: logger2?.nextId("classic-action")
+        };
+        logger2?.info("action.clicked", pending);
+        advance(pending, 0);
       }
     }
     function stop() {
+      logger2?.info("controller.stopping", {
+        advancing,
+        pendingCount: pendingActions.size
+      });
+      if (activeAdvance) {
+        logger2?.info("advance.cancelled", {
+          action: activeAdvance.action,
+          actionId: activeAdvance.actionId,
+          reason: "controller-stop"
+        });
+      }
+      for (const pending of pendingActions) {
+        logger2?.info("action.cancelled", {
+          action: pending.action,
+          actionId: pending.actionId,
+          reason: "controller-stop"
+        });
+      }
       stopWaiting();
+      activeAdvance = void 0;
       queueActions.removeEventListener("click", handleClick, true);
       window.removeEventListener("pagehide", stop);
     }
     queueActions.addEventListener("click", handleClick, true);
     window.addEventListener("pagehide", stop, { once: true });
+    logger2?.info("controller.started");
     return stop;
   }
-  function startModalReviewCountFix() {
+  function startModalReviewCountFix(logger2) {
     const root = document.body;
     if (!(root instanceof HTMLElement)) {
       return () => {
@@ -2365,7 +3101,13 @@
         }
         const match = element.textContent?.trim().match(/^\(\((.+)\)\)$/u);
         if (match) {
+          const previousText = element.textContent;
           element.textContent = `(${match[1]})`;
+          logger2?.info("review_count.corrected", {
+            correctedText: element.textContent,
+            previousText,
+            reviewCount: match[1]
+          });
         }
       }
     }
@@ -2407,18 +3149,32 @@
     const pathname = url.pathname.replace(/\/+$/, "") || "/";
     return pathname === MODAL_WISHLIST_PATH ? pathname : void 0;
   }
-  function monitorActionRequests(takePending, handleResult) {
+  function monitorActionRequests(logger2, takePending, handleResult) {
     if (typeof window.fetch !== "function") {
+      logger2?.warn("fetch.monitor_unavailable");
       return () => {
       };
     }
     const originalFetch = window.fetch;
     function monitoredFetch(...args) {
-      const response = Reflect.apply(originalFetch, this, args);
+      let response;
+      try {
+        response = Reflect.apply(originalFetch, this, args);
+      } catch (error) {
+        logger2?.error("fetch.call_failed", error, {
+          input: args[0],
+          init: args[1]
+        });
+        throw error;
+      }
       let pathname;
       try {
         pathname = getMonitoredPath(args[0], args[1]);
-      } catch {
+      } catch (error) {
+        logger2?.error("fetch.inspect_failed", error, {
+          input: args[0],
+          init: args[1]
+        });
         return response;
       }
       if (!pathname) {
@@ -2426,14 +3182,29 @@
       }
       const pending = takePending(pathname);
       if (!pending) {
+        logger2?.warn("fetch.pending_missing", { pathname });
         return response;
       }
+      logger2?.info("fetch.matched", {
+        actionId: pending.actionId,
+        pathname
+      });
       return response.then(
         (result) => {
+          logger2?.info("fetch.completed", {
+            actionId: pending.actionId,
+            ok: result.ok,
+            pathname,
+            status: result.status
+          });
           handleResult(pending, result.ok);
           return result;
         },
         (error) => {
+          logger2?.error("fetch.failed", error, {
+            actionId: pending.actionId,
+            pathname
+          });
           handleResult(pending, false);
           throw error;
         }
@@ -2446,10 +3217,11 @@
       }
     };
   }
-  function startModalQueue() {
+  function startModalQueue(logger2) {
     const requestQueues = /* @__PURE__ */ new Map();
     const pendingActions = /* @__PURE__ */ new Set();
     let advanceFrame;
+    let activeAdvance;
     let advancing = false;
     function removePending(pending) {
       clearTimeout(pending.timer);
@@ -2472,25 +3244,44 @@
     }
     function advance(pending, immediate = false) {
       if (advancing) {
+        logger2?.debug("advance.suppressed", {
+          actionId: pending.actionId,
+          reason: "already-advancing"
+        });
         return;
       }
       advancing = true;
+      activeAdvance = pending;
       clearPending();
       const deadline = performance.now() + QUEUE_TIMEOUT_MS;
+      logger2?.info("advance.started", {
+        action: pending.action,
+        actionId: pending.actionId,
+        immediate
+      });
       const triggerNext = () => {
         advanceFrame = void 0;
         if (!pending.dialog.isConnected) {
           advancing = false;
+          activeAdvance = void 0;
+          logger2?.warn("advance.cancelled", {
+            actionId: pending.actionId,
+            reason: "dialog-disconnected"
+          });
           return;
         }
         const nextButton = findModalNextButton(pending.dialog);
         if (nextButton) {
           nextButton.click();
           advancing = false;
+          activeAdvance = void 0;
+          logger2?.info("advance.clicked", { actionId: pending.actionId });
           return;
         }
         if (performance.now() >= deadline) {
           advancing = false;
+          activeAdvance = void 0;
+          logger2?.warn("advance.timeout", { actionId: pending.actionId });
           return;
         }
         advanceFrame = requestAnimationFrame(triggerNext);
@@ -2507,8 +3298,17 @@
         if (!pending.button.isConnected || pending.button.className === pending.initialClassName) {
           return;
         }
+        if (!pending.selectedStateDetected) {
+          pending.selectedStateDetected = true;
+          logger2?.debug("selected_state.detected", {
+            actionId: pending.actionId
+          });
+        }
         pending.stabilityTimer = setTimeout(() => {
           if (pending.button.isConnected && pending.button.className !== pending.initialClassName) {
+            logger2?.info("selected_state.confirmed", {
+              actionId: pending.actionId
+            });
             advance(pending);
           }
         }, ADVANCE_DELAY_MS);
@@ -2521,6 +3321,7 @@
       checkState();
     }
     const stopMonitoringRequests = monitorActionRequests(
+      logger2,
       (pathname) => {
         const queue = requestQueues.get(pathname);
         const pending = queue?.shift();
@@ -2534,20 +3335,45 @@
       },
       (pending, succeeded) => {
         if (!pendingActions.has(pending)) {
+          logger2?.debug("fetch.result_ignored", {
+            actionId: pending.actionId,
+            reason: "pending-cancelled"
+          });
           return;
         }
         if (succeeded) {
+          logger2?.info("action.request_succeeded", {
+            actionId: pending.actionId
+          });
           waitForSelectedState(pending);
         } else {
+          logger2?.warn("action.request_failed", {
+            actionId: pending.actionId
+          });
           removePending(pending);
         }
       }
     );
     function handleClick(event) {
-      const modalAction = getModalQueueAction(event.target);
-      if (!modalAction || advancing) {
+      const modalAction = getModalQueueAction(event.target, logger2);
+      if (!modalAction) {
         return;
       }
+      modalAction.actionId = logger2?.nextId("modal-action");
+      if (advancing) {
+        logger2?.debug("action.suppressed", {
+          action: modalAction.action,
+          actionId: modalAction.actionId,
+          appId: modalAction.appId,
+          reason: "advancing"
+        });
+        return;
+      }
+      logger2?.info("action.clicked", {
+        action: modalAction.action,
+        actionId: modalAction.actionId,
+        appId: modalAction.appId
+      });
       if (modalAction.action === "ignore") {
         advance(modalAction, true);
         return;
@@ -2556,15 +3382,40 @@
         ...modalAction,
         pathname: MODAL_WISHLIST_PATH
       };
-      pending.timer = setTimeout(() => removePending(pending), QUEUE_TIMEOUT_MS);
+      pending.timer = setTimeout(() => {
+        logger2?.warn("action.pending_timeout", {
+          actionId: pending.actionId,
+          pathname: pending.pathname
+        });
+        removePending(pending);
+      }, QUEUE_TIMEOUT_MS);
       pendingActions.add(pending);
       const queue = requestQueues.get(MODAL_WISHLIST_PATH) ?? [];
       queue.push(pending);
       requestQueues.set(MODAL_WISHLIST_PATH, queue);
     }
     function stop() {
+      logger2?.info("controller.stopping", {
+        advancing,
+        pendingCount: pendingActions.size
+      });
+      if (activeAdvance) {
+        logger2?.info("advance.cancelled", {
+          actionId: activeAdvance.actionId,
+          reason: "controller-stop"
+        });
+      }
+      for (const pending of pendingActions) {
+        logger2?.info("action.cancelled", {
+          action: pending.action,
+          actionId: pending.actionId,
+          appId: pending.appId,
+          reason: "controller-stop"
+        });
+      }
       cancelAnimationFrame(advanceFrame);
       advanceFrame = void 0;
+      activeAdvance = void 0;
       advancing = false;
       stopMonitoringRequests();
       clearPending();
@@ -2573,16 +3424,24 @@
     }
     document.addEventListener("click", handleClick, true);
     window.addEventListener("pagehide", stop, { once: true });
+    logger2?.info("controller.started");
     return stop;
   }
-  function startSteamDiscoveryQueue() {
-    const storeItemReader = createDiscoveryQueueStoreItemReader();
+  function startSteamDiscoveryQueue({ logger: logger2 } = {}) {
+    const runLogger = logger2?.child("run");
+    runLogger?.info("lifecycle.started", {
+      documentReadyState: document.readyState
+    });
+    const storeItemReader = createDiscoveryQueueStoreItemReader({
+      logger: runLogger?.child("store-items")
+    });
     const stopPrefilter = startDiscoveryQueuePrefilter({
       getLocalizedTags: storeItemReader.getLocalizedTags,
       getStoreItem: storeItemReader.get,
-      prepareStoreItems: storeItemReader.prepareBatch
+      prepareStoreItems: storeItemReader.prepareBatch,
+      logger: runLogger?.child("prefilter")
     });
-    const stopModalQueue = startModalQueue();
+    const stopModalQueue = startModalQueue(runLogger?.child("modal"));
     let stopClassicQueue = () => {
     };
     let stopAutoFilter = () => {
@@ -2592,11 +3451,18 @@
     let stopped = false;
     function startQueueControllersWhenReady() {
       if (!stopped) {
-        stopClassicQueue = startClassicQueue();
-        stopAutoFilter = startDiscoveryQueueAutoFilter({
-          getStoreItem: storeItemReader.get
+        runLogger?.info("controllers.starting", {
+          documentReadyState: document.readyState
         });
-        stopReviewCountFix = startModalReviewCountFix();
+        stopClassicQueue = startClassicQueue(runLogger?.child("classic"));
+        stopAutoFilter = startDiscoveryQueueAutoFilter({
+          getStoreItem: storeItemReader.get,
+          logger: runLogger
+        });
+        stopReviewCountFix = startModalReviewCountFix(
+          runLogger?.child("modal-review-count")
+        );
+        runLogger?.info("controllers.started");
       }
     }
     if (document.readyState === "loading") {
@@ -2607,6 +3473,7 @@
       startQueueControllersWhenReady();
     }
     return () => {
+      runLogger?.info("lifecycle.stopping");
       stopped = true;
       document.removeEventListener("DOMContentLoaded", startQueueControllersWhenReady);
       stopModalQueue();
@@ -2615,9 +3482,133 @@
       stopAutoFilter();
       stopReviewCountFix();
       storeItemReader.stop();
+      runLogger?.info("lifecycle.stopped");
     };
   }
 
+  // src/lib/steam/discovery-queue-log.js
+  var PRODUCT_NAME = "Steam Discovery Queue";
+  var sessionSequence = 0;
+  function defaultNow() {
+    return (/* @__PURE__ */ new Date()).toISOString();
+  }
+  function createDefaultElapsed() {
+    const start = performance?.now?.() ?? Date.now();
+    return () => (performance?.now?.() ?? Date.now()) - start;
+  }
+  function copyContext(context) {
+    try {
+      return context && typeof context === "object" ? { ...context } : {};
+    } catch {
+      return {};
+    }
+  }
+  function safeCall(source) {
+    try {
+      return source();
+    } catch {
+      return null;
+    }
+  }
+  function safeText(value, fallback) {
+    try {
+      const text = String(value);
+      return text || fallback;
+    } catch {
+      return fallback;
+    }
+  }
+  function createDiscoveryQueueLogger({
+    scriptVersion,
+    consoleTarget = console,
+    now = defaultNow,
+    elapsed = createDefaultElapsed()
+  } = {}) {
+    const sessionId = `dq-${Date.now().toString(36)}-${++sessionSequence}`;
+    const state = {
+      consoleTarget,
+      elapsed,
+      idSequence: 0,
+      logSequence: 0,
+      now,
+      scriptVersion,
+      sessionId
+    };
+    function nextId(prefix = "operation") {
+      try {
+        state.idSequence += 1;
+        return `${state.sessionId}:${safeText(prefix, "operation")}:${state.idSequence}`;
+      } catch {
+        return `${state.sessionId}:operation`;
+      }
+    }
+    function createChild(scope, context) {
+      const stableScope = safeText(scope, "root");
+      const stableContext = copyContext(context);
+      function write(level, event, data, error, hasData) {
+        try {
+          state.logSequence += 1;
+          const eventName = safeText(event, "unknown");
+          const prefix = [
+            `[${PRODUCT_NAME}]`,
+            `[${state.sessionId}]`,
+            `[#${state.logSequence}]`,
+            `[${stableScope}.${eventName}]`
+          ].join("");
+          const metadata = {
+            ...stableContext,
+            scriptVersion: state.scriptVersion,
+            timestamp: safeCall(state.now),
+            elapsedMs: safeCall(state.elapsed)
+          };
+          const args = error === void 0 ? [prefix, metadata] : [prefix, metadata, error];
+          if (hasData) {
+            args.push(data);
+          }
+          const method = state.consoleTarget?.[level];
+          if (typeof method === "function") {
+            Reflect.apply(method, state.consoleTarget, args);
+          }
+        } catch {
+          return void 0;
+        }
+      }
+      return {
+        sessionId: state.sessionId,
+        nextId,
+        child(childScope, childContext) {
+          try {
+            const nestedScope = stableScope === "root" ? safeText(childScope, "child") : `${stableScope}.${safeText(childScope, "child")}`;
+            return createChild(
+              nestedScope,
+              { ...stableContext, ...copyContext(childContext) }
+            );
+          } catch {
+            return createChild(stableScope, stableContext);
+          }
+        },
+        debug(event, data) {
+          write("debug", event, data, void 0, arguments.length >= 2);
+        },
+        info(event, data) {
+          write("info", event, data, void 0, arguments.length >= 2);
+        },
+        warn(event, data) {
+          write("warn", event, data, void 0, arguments.length >= 2);
+        },
+        error(event, error, data) {
+          write("error", event, data, error, arguments.length >= 3);
+        }
+      };
+    }
+    return createChild("root");
+  }
+
   // src/userscripts/steam-discovery-queue.user.js
-  startSteamDiscoveryQueue();
+  var logger = createDiscoveryQueueLogger({ scriptVersion: "0.3.19" });
+  logger.info("script.started", {
+    documentReadyState: document.readyState,
+    url: location.href
+  });
+  startSteamDiscoveryQueue({ logger });
 })();
