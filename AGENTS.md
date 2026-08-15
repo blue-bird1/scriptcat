@@ -22,7 +22,7 @@
 - **MCP lifecycle 所有权**：`chrome-devtools-scriptcat` 的唯一持久 broker 独占固定 profile 与 browser provider 进程的完整生命周期。root 与 subagent 各自通过 stdio proxy 建立独立 MCP session 和 `McpContext`，并共享 broker 持有的 browser；proxy 或单个 session 关闭不结束 browser。Agent 不得发送进程信号、结束 Chromium 或其子进程、手动启动 provider、复制固定 profile、删除 `Singleton*`，或用其他浏览器进程争用该 profile。`scripts/mcp/control.py` 从 `.codex/config.toml` 复用完整启动参数；其 `stop` 只用于系统退出或明确维护，不参与发布，不作为调试或会话清理手段。每个新 session 在其他浏览器操作前先调用 `scriptcat_status`。
 - **加载、刷新与权限**：MCP 在每个 browser lifecycle 中从配置读取 managed 目录，并通过受信 `Extensions.loadUnpacked` 原子加载或刷新该目录；请求同时携带固定 `expectedId` 与 `userScriptsAccess: true`，因此权限在首个扩展 service worker 激活前生效。该流程按目录内容刷新，不比较或假设扩展版本，也不因扩展已存在而跳过加载。`scriptcat_status` 只观察权限和就绪状态；MCP 不调用独立权限 setter，也不执行额外 reload。`userScriptsAccessEnabled` 不是 `true` 表示 lifecycle 加载不变量未满足，应检查 MCP 与扩展状态。managed 目录缺失、内容损坏或 manifest 无效时，重新执行本地 publish 命令原子修复固定目录，再开始新的 browser lifecycle。browser provider 仅提供 Chromium 可执行文件，此流程不要求修改 provider。
 - **MCP 脚本管理与验收**：以 `scriptcat_upsert_script` 写入仓库内规范化的目标 `*.user.js` 路径；MCP 会逐脚本关闭 ScriptCat 后台更新检查，避免仓库脚本被外部 `@updateURL` 覆盖。按需使用 `scriptcat_list_scripts`、`scriptcat_get_script`、`scriptcat_set_enabled` 和 `scriptcat_delete_script`，随后打开真实 `@match` 页面，确认注入、UI、控制台、网络请求和核心交互。
-- **用户正常浏览器安装**：用户日常浏览器使用 ScriptCat 的默认 VSCode sync 端口 `8642`。使用 `pnpm install:scriptcat -- <script.user.js>` 推送脚本；不传脚本时默认安装 `greenmangaming-bundle-claim.user.js`。该路径独立于专用 MCP 验收。
+- **用户正常浏览器安装**：用户日常浏览器使用 ScriptCat 的默认 VSCode sync 端口 `8642`。每次修改用户脚本并完成构建、测试和提交后，必须对本次修改的每个根目录 `*.user.js` 执行 `pnpm install:scriptcat -- <script.user.js>`；安装成功是任务完成条件。不传脚本时默认安装 `greenmangaming-bundle-claim.user.js`。该路径独立于专用 MCP 验收。
 
 ## Browser Provider、MCP 与扩展发布
 
