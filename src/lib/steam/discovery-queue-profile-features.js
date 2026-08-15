@@ -1,7 +1,7 @@
 const PROFILE_PROGRESS_ENDPOINT =
   "https://api.steampowered.com/IPlayerService/GetAchievementsProgress/v1/";
 
-function readApplicationConfig() {
+function readApplicationConfig(logger) {
   const applicationConfig = document.getElementById("application_config");
   if (!(applicationConfig instanceof HTMLElement)) {
     return undefined;
@@ -20,7 +20,8 @@ function readApplicationConfig() {
       accessToken
       ? { steamId, accessToken }
       : undefined;
-  } catch {
+  } catch (error) {
+    logger?.error("credentials.parse.error", error);
     return undefined;
   }
 }
@@ -41,19 +42,38 @@ function parseProfileFeaturesLimited(payload, appId) {
   return typeof matching.vetted === "boolean" ? !matching.vetted : undefined;
 }
 
-export function createProfileFeaturesLimitedReader() {
+export function createProfileFeaturesLimitedReader({ logger } = {}) {
   const cache = new Map();
+  const diagnostics = new Map();
   let requestChain = Promise.resolve();
   let requestGeneration = 0;
   let requestsBlocked = false;
 
   async function request(appId, generation) {
     if (requestsBlocked || generation !== requestGeneration) {
+      diagnostics.set(appId, {
+        kind: "unavailable",
+        reason: requestsBlocked ? "rate-limited" : "generation-cancelled",
+      });
+      logger?.debug("request.skipped", {
+        appId,
+        generation,
+        reason: requestsBlocked ? "rate-limited" : "generation-cancelled",
+        requestGeneration,
+      });
       return undefined;
     }
 
-    const credentials = readApplicationConfig();
+    const credentials = readApplicationConfig(logger);
     if (!credentials) {
+      diagnostics.set(appId, {
+        kind: "unavailable",
+        reason: "credentials-unavailable",
+      });
+      logger?.warn("request.skipped", {
+        appId,
+        reason: "credentials-unavailable",
+      });
       return undefined;
     }
 
@@ -73,22 +93,78 @@ export function createProfileFeaturesLimitedReader() {
       }),
     );
 
+    const startedAt = performance.now();
+    logger?.debug("request.started", { appId, generation });
     try {
       const response = await fetch(url, {
         method: "POST",
         body,
       });
       if (generation !== requestGeneration) {
+        diagnostics.set(appId, {
+          kind: "unavailable",
+          reason: "generation-cancelled",
+        });
+        logger?.info("request.cancelled", {
+          appId,
+          durationMs: performance.now() - startedAt,
+          generation,
+          requestGeneration,
+          stage: "response",
+        });
         return undefined;
       }
       if (response.status === 429) {
         requestsBlocked = true;
+        diagnostics.set(appId, {
+          kind: "http",
+          status: response.status,
+          statusText: response.statusText,
+        });
+        logger?.warn("request.rate-limited", {
+          appId,
+          durationMs: performance.now() - startedAt,
+          status: response.status,
+          statusText: response.statusText,
+        });
         return undefined;
       }
-      return response.ok
-        ? parseProfileFeaturesLimited(await response.json(), appId)
-        : undefined;
-    } catch {
+      if (!response.ok) {
+        diagnostics.set(appId, {
+          kind: "http",
+          status: response.status,
+          statusText: response.statusText,
+        });
+        logger?.warn("request.http-error", {
+          appId,
+          durationMs: performance.now() - startedAt,
+          status: response.status,
+          statusText: response.statusText,
+        });
+        return undefined;
+      }
+      const value = parseProfileFeaturesLimited(await response.json(), appId);
+      if (value === undefined) {
+        diagnostics.set(appId, {
+          kind: "invalid-response",
+          reason: "profile-status-unresolved",
+        });
+      } else {
+        diagnostics.delete(appId);
+      }
+      logger?.debug("request.completed", {
+        appId,
+        durationMs: performance.now() - startedAt,
+        status: response.status,
+        value,
+      });
+      return value;
+    } catch (error) {
+      diagnostics.set(appId, { error, kind: "exception" });
+      logger?.error("request.error", error, {
+        appId,
+        durationMs: performance.now() - startedAt,
+      });
       return undefined;
     }
   }
@@ -107,9 +183,14 @@ export function createProfileFeaturesLimitedReader() {
       }
       return statusPromise;
     },
+    getDiagnostic(appId) {
+      return diagnostics.get(appId);
+    },
     clear() {
       requestGeneration += 1;
+      logger?.info("generation.cleared", { requestGeneration });
       cache.clear();
+      diagnostics.clear();
       requestChain = Promise.resolve();
       requestsBlocked = false;
     },

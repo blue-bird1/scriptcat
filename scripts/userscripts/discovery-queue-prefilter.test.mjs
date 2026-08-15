@@ -235,6 +235,27 @@ async function runPrefilter({
   matchingAppIds = [],
 }) {
   const calls = [];
+  const logs = [];
+  const logger = {
+    child() {
+      return this;
+    },
+    debug(event, data) {
+      logs.push({ data, event, level: "debug" });
+    },
+    error(event, error, data) {
+      logs.push({ data, error, event, level: "error" });
+    },
+    info(event, data) {
+      logs.push({ data, event, level: "info" });
+    },
+    nextId() {
+      return "prefilter-test";
+    },
+    warn(event, data) {
+      logs.push({ data, event, level: "warn" });
+    },
+  };
   const responses = queueBodies.map((body) => new Response(body, {
     headers: {
       "content-length": String(body.length),
@@ -319,6 +340,7 @@ async function runPrefilter({
     async prepareStoreItems(appIds, requiredLanguages) {
       calls.push(["prepare", [...appIds], [...requiredLanguages]]);
     },
+    logger,
   });
   try {
     const response = await window.fetch(INITIAL_QUEUE_URL);
@@ -328,13 +350,15 @@ async function runPrefilter({
       appIds,
       DISCOVERY_QUEUE_DATA_REQUEST,
     );
-    await beforeQueueSettles?.({ appIds, calls, queueResult });
+    await beforeQueueSettles?.({ appIds, calls, logs, queueResult });
     await queueResult;
+    await new Promise((resolve) => setImmediate(resolve));
     return {
       appIds,
       body,
       calls,
       initialResponse,
+      logs,
       response,
     };
   } finally {
@@ -402,12 +426,19 @@ test("rule matches are removed before delivery even when ignores fail", async ()
     ["ignore", 42],
     ["ignore", 43],
   ]);
+  const rejected = result.logs.find((entry) =>
+    entry.event === "ignore.response.rejected" && entry.data.appId === 43
+  );
+  assert.deepEqual(rejected?.data.payload, { success: 2 });
+  assert.ok(result.logs.some((entry) =>
+    entry.event === "ignore.failed" && entry.data.appId === 43
+  ));
 });
 
 test("retained apps are delivered without waiting for matched app ignores", async () => {
   const ignoreResponse = createDeferred();
   const result = await runPrefilter({
-    beforeQueueSettles: async ({ appIds, queueResult }) => {
+    beforeQueueSettles: async ({ appIds, logs, queueResult }) => {
       let timer;
       try {
         await Promise.race([
@@ -423,6 +454,11 @@ test("retained apps are delivered without waiting for matched app ignores", asyn
         clearTimeout(timer);
       }
       assert.deepEqual(appIds, [44]);
+      assert.ok(logs.some((entry) => entry.event === "display.retained"));
+      assert.equal(
+        logs.some((entry) => entry.event === "ignore.request.completed"),
+        false,
+      );
       ignoreResponse.resolve(Response.json({ success: 1 }));
     },
     ignoreResponses: new Map([[42, ignoreResponse.promise]]),

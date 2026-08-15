@@ -297,7 +297,7 @@ function getDiscoveryQueueDialog() {
   return dialog instanceof HTMLElement ? dialog : undefined;
 }
 
-function createPrefilterReporter() {
+function createPrefilterReporter(logger, lifecycleId) {
   let checked = 0;
   let ignored = 0;
   let total = 0;
@@ -347,9 +347,10 @@ function createPrefilterReporter() {
       batches += 1;
       total += appIds.length;
       render(`正在加载第 ${batches} 批（${appIds.length} 项）`);
-      console.info("[Steam 探索队列] 开始预筛选批次", {
+      logger?.info("batch.started", {
         appIds: [...appIds],
         batch: batches,
+        lifecycleId,
       });
     },
     beginEvaluation() {
@@ -359,8 +360,9 @@ function createPrefilterReporter() {
       checked += 1;
       render(`正在筛选第 ${batches} 批`);
       if (result?.matched === true) {
-        console.info("[Steam 探索队列] 规则命中", {
+        logger?.info("app.matched", {
           appId,
+          lifecycleId,
           reasons: result.reasons,
         });
       }
@@ -369,18 +371,20 @@ function createPrefilterReporter() {
       if (succeeded) {
         ignored += 1;
         render(`正在忽略第 ${batches} 批命中项`);
-        console.info("[Steam 探索队列] 忽略成功", { appId });
+        logger?.info("ignore.succeeded", { appId, lifecycleId });
       } else {
-        console.warn("[Steam 探索队列] 忽略失败，已从当前展示中筛除", {
+        logger?.warn("ignore.failed", {
           appId,
+          lifecycleId,
         });
       }
     },
     finishBatch(retainedAppIds, matchedAppIds) {
-      console.info("[Steam 探索队列] 批次筛选完成", {
+      logger?.info("batch.partitioned", {
         batch: batches,
         checked,
         ignored,
+        lifecycleId,
         matchedAppIds: [...matchedAppIds],
         retainedAppIds: [...retainedAppIds],
       });
@@ -409,15 +413,21 @@ function isDiscoveryQueueDataRequest(value) {
 export function startDiscoveryQueuePrefilter({
   getStoreItem,
   getLocalizedTags,
+  logger,
   prepareStoreItems,
 } = {}) {
   if (typeof window !== "object" || typeof window.fetch !== "function") {
     return () => {};
   }
 
+  const lifecycleId = logger?.nextId?.("prefilter") ?? "prefilter";
+  const prefilterLogger = logger?.child?.("prefilter", { lifecycleId }) ?? logger;
   const permits = new Map();
   const deliveredDialogs = new WeakSet();
-  const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
+  const ruleEngine = createDiscoveryQueueRuleEngine({
+    getStoreItem,
+    logger: prefilterLogger?.child?.("rules", { lifecycleId }) ?? prefilterLogger,
+  });
   const originalFetch = window.fetch;
   let stopped = false;
   let generation = 0;
@@ -425,6 +435,7 @@ export function startDiscoveryQueuePrefilter({
   let queueCache;
   let originalQueueMultiple;
   let queueMultipleWrapper;
+  prefilterLogger?.info("lifecycle.started", { lifecycleId });
 
   function grantPermit(appIds, request, args, receiver) {
     const key = appIdKey(appIds);
@@ -434,6 +445,12 @@ export function startDiscoveryQueuePrefilter({
         expiresAt: Date.now() + PERMIT_DURATION_MS,
         receiver,
         request,
+      });
+      prefilterLogger?.debug("permit.granted", {
+        appIds: [...appIds],
+        expiresInMs: PERMIT_DURATION_MS,
+        lifecycleId,
+        rebuild: request.queueRequest.rebuild,
       });
     }
   }
@@ -445,11 +462,22 @@ export function startDiscoveryQueuePrefilter({
     }
     const permit = permits.get(key);
     permits.delete(key);
-    return permit?.expiresAt >= Date.now() ? permit : undefined;
+    const valid = permit?.expiresAt >= Date.now();
+    prefilterLogger?.debug("permit.taken", {
+      appIds: [...appIds],
+      lifecycleId,
+      result: !permit ? "missing" : valid ? "accepted" : "expired",
+    });
+    return valid ? permit : undefined;
   }
 
   async function ignoreApp(appId) {
     if (typeof window.g_sessionID !== "string" || !window.g_sessionID) {
+      prefilterLogger?.warn("ignore.skipped", {
+        appId,
+        lifecycleId,
+        reason: "missing-session",
+      });
       return false;
     }
     const form = new FormData();
@@ -461,6 +489,8 @@ export function startDiscoveryQueuePrefilter({
       form.set("snr", snr);
     }
     form.set("ignore_reason", "0");
+    const startedAt = performance.now();
+    prefilterLogger?.debug("ignore.request.started", { appId, lifecycleId });
     try {
       const response = await Reflect.apply(originalFetch, window, [
         "/recommended/ignorerecommendation",
@@ -470,11 +500,47 @@ export function startDiscoveryQueuePrefilter({
         },
       ]);
       if (!response.ok) {
+        prefilterLogger?.warn("ignore.request.http-error", {
+          appId,
+          durationMs: performance.now() - startedAt,
+          lifecycleId,
+          status: response.status,
+          statusText: response.statusText,
+        });
         return false;
       }
-      const payload = await response.json();
-      return payload?.success === true || payload?.success === 1;
-    } catch {
+      let payload;
+      try {
+        payload = await response.json();
+      } catch (error) {
+        prefilterLogger?.error("ignore.response.parse-error", error, {
+          appId,
+          durationMs: performance.now() - startedAt,
+          lifecycleId,
+          status: response.status,
+        });
+        return false;
+      }
+      const succeeded = payload?.success === true || payload?.success === 1;
+      const data = {
+        appId,
+        durationMs: performance.now() - startedAt,
+        lifecycleId,
+        payload,
+        status: response.status,
+      };
+      if (succeeded) {
+        prefilterLogger?.debug("ignore.request.completed", data);
+      } else {
+        prefilterLogger?.warn("ignore.response.rejected", data);
+      }
+      return succeeded;
+    } catch (error) {
+      prefilterLogger?.error("ignore.request.error", error, {
+        appId,
+        durationMs: performance.now() - startedAt,
+        lifecycleId,
+      });
       return false;
     }
   }
@@ -484,9 +550,36 @@ export function startDiscoveryQueuePrefilter({
       ? config.requiredLanguages.value
       : [];
     if (typeof prepareStoreItems === "function") {
-      await prepareStoreItems(appIds, requiredLanguages);
+      prefilterLogger?.debug("batch.prepare.started", {
+        appIds: [...appIds],
+        currentGeneration,
+        lifecycleId,
+        requiredLanguages: [...requiredLanguages],
+      });
+      try {
+        await prepareStoreItems(appIds, requiredLanguages);
+        prefilterLogger?.debug("batch.prepare.completed", {
+          appIds: [...appIds],
+          currentGeneration,
+          lifecycleId,
+        });
+      } catch (error) {
+        prefilterLogger?.error("batch.prepare.error", error, {
+          appIds: [...appIds],
+          currentGeneration,
+          lifecycleId,
+        });
+        throw error;
+      }
     }
     if (stopped || currentGeneration !== generation) {
+      prefilterLogger?.info("generation.cancelled", {
+        currentGeneration,
+        generation,
+        lifecycleId,
+        stage: "after-prepare",
+        stopped,
+      });
       return undefined;
     }
     reporter?.beginEvaluation();
@@ -509,13 +602,25 @@ export function startDiscoveryQueuePrefilter({
           reasons: Array.isArray(result.reasons) ? result.reasons : [],
         };
         return true;
-      } catch {
+      } catch (error) {
+        prefilterLogger?.error("app.evaluation.error", error, {
+          appId,
+          currentGeneration,
+          lifecycleId,
+        });
         return false;
       } finally {
         reporter?.recordEvaluation(appId, report);
       }
     });
     if (stopped || currentGeneration !== generation) {
+      prefilterLogger?.info("generation.cancelled", {
+        currentGeneration,
+        generation,
+        lifecycleId,
+        stage: "after-evaluation",
+        stopped,
+      });
       return undefined;
     }
     const retainedAppIds = appIds.filter((_, index) => matches[index] !== true);
@@ -525,6 +630,11 @@ export function startDiscoveryQueuePrefilter({
       const succeeded = await ignoreApp(appId);
       reporter?.recordIgnore(appId, succeeded);
       return succeeded;
+    });
+    prefilterLogger?.info("batch.ignore.deferred", {
+      appIds: [...matchedAppIds],
+      lifecycleId,
+      retainedAppIds: [...retainedAppIds],
     });
     return { ignoreCompletion, retainedAppIds };
   }
@@ -544,6 +654,10 @@ export function startDiscoveryQueuePrefilter({
   ) {
     let fetchArgs = createRebuildFetchArgs(permit.args, permit.request);
     if (!fetchArgs) {
+      prefilterLogger?.warn("summary.selected", {
+        lifecycleId,
+        reason: "rebuild-request-unavailable",
+      });
       return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
     }
 
@@ -551,21 +665,51 @@ export function startDiscoveryQueuePrefilter({
       let response;
       try {
         response = await Reflect.apply(originalFetch, permit.receiver, fetchArgs);
-      } catch {
+      } catch (error) {
+        prefilterLogger?.error("rebuild.request.error", error, { lifecycleId });
+        prefilterLogger?.warn("summary.selected", {
+          lifecycleId,
+          reason: "rebuild-request-error",
+        });
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       if (!response?.ok || !isOctetStream(response)) {
+        prefilterLogger?.warn("summary.selected", {
+          contentType: response?.headers?.get?.("content-type"),
+          lifecycleId,
+          reason: "rebuild-invalid-response",
+          status: response?.status,
+        });
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
 
       let appIds;
       try {
         appIds = decodeDiscoveryQueueAppIds(await response.clone().arrayBuffer());
-      } catch {
+      } catch (error) {
+        prefilterLogger?.error("rebuild.response.decode-error", error, {
+          lifecycleId,
+          status: response.status,
+        });
+        prefilterLogger?.warn("summary.selected", {
+          lifecycleId,
+          reason: "rebuild-decode-error",
+        });
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       const key = appIdKey(appIds);
       if (!appIds || appIds.length === 0 || key === undefined || seenBatches.has(key)) {
+        prefilterLogger?.warn("summary.selected", {
+          appIds,
+          lifecycleId,
+          reason: !appIds
+            ? "rebuild-invalid-appids"
+            : appIds.length === 0
+              ? "queue-exhausted"
+              : key === undefined
+                ? "rebuild-invalid-appid-key"
+                : "rebuild-repeated-batch",
+        });
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       seenBatches.add(key);
@@ -573,7 +717,15 @@ export function startDiscoveryQueuePrefilter({
       reporter?.beginBatch(appIds);
       try {
         await Reflect.apply(originalQueueMultiple, queueReceiver, [appIds, dataRequest]);
-      } catch {
+      } catch (error) {
+        prefilterLogger?.error("rebuild.store-items.error", error, {
+          appIds: [...appIds],
+          lifecycleId,
+        });
+        prefilterLogger?.warn("summary.selected", {
+          lifecycleId,
+          reason: "rebuild-store-items-error",
+        });
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       const filteredBatch = await prefilter(
@@ -583,11 +735,25 @@ export function startDiscoveryQueuePrefilter({
         reporter,
       );
       if (!filteredBatch) {
+        prefilterLogger?.info("display.original-batch", {
+          appIds: [...appIds],
+          lifecycleId,
+          reason: "generation-cancelled",
+        });
         return appIds;
       }
       if (filteredBatch.retainedAppIds.length > 0) {
+        prefilterLogger?.info("display.retained", {
+          appIds: [...filteredBatch.retainedAppIds],
+          lifecycleId,
+          source: "rebuild",
+        });
         return filteredBatch.retainedAppIds;
       }
+      prefilterLogger?.info("rebuild.next-batch", {
+        lifecycleId,
+        reason: "batch-fully-filtered",
+      });
       await filteredBatch.ignoreCompletion;
     }
     return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
@@ -598,7 +764,8 @@ export function startDiscoveryQueuePrefilter({
     let request;
     try {
       request = getFetchRequest(args[0], args[1]);
-    } catch {
+    } catch (error) {
+      prefilterLogger?.error("fetch.intercept.parse-error", error, { lifecycleId });
       return responsePromise;
     }
     if (!request?.queueRequest.standard) {
@@ -614,7 +781,11 @@ export function startDiscoveryQueuePrefilter({
         if (!stopped && appIds) {
           grantPermit(appIds, request, args, receiver);
         }
-      } catch {
+      } catch (error) {
+        prefilterLogger?.error("fetch.response.decode-error", error, {
+          lifecycleId,
+          status: response.status,
+        });
         return response;
       }
       return response;
@@ -641,28 +812,56 @@ export function startDiscoveryQueuePrefilter({
           !dialog ||
           !isDiscoveryQueueDataRequest(args[0])
         ) {
+          if (expectedKey !== undefined && snapshot.length > 0) {
+            prefilterLogger?.debug("queue.intercept.skipped", {
+              appIds: snapshot,
+              hasDialog: Boolean(dialog),
+              isDiscoveryQueueDataRequest: isDiscoveryQueueDataRequest(args[0]),
+              lifecycleId,
+              reason: !dialog ? "dialog-missing" : "data-request-mismatch",
+            });
+          }
           return result;
         }
 
         const permit = takePermit(snapshot);
         if (deliveredDialogs.has(dialog) && !permit?.request.queueRequest.rebuild) {
+          prefilterLogger?.info("queue.intercept.skipped", {
+            appIds: snapshot,
+            lifecycleId,
+            reason: "dialog-already-delivered",
+          });
           return result;
         }
         deliveredDialogs.add(dialog);
 
         let config;
         try {
-          config = loadDiscoveryQueueConfig();
-        } catch {
+          config = loadDiscoveryQueueConfig(
+            prefilterLogger?.child?.("config", { lifecycleId }) ?? prefilterLogger,
+          );
+        } catch (error) {
+          prefilterLogger?.error("config.load.error", error, { lifecycleId });
           return result;
         }
         if (config?.enabled !== true || !hasActiveRules(config)) {
+          prefilterLogger?.info("queue.intercept.skipped", {
+            appIds: snapshot,
+            lifecycleId,
+            reason: config?.enabled !== true ? "disabled" : "no-active-rules",
+          });
           return result;
         }
 
         const currentGeneration = generation;
         const queueReceiver = this;
-        const reporter = createPrefilterReporter();
+        const reporter = createPrefilterReporter(prefilterLogger, lifecycleId);
+        prefilterLogger?.info("queue.intercepted", {
+          appIds: snapshot,
+          generation: currentGeneration,
+          hasPermit: Boolean(permit),
+          lifecycleId,
+        });
         reporter.beginBatch(snapshot);
         return Promise.resolve(result).then(async (value) => {
           const filteredBatch = await prefilter(
@@ -672,10 +871,20 @@ export function startDiscoveryQueuePrefilter({
             reporter,
           );
           if (!filteredBatch || stopped || currentGeneration !== generation) {
+            prefilterLogger?.info("display.original-batch", {
+              appIds: snapshot,
+              lifecycleId,
+              reason: "generation-cancelled",
+            });
             return value;
           }
           if (filteredBatch.retainedAppIds.length > 0) {
             replaceAppIds(appIds, filteredBatch.retainedAppIds);
+            prefilterLogger?.info("display.retained", {
+              appIds: [...filteredBatch.retainedAppIds],
+              lifecycleId,
+              source: "initial",
+            });
             return value;
           }
           await filteredBatch.ignoreCompletion;
@@ -683,6 +892,10 @@ export function startDiscoveryQueuePrefilter({
             return value;
           }
           if (!permit) {
+            prefilterLogger?.warn("summary.selected", {
+              lifecycleId,
+              reason: "fully-filtered-without-permit",
+            });
             replaceAppIds(appIds, [DISCOVERY_QUEUE_SUMMARY_APP_ID]);
             return value;
           }
@@ -713,6 +926,7 @@ export function startDiscoveryQueuePrefilter({
     }
     stopped = true;
     generation += 1;
+    prefilterLogger?.info("lifecycle.stopped", { generation, lifecycleId });
     permits.clear();
     clearTimeout(pollTimer);
     ruleEngine.clear();

@@ -2,7 +2,7 @@ const TAG_LIST_URL =
   "https://api.steampowered.com/IStoreService/GetTagList/v1/";
 const TAG_CACHE_PREFIX = "LocalizedTagNames2_";
 
-function readSteamLanguage() {
+function readSteamLanguage(logger) {
   try {
     const config = document.querySelector("#application_config[data-config]")
       ?.dataset.config;
@@ -10,8 +10,10 @@ function readSteamLanguage() {
     if (typeof language === "string" && language) {
       return language;
     }
-  } catch {
-    console.debug("[Steam 探索队列] 页面语言配置不可解析，使用 HTML 语言");
+  } catch (error) {
+    logger?.error("language.config.error", error, {
+      fallback: "window-or-html-language",
+    });
   }
 
   if (typeof window.g_strLanguage === "string" && window.g_strLanguage) {
@@ -48,19 +50,20 @@ function parseTags(value) {
   return tags;
 }
 
-function readCachedTags(language) {
+function readCachedTags(language, logger) {
   try {
     const value = JSON.parse(
       localStorage.getItem(`${TAG_CACHE_PREFIX}${language}`) ?? "null",
     );
     const tags = parseTags(value?.tags);
     return tags ? { tags, versionHash: String(value.version_hash ?? "") } : undefined;
-  } catch {
+  } catch (error) {
+    logger?.error("cache.read.error", error, { language });
     return undefined;
   }
 }
 
-function saveCachedTags(language, value) {
+function saveCachedTags(language, value, logger) {
   try {
     localStorage.setItem(
       `${TAG_CACHE_PREFIX}${language}`,
@@ -69,18 +72,23 @@ function saveCachedTags(language, value) {
         version_hash: value.versionHash,
       }),
     );
-  } catch {
+  } catch (error) {
+    logger?.error("cache.write.error", error, {
+      language,
+      tagCount: value.tags.length,
+    });
     return false;
   }
   return true;
 }
 
-async function loadTagNames(language) {
-  const cached = readCachedTags(language);
+async function loadTagNames(language, logger) {
+  const cached = readCachedTags(language, logger);
   if (cached) {
-    console.info("[Steam 探索队列] 使用 Steam 本地标签目录", {
+    logger?.debug("catalog.cache-hit", {
       language,
-      tags: cached.tags.length,
+      tagCount: cached.tags.length,
+      versionHash: cached.versionHash,
     });
     return new Map(cached.tags);
   }
@@ -89,10 +97,18 @@ async function loadTagNames(language) {
   url.searchParams.set("language", language);
   url.searchParams.set("origin", location.origin);
 
+  const startedAt = performance.now();
+  logger?.info("catalog.request.started", { language, url: url.href });
   try {
-    console.info("[Steam 探索队列] 首次加载完整标签目录", { language });
     const response = await fetch(url);
     if (!response.ok) {
+      logger?.warn("catalog.request.http-error", {
+        durationMs: performance.now() - startedAt,
+        language,
+        status: response.status,
+        statusText: response.statusText,
+        url: url.href,
+      });
       return new Map();
     }
     const payload = (await response.json())?.response;
@@ -102,16 +118,36 @@ async function loadTagNames(language) {
         tags,
         versionHash: String(payload.version_hash ?? ""),
       };
-      saveCachedTags(language, value);
+      const persisted = saveCachedTags(language, value, logger);
+      logger?.info("catalog.request.completed", {
+        durationMs: performance.now() - startedAt,
+        language,
+        persisted,
+        status: response.status,
+        tagCount: tags.length,
+        url: url.href,
+        versionHash: value.versionHash,
+      });
       return new Map(tags);
     }
-  } catch {
+    logger?.warn("catalog.response.invalid", {
+      durationMs: performance.now() - startedAt,
+      language,
+      status: response.status,
+      url: url.href,
+    });
+  } catch (error) {
+    logger?.error("catalog.request.error", error, {
+      durationMs: performance.now() - startedAt,
+      language,
+      url: url.href,
+    });
     return new Map();
   }
   return new Map();
 }
 
-export function createDiscoveryQueueTagCatalog() {
+export function createDiscoveryQueueTagCatalog({ logger } = {}) {
   const catalogs = new Map();
 
   return {
@@ -119,10 +155,10 @@ export function createDiscoveryQueueTagCatalog() {
       if (!Array.isArray(tagIds) || tagIds.length === 0) {
         return [];
       }
-      const language = readSteamLanguage();
+      const language = readSteamLanguage(logger);
       let catalogPromise = catalogs.get(language);
       if (!catalogPromise) {
-        catalogPromise = loadTagNames(language);
+        catalogPromise = loadTagNames(language, logger);
         catalogs.set(language, catalogPromise);
       }
       const catalog = await catalogPromise;

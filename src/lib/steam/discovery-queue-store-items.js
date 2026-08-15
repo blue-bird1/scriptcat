@@ -14,7 +14,7 @@ function getStoreItemCache() {
     : undefined;
 }
 
-async function waitForStoreItemCache() {
+async function waitForStoreItemCache(logger) {
   const existing = getStoreItemCache();
   if (existing) {
     return existing;
@@ -28,6 +28,7 @@ async function waitForStoreItemCache() {
       return cache;
     }
   }
+  logger?.warn("cache.unavailable", { waitedMs: CACHE_WAIT_MS });
   return undefined;
 }
 
@@ -36,18 +37,19 @@ function toSafeNonNegativeInteger(value) {
   return Number.isSafeInteger(number) && number >= 0 ? number : undefined;
 }
 
-function readArray(getter) {
+function readArray(getter, logger, field, appId) {
   try {
     const value = getter();
     return Array.isArray(value)
       ? value.filter((entry) => Number.isSafeInteger(entry) && entry > 0)
       : [];
-  } catch {
+  } catch (error) {
+    logger?.error("item.read.error", error, { appId, field });
     return [];
   }
 }
 
-function readSupportedLanguages(item) {
+function readSupportedLanguages(item, logger, appId) {
   if (typeof item.GetAllLanguagesWithSomeSupport !== "function") {
     return undefined;
   }
@@ -63,12 +65,16 @@ function readSupportedLanguages(item) {
           ),
         ]
       : undefined;
-  } catch {
+  } catch (error) {
+    logger?.error("item.read.error", error, {
+      appId,
+      field: "supportedLanguages",
+    });
     return undefined;
   }
 }
 
-function readDescriptionHasChinese(item) {
+function readDescriptionHasChinese(item, logger, appId) {
   if (typeof item.GetShortDescription !== "function") {
     return undefined;
   }
@@ -78,12 +84,16 @@ function readDescriptionHasChinese(item) {
     return typeof description === "string"
       ? /\p{Script=Han}/u.test(description)
       : undefined;
-  } catch {
+  } catch (error) {
+    logger?.error("item.read.error", error, {
+      appId,
+      field: "descriptionHasChinese",
+    });
     return undefined;
   }
 }
 
-function readAppType(item) {
+function readAppType(item, logger, appId) {
   if (typeof item?.GetAppType !== "function") {
     return undefined;
   }
@@ -91,7 +101,8 @@ function readAppType(item) {
   try {
     const appType = item.GetAppType();
     return Number.isSafeInteger(appType) && appType >= 0 ? appType : undefined;
-  } catch {
+  } catch (error) {
+    logger?.error("item.read.error", error, { appId, field: "appType" });
     return undefined;
   }
 }
@@ -111,7 +122,7 @@ function buildStoreItemRequest(requirements, appType) {
   return request;
 }
 
-function readReviewSummary(item) {
+function readReviewSummary(item, logger, appId) {
   const preferUnfiltered =
     window.GDynamicStore?.s_preferences?.review_score_preference === 1;
   const summaryGetter = preferUnfiltered
@@ -121,7 +132,11 @@ function readReviewSummary(item) {
   let summary;
   try {
     summary = summaryGetter?.call(item);
-  } catch {
+  } catch (error) {
+    logger?.error("item.read.error", error, {
+      appId,
+      field: "reviewSummary",
+    });
     return {};
   }
 
@@ -140,7 +155,7 @@ function readReviewSummary(item) {
   };
 }
 
-function readStoreItem(item, appId) {
+function readStoreItem(item, appId, logger) {
   if (!item || typeof item !== "object") {
     return undefined;
   }
@@ -152,21 +167,21 @@ function readStoreItem(item, appId) {
 
     const purchase = item.GetBestPurchaseOption?.();
     const comingSoon = item.BIsComingSoon?.();
-    const appType = readAppType(item);
-    const reviews = readReviewSummary(item);
+    const appType = readAppType(item, logger, appId);
+    const reviews = readReviewSummary(item, logger, appId);
     const storeItem = {
       appId,
       success: 1,
       isFree: item.BIsFree?.(),
       comingSoon,
-      descriptionHasChinese: readDescriptionHasChinese(item),
+      descriptionHasChinese: readDescriptionHasChinese(item, logger, appId),
       isDlc: appType === undefined ? undefined : appType === DLC_APP_TYPE,
-      supportedLanguages: readSupportedLanguages(item),
-      tagIds: readArray(() => item.GetTagIDs?.()),
+      supportedLanguages: readSupportedLanguages(item, logger, appId),
+      tagIds: readArray(() => item.GetTagIDs?.(), logger, "tagIds", appId),
       categoryIds: {
-        supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.()),
-        features: readArray(() => item.GetStoreCategories_Features?.()),
-        controllers: readArray(() => item.GetStoreCategories_Controller?.()),
+        supportedPlayers: readArray(() => item.GetStoreCategories_SupportedPlayers?.(), logger, "supportedPlayers", appId),
+        features: readArray(() => item.GetStoreCategories_Features?.(), logger, "features", appId),
+        controllers: readArray(() => item.GetStoreCategories_Controller?.(), logger, "controllers", appId),
       },
       ...reviews,
     };
@@ -182,13 +197,16 @@ function readStoreItem(item, appId) {
       storeItem.discount = toSafeNonNegativeInteger(purchase.discount_pct);
     }
     return storeItem;
-  } catch {
+  } catch (error) {
+    logger?.error("item.read.error", error, { appId, field: "storeItem" });
     return undefined;
   }
 }
 
-export function createDiscoveryQueueStoreItemReader() {
-  const tagCatalog = createDiscoveryQueueTagCatalog();
+export function createDiscoveryQueueStoreItemReader({ logger } = {}) {
+  const tagCatalog = createDiscoveryQueueTagCatalog({
+    logger: logger?.child?.("tags") ?? logger,
+  });
   let stopped = false;
 
   return {
@@ -201,7 +219,7 @@ export function createDiscoveryQueueStoreItemReader() {
       ) {
         return;
       }
-      const cache = await waitForStoreItemCache();
+      const cache = await waitForStoreItemCache(logger);
       if (
         !cache ||
         typeof cache.QueueMultipleAppRequests !== "function" ||
@@ -217,22 +235,35 @@ export function createDiscoveryQueueStoreItemReader() {
         const item = cache.GetApp(appId);
         return !(
           acceptsChineseDescription &&
-          readDescriptionHasChinese(item) === true
+          readDescriptionHasChinese(item, logger, appId) === true
         ) && !item?.BContainDataRequest?.(SUPPORTED_LANGUAGES_REQUEST);
       });
       if (missingAppIds.length === 0) {
         return;
       }
+      const startedAt = performance.now();
+      logger?.info("batch.request.started", {
+        appIds: [...missingAppIds],
+        request: SUPPORTED_LANGUAGES_REQUEST,
+        requiredLanguages: [...requiredLanguages],
+      });
       try {
-        console.info("[Steam 探索队列] 批量补齐支持语言", {
-          appIds: [...missingAppIds],
-          requiredLanguages: [...requiredLanguages],
-        });
         await cache.QueueMultipleAppRequests(
           missingAppIds,
           SUPPORTED_LANGUAGES_REQUEST,
         );
-      } catch {
+        logger?.info("batch.request.completed", {
+          appIds: [...missingAppIds],
+          durationMs: performance.now() - startedAt,
+          requiredLanguages: [...requiredLanguages],
+        });
+      } catch (error) {
+        logger?.error("batch.request.error", error, {
+          appIds: [...missingAppIds],
+          durationMs: performance.now() - startedAt,
+          request: SUPPORTED_LANGUAGES_REQUEST,
+          requiredLanguages: [...requiredLanguages],
+        });
         return;
       }
     },
@@ -246,7 +277,7 @@ export function createDiscoveryQueueStoreItemReader() {
         return undefined;
       }
 
-      const cache = await waitForStoreItemCache();
+      const cache = await waitForStoreItemCache(logger);
       if (!cache || stopped) {
         return undefined;
       }
@@ -255,17 +286,39 @@ export function createDiscoveryQueueStoreItemReader() {
         let item = cache.GetApp(numericAppId);
         const request = buildStoreItemRequest(
           requirements,
-          readAppType(item),
+          readAppType(item, logger, numericAppId),
         );
         if (
           Object.keys(request).length > 0 &&
           !item?.BContainDataRequest?.(request)
         ) {
+          const startedAt = performance.now();
+          logger?.debug("item.request.started", {
+            appId: numericAppId,
+            request,
+            requirements,
+          });
           await cache.QueueAppRequest(numericAppId, request);
           item = cache.GetApp(numericAppId);
+          logger?.debug("item.request.completed", {
+            appId: numericAppId,
+            durationMs: performance.now() - startedAt,
+            request,
+            requirements,
+          });
         }
-        return readStoreItem(item, numericAppId);
-      } catch {
+        const result = readStoreItem(item, numericAppId, logger);
+        logger?.debug("item.result", {
+          appId: numericAppId,
+          requirements,
+          result,
+        });
+        return result;
+      } catch (error) {
+        logger?.error("item.request.error", error, {
+          appId: numericAppId,
+          requirements,
+        });
         return undefined;
       }
     },
@@ -279,20 +332,32 @@ export function createDiscoveryQueueStoreItemReader() {
         return [];
       }
 
-      const cache = await waitForStoreItemCache();
+      const cache = await waitForStoreItemCache(logger);
       if (!cache || stopped) {
         return [];
       }
 
       try {
-        const tagIds = readArray(() => cache.GetApp(numericAppId)?.GetTagIDs?.());
+        const tagIds = readArray(
+          () => cache.GetApp(numericAppId)?.GetTagIDs?.(),
+          logger,
+          "tagIds",
+          numericAppId,
+        );
         const uniqueTagIds = [...new Set(tagIds)];
         if (uniqueTagIds.length === 0) {
           return [];
         }
 
-        return await tagCatalog.getNames(uniqueTagIds);
-      } catch {
+        const names = await tagCatalog.getNames(uniqueTagIds);
+        logger?.debug("tags.resolved", {
+          appId: numericAppId,
+          names,
+          tagIds: uniqueTagIds,
+        });
+        return names;
+      } catch (error) {
+        logger?.error("tags.resolve.error", error, { appId: numericAppId });
         return [];
       }
     },
