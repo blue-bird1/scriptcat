@@ -344,9 +344,6 @@ function startModalQueue() {
       advanceFrame = undefined;
       if (!pending.dialog.isConnected) {
         advancing = false;
-        console.warn(
-          `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 执行${pending.action === "wishlist" ? "加入愿望单" : "忽略"}后，队列对话框已经消失，无法点击“下一项”。`,
-        );
         return;
       }
 
@@ -377,9 +374,11 @@ function startModalQueue() {
     function checkState() {
       clearTimeout(pending.stabilityTimer);
       if (!pending.button.isConnected) {
-        console.warn(
-          `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 加入愿望单请求成功，但操作按钮已经消失，无法确认页面状态。`,
-        );
+        if (pending.dialog.isConnected) {
+          console.warn(
+            `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 加入愿望单请求成功，但操作按钮已经消失，无法确认页面状态。`,
+          );
+        }
         removePending(pending);
         return;
       }
@@ -426,9 +425,11 @@ function startModalQueue() {
       if (response?.ok) {
         clearTimeout(pending.timer);
         pending.timer = setTimeout(() => {
-          console.warn(
-            `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 加入愿望单请求成功，但等待页面确认超时，当前项目不会自动跳过。`,
-          );
+          if (pending.dialog.isConnected) {
+            console.warn(
+              `[Steam 探索队列] 应用 ${pending.appId ?? "未知"} 加入愿望单请求成功，但等待页面确认超时，当前项目不会自动跳过。`,
+            );
+          }
           removePending(pending);
         }, QUEUE_TIMEOUT_MS);
         waitForSelectedState(pending);
@@ -459,9 +460,11 @@ function startModalQueue() {
       pathname: MODAL_WISHLIST_PATH,
     };
     pending.timer = setTimeout(() => {
-      console.warn(
-        `[Steam 探索队列] 等待应用 ${pending.appId ?? "未知"} 的加入愿望单请求超时，当前项目不会自动跳过。`,
-      );
+      if (pending.dialog.isConnected) {
+        console.warn(
+          `[Steam 探索队列] 等待应用 ${pending.appId ?? "未知"} 的加入愿望单请求超时，当前项目不会自动跳过。`,
+        );
+      }
       removePending(pending);
     }, QUEUE_TIMEOUT_MS);
     pendingActions.add(pending);
