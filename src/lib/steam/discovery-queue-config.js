@@ -156,20 +156,32 @@ function normalizeConfig(value) {
   };
 }
 
-export function loadDiscoveryQueueConfig() {
+export function loadDiscoveryQueueConfig(logger) {
   try {
     const serialized = localStorage.getItem(STORAGE_KEY);
-    return serialized === null ? cloneDefaultConfig() : normalizeConfig(JSON.parse(serialized));
-  } catch {
+    const config =
+      serialized === null
+        ? cloneDefaultConfig()
+        : normalizeConfig(JSON.parse(serialized));
+    logger?.debug("config.loaded", {
+      source: serialized === null ? "default" : "localStorage",
+    });
+    return config;
+  } catch (error) {
+    logger?.error("config.load_failed", error, { fallback: "default" });
     return cloneDefaultConfig();
   }
 }
 
-export function saveDiscoveryQueueConfig(value) {
+export function saveDiscoveryQueueConfig(value, logger) {
   const config = normalizeConfig(value);
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(config));
-  } catch {
+    logger?.info("config.persisted", { enabled: config.enabled });
+  } catch (error) {
+    logger?.error("config.persist_failed", error, {
+      enabled: config.enabled,
+    });
     return config;
   }
   return config;
@@ -233,8 +245,9 @@ function readNumber(input) {
   return input.value === "" ? Number.NaN : Number(input.value);
 }
 
-export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
-    let config = loadDiscoveryQueueConfig();
+export function createDiscoveryQueueConfigUi({ logger, onSave, onOpenChange } = {}) {
+  const uiLogger = logger?.child("config-ui");
+  let config = loadDiscoveryQueueConfig(uiLogger);
   let button;
   let popup;
   let backdrop;
@@ -259,6 +272,7 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
     backdrop.remove();
     popup = undefined;
     backdrop = undefined;
+    uiLogger?.info("popup.closed");
     notifyOpenChange(false);
   }
 
@@ -271,6 +285,7 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
   function openPopup() {
     syncDisconnectedPopup();
     if (popup) {
+      uiLogger?.debug("popup.open_suppressed", { reason: "already-open" });
       return;
     }
     injectStyles();
@@ -348,6 +363,9 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
     backdrop.append(popup);
     const popupHost = button?.closest('[role="dialog"]') ?? document.body;
     popupHost.append(backdrop);
+    uiLogger?.info("popup.opened", {
+      host: popupHost === document.body ? "document-body" : "queue-dialog",
+    });
 
     function renderTags() {
       for (const chip of [...tagContainer.children]) {
@@ -447,6 +465,10 @@ export function createDiscoveryQueueConfigUi({ onSave, onOpenChange } = {}) {
           enabled: languageEnabled.checked,
           value: [...selectedLanguages],
         },
+      }, uiLogger);
+      uiLogger?.info("popup.saved", {
+        autoContinueQueue: config.autoContinueQueue,
+        enabled: config.enabled,
       });
       closePopup();
       if (typeof onSave === "function") {

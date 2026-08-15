@@ -25,14 +25,16 @@ function matchesAction(target, selector) {
   return target instanceof Element && target.closest(selector) !== null;
 }
 
-function startClassicQueue() {
+function startClassicQueue(logger) {
   if (new URLSearchParams(location.search).get("queue") !== "1") {
+    logger?.debug("controller.skipped", { reason: "not-classic-queue" });
     return () => {};
   }
 
   const queueActions = document.querySelector("#queueActionsCtn");
   const nextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
   if (!(queueActions instanceof HTMLElement) || !(nextButton instanceof HTMLElement)) {
+    logger?.debug("controller.skipped", { reason: "controls-not-found" });
     return () => {};
   }
 
@@ -40,6 +42,7 @@ function startClassicQueue() {
   let timer;
   let frame;
   const pendingActions = new Set();
+  let activeAdvance;
   let advancing = false;
 
   function stopWaiting() {
@@ -52,9 +55,22 @@ function startClassicQueue() {
     pendingActions.clear();
   }
 
-  function advance(delay = ADVANCE_DELAY_MS) {
+  function advance(pending, delay = ADVANCE_DELAY_MS) {
+    if (advancing) {
+      logger?.debug("advance.suppressed", {
+        actionId: pending?.actionId,
+        reason: "already-advancing",
+      });
+      return;
+    }
     stopWaiting();
     advancing = true;
+    activeAdvance = pending;
+    logger?.info("advance.scheduled", {
+      action: pending?.action,
+      actionId: pending?.actionId,
+      delay,
+    });
     timer = setTimeout(() => {
       timer = undefined;
       const triggerNext = () => {
@@ -62,8 +78,18 @@ function startClassicQueue() {
         const currentNextButton = document.querySelector(CLASSIC_NEXT_SELECTOR);
         if (currentNextButton instanceof HTMLElement) {
           currentNextButton.click();
+          logger?.info("advance.clicked", {
+            action: pending?.action,
+            actionId: pending?.actionId,
+          });
+        } else {
+          logger?.warn("advance.button_missing", {
+            action: pending?.action,
+            actionId: pending?.actionId,
+          });
         }
         advancing = false;
+        activeAdvance = undefined;
       };
       if (delay === 0) {
         triggerNext();
@@ -82,14 +108,16 @@ function startClassicQueue() {
   }
 
   function checkResults() {
-    for (const action of pendingActions) {
+    for (const pending of pendingActions) {
       if (hasSucceeded()) {
-        advance();
+        logger?.info("wishlist.succeeded", { actionId: pending.actionId });
+        advance(pending);
         return;
       }
 
       if (hasFailed()) {
-        pendingActions.delete(action);
+        logger?.warn("wishlist.failed", { actionId: pending.actionId });
+        pendingActions.delete(pending);
       }
     }
 
@@ -98,12 +126,26 @@ function startClassicQueue() {
     }
   }
 
-  function waitForResult(action) {
+  function waitForResult(pending) {
     if (advancing) {
+      logger?.debug("action.suppressed", {
+        action: pending.action,
+        actionId: pending.actionId,
+        reason: "advancing",
+      });
+      return;
+    }
+    if ([...pendingActions].some((action) => action.action === pending.action)) {
+      logger?.debug("action.suppressed", {
+        action: pending.action,
+        actionId: pending.actionId,
+        reason: "already-pending",
+      });
       return;
     }
 
-    pendingActions.add(action);
+    pendingActions.add(pending);
+    logger?.info("wishlist.waiting", { actionId: pending.actionId });
     if (observer) {
       return;
     }
@@ -115,34 +157,69 @@ function startClassicQueue() {
       childList: true,
       subtree: true,
     });
-    timer = setTimeout(stopWaiting, QUEUE_TIMEOUT_MS);
+    timer = setTimeout(() => {
+      for (const action of pendingActions) {
+        logger?.warn("wishlist.timeout", { actionId: action.actionId });
+      }
+      stopWaiting();
+    }, QUEUE_TIMEOUT_MS);
   }
 
   function handleClick(event) {
     const { target } = event;
     if (matchesAction(target, "#add_to_wishlist_area a.add_to_wishlist")) {
-      waitForResult("wishlist");
+      const pending = {
+        action: "wishlist",
+        actionId: logger?.nextId("classic-action"),
+      };
+      logger?.info("action.clicked", pending);
+      waitForResult(pending);
     } else if (
       matchesAction(target, ".queue_btn_ignore .queue_btn_inactive") ||
       matchesAction(target, "#queue_ignore_menu_option_not_interested") ||
       matchesAction(target, "#queue_ignore_menu_option_owned_elsewhere")
     ) {
-      advance(0);
+      const pending = {
+        action: "ignore",
+        actionId: logger?.nextId("classic-action"),
+      };
+      logger?.info("action.clicked", pending);
+      advance(pending, 0);
     }
   }
 
   function stop() {
+    logger?.info("controller.stopping", {
+      advancing,
+      pendingCount: pendingActions.size,
+    });
+    if (activeAdvance) {
+      logger?.info("advance.cancelled", {
+        action: activeAdvance.action,
+        actionId: activeAdvance.actionId,
+        reason: "controller-stop",
+      });
+    }
+    for (const pending of pendingActions) {
+      logger?.info("action.cancelled", {
+        action: pending.action,
+        actionId: pending.actionId,
+        reason: "controller-stop",
+      });
+    }
     stopWaiting();
+    activeAdvance = undefined;
     queueActions.removeEventListener("click", handleClick, true);
     window.removeEventListener("pagehide", stop);
   }
 
   queueActions.addEventListener("click", handleClick, true);
   window.addEventListener("pagehide", stop, { once: true });
+  logger?.info("controller.started");
   return stop;
 }
 
-function startModalReviewCountFix() {
+function startModalReviewCountFix(logger) {
   const root = document.body;
   if (!(root instanceof HTMLElement)) {
     return () => {};
@@ -159,7 +236,13 @@ function startModalReviewCountFix() {
       }
       const match = element.textContent?.trim().match(/^\(\((.+)\)\)$/u);
       if (match) {
+        const previousText = element.textContent;
         element.textContent = `(${match[1]})`;
+        logger?.info("review_count.corrected", {
+          correctedText: element.textContent,
+          previousText,
+          reviewCount: match[1],
+        });
       }
     }
   }
@@ -227,18 +310,32 @@ function getMonitoredPath(input, init) {
   return pathname === MODAL_WISHLIST_PATH ? pathname : undefined;
 }
 
-function monitorActionRequests(takePending, handleResult) {
+function monitorActionRequests(logger, takePending, handleResult) {
   if (typeof window.fetch !== "function") {
+    logger?.warn("fetch.monitor_unavailable");
     return () => {};
   }
 
   const originalFetch = window.fetch;
   function monitoredFetch(...args) {
-    const response = Reflect.apply(originalFetch, this, args);
+    let response;
+    try {
+      response = Reflect.apply(originalFetch, this, args);
+    } catch (error) {
+      logger?.error("fetch.call_failed", error, {
+        input: args[0],
+        init: args[1],
+      });
+      throw error;
+    }
     let pathname;
     try {
       pathname = getMonitoredPath(args[0], args[1]);
-    } catch {
+    } catch (error) {
+      logger?.error("fetch.inspect_failed", error, {
+        input: args[0],
+        init: args[1],
+      });
       return response;
     }
 
@@ -248,15 +345,30 @@ function monitorActionRequests(takePending, handleResult) {
 
     const pending = takePending(pathname);
     if (!pending) {
+      logger?.warn("fetch.pending_missing", { pathname });
       return response;
     }
+    logger?.info("fetch.matched", {
+      actionId: pending.actionId,
+      pathname,
+    });
 
     return response.then(
       (result) => {
+        logger?.info("fetch.completed", {
+          actionId: pending.actionId,
+          ok: result.ok,
+          pathname,
+          status: result.status,
+        });
         handleResult(pending, result.ok);
         return result;
       },
       (error) => {
+        logger?.error("fetch.failed", error, {
+          actionId: pending.actionId,
+          pathname,
+        });
         handleResult(pending, false);
         throw error;
       },
@@ -271,10 +383,11 @@ function monitorActionRequests(takePending, handleResult) {
   };
 }
 
-function startModalQueue() {
+function startModalQueue(logger) {
   const requestQueues = new Map();
   const pendingActions = new Set();
   let advanceFrame;
+  let activeAdvance;
   let advancing = false;
 
   function removePending(pending) {
@@ -301,17 +414,32 @@ function startModalQueue() {
 
   function advance(pending, immediate = false) {
     if (advancing) {
+      logger?.debug("advance.suppressed", {
+        actionId: pending.actionId,
+        reason: "already-advancing",
+      });
       return;
     }
 
     advancing = true;
+    activeAdvance = pending;
     clearPending();
     const deadline = performance.now() + QUEUE_TIMEOUT_MS;
+    logger?.info("advance.started", {
+      action: pending.action,
+      actionId: pending.actionId,
+      immediate,
+    });
 
     const triggerNext = () => {
       advanceFrame = undefined;
       if (!pending.dialog.isConnected) {
         advancing = false;
+        activeAdvance = undefined;
+        logger?.warn("advance.cancelled", {
+          actionId: pending.actionId,
+          reason: "dialog-disconnected",
+        });
         return;
       }
 
@@ -319,11 +447,15 @@ function startModalQueue() {
       if (nextButton) {
         nextButton.click();
         advancing = false;
+        activeAdvance = undefined;
+        logger?.info("advance.clicked", { actionId: pending.actionId });
         return;
       }
 
       if (performance.now() >= deadline) {
         advancing = false;
+        activeAdvance = undefined;
+        logger?.warn("advance.timeout", { actionId: pending.actionId });
         return;
       }
       advanceFrame = requestAnimationFrame(triggerNext);
@@ -344,12 +476,21 @@ function startModalQueue() {
       ) {
         return;
       }
+      if (!pending.selectedStateDetected) {
+        pending.selectedStateDetected = true;
+        logger?.debug("selected_state.detected", {
+          actionId: pending.actionId,
+        });
+      }
 
       pending.stabilityTimer = setTimeout(() => {
         if (
           pending.button.isConnected &&
           pending.button.className !== pending.initialClassName
         ) {
+          logger?.info("selected_state.confirmed", {
+            actionId: pending.actionId,
+          });
           advance(pending);
         }
       }, ADVANCE_DELAY_MS);
@@ -364,6 +505,7 @@ function startModalQueue() {
   }
 
   const stopMonitoringRequests = monitorActionRequests(
+    logger,
     (pathname) => {
       const queue = requestQueues.get(pathname);
       const pending = queue?.shift();
@@ -378,22 +520,47 @@ function startModalQueue() {
     },
     (pending, succeeded) => {
       if (!pendingActions.has(pending)) {
+        logger?.debug("fetch.result_ignored", {
+          actionId: pending.actionId,
+          reason: "pending-cancelled",
+        });
         return;
       }
 
       if (succeeded) {
+        logger?.info("action.request_succeeded", {
+          actionId: pending.actionId,
+        });
         waitForSelectedState(pending);
       } else {
+        logger?.warn("action.request_failed", {
+          actionId: pending.actionId,
+        });
         removePending(pending);
       }
     },
   );
 
   function handleClick(event) {
-    const modalAction = getModalQueueAction(event.target);
-    if (!modalAction || advancing) {
+    const modalAction = getModalQueueAction(event.target, logger);
+    if (!modalAction) {
       return;
     }
+    modalAction.actionId = logger?.nextId("modal-action");
+    if (advancing) {
+      logger?.debug("action.suppressed", {
+        action: modalAction.action,
+        actionId: modalAction.actionId,
+        appId: modalAction.appId,
+        reason: "advancing",
+      });
+      return;
+    }
+    logger?.info("action.clicked", {
+      action: modalAction.action,
+      actionId: modalAction.actionId,
+      appId: modalAction.appId,
+    });
 
     if (modalAction.action === "ignore") {
       advance(modalAction, true);
@@ -404,7 +571,13 @@ function startModalQueue() {
       ...modalAction,
       pathname: MODAL_WISHLIST_PATH,
     };
-    pending.timer = setTimeout(() => removePending(pending), QUEUE_TIMEOUT_MS);
+    pending.timer = setTimeout(() => {
+      logger?.warn("action.pending_timeout", {
+        actionId: pending.actionId,
+        pathname: pending.pathname,
+      });
+      removePending(pending);
+    }, QUEUE_TIMEOUT_MS);
     pendingActions.add(pending);
     const queue = requestQueues.get(MODAL_WISHLIST_PATH) ?? [];
     queue.push(pending);
@@ -412,8 +585,27 @@ function startModalQueue() {
   }
 
   function stop() {
+    logger?.info("controller.stopping", {
+      advancing,
+      pendingCount: pendingActions.size,
+    });
+    if (activeAdvance) {
+      logger?.info("advance.cancelled", {
+        actionId: activeAdvance.actionId,
+        reason: "controller-stop",
+      });
+    }
+    for (const pending of pendingActions) {
+      logger?.info("action.cancelled", {
+        action: pending.action,
+        actionId: pending.actionId,
+        appId: pending.appId,
+        reason: "controller-stop",
+      });
+    }
     cancelAnimationFrame(advanceFrame);
     advanceFrame = undefined;
+    activeAdvance = undefined;
     advancing = false;
     stopMonitoringRequests();
     clearPending();
@@ -423,17 +615,25 @@ function startModalQueue() {
 
   document.addEventListener("click", handleClick, true);
   window.addEventListener("pagehide", stop, { once: true });
+  logger?.info("controller.started");
   return stop;
 }
 
-export function startSteamDiscoveryQueue() {
-  const storeItemReader = createDiscoveryQueueStoreItemReader();
+export function startSteamDiscoveryQueue({ logger } = {}) {
+  const runLogger = logger?.child("run");
+  runLogger?.info("lifecycle.started", {
+    documentReadyState: document.readyState,
+  });
+  const storeItemReader = createDiscoveryQueueStoreItemReader({
+    logger: runLogger?.child("store-items"),
+  });
   const stopPrefilter = startDiscoveryQueuePrefilter({
     getLocalizedTags: storeItemReader.getLocalizedTags,
     getStoreItem: storeItemReader.get,
     prepareStoreItems: storeItemReader.prepareBatch,
+    logger: runLogger?.child("prefilter"),
   });
-  const stopModalQueue = startModalQueue();
+  const stopModalQueue = startModalQueue(runLogger?.child("modal"));
   let stopClassicQueue = () => {};
   let stopAutoFilter = () => {};
   let stopReviewCountFix = () => {};
@@ -441,11 +641,18 @@ export function startSteamDiscoveryQueue() {
 
   function startQueueControllersWhenReady() {
     if (!stopped) {
-      stopClassicQueue = startClassicQueue();
+      runLogger?.info("controllers.starting", {
+        documentReadyState: document.readyState,
+      });
+      stopClassicQueue = startClassicQueue(runLogger?.child("classic"));
       stopAutoFilter = startDiscoveryQueueAutoFilter({
         getStoreItem: storeItemReader.get,
+        logger: runLogger,
       });
-      stopReviewCountFix = startModalReviewCountFix();
+      stopReviewCountFix = startModalReviewCountFix(
+        runLogger?.child("modal-review-count"),
+      );
+      runLogger?.info("controllers.started");
     }
   }
 
@@ -458,6 +665,7 @@ export function startSteamDiscoveryQueue() {
   }
 
   return () => {
+    runLogger?.info("lifecycle.stopping");
     stopped = true;
     document.removeEventListener("DOMContentLoaded", startQueueControllersWhenReady);
     stopModalQueue();
@@ -466,5 +674,6 @@ export function startSteamDiscoveryQueue() {
     stopAutoFilter();
     stopReviewCountFix();
     storeItemReader.stop();
+    runLogger?.info("lifecycle.stopped");
   };
 }

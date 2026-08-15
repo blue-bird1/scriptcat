@@ -12,10 +12,11 @@ function isVisible(element) {
   );
 }
 
-function getAppId(url) {
+function getAppId(url, logger) {
   try {
     return new URL(url, location.href).pathname.match(/^\/app\/(\d+)(?:\/|$)/)?.[1];
-  } catch {
+  } catch (error) {
+    logger?.error("context.app_url_parse_failed", error, { url });
     return undefined;
   }
 }
@@ -65,7 +66,7 @@ function getClassicReviews() {
   return reviews;
 }
 
-export function getModalQueueAction(target) {
+export function getModalQueueAction(target, logger) {
   if (!(target instanceof Element)) {
     return undefined;
   }
@@ -97,7 +98,7 @@ export function getModalQueueAction(target) {
   return {
     action: actionIndex === 0 ? "wishlist" : "ignore",
     actionGroup,
-    appId: getAppId(appLink.href),
+    appId: getAppId(appLink.href, logger),
     button,
     dialog,
     initialClassName: button.className,
@@ -115,7 +116,7 @@ function findCardRoot(actionGroup, dialog) {
   return actionGroup;
 }
 
-function getModalContext() {
+function getModalContext(logger) {
   const dialogs = [...document.querySelectorAll('[role="dialog"]')];
   for (const dialog of dialogs) {
     const queueLink = dialog.querySelector('a[href*="/explore"][href*="dq=widget"]');
@@ -126,7 +127,7 @@ function getModalContext() {
 
     const dialogRect = dialog.getBoundingClientRect();
     const candidates = [...dialog.querySelectorAll("[aria-label]")]
-      .map((element) => getModalQueueAction(element))
+      .map((element) => getModalQueueAction(element, logger))
       .filter((action) => action?.action === "ignore" && action.appId)
       .filter(({ button }) => {
         const rect = button.getBoundingClientRect();
@@ -230,7 +231,7 @@ export function getModalContinueButton() {
   return actions.length === 2 ? actions[1] : undefined;
 }
 
-function getClassicContinueLink() {
+function getClassicContinueLink(logger) {
   if (new URLSearchParams(location.search).get("queue") !== "1") {
     return undefined;
   }
@@ -252,32 +253,46 @@ function getClassicContinueLink() {
         url.origin === location.origin &&
         /^\/explore\/startnew\/0\/?$/.test(url.pathname)
       );
-    } catch {
+    } catch (error) {
+      logger?.error("auto_continue.url_parse_failed", error, { href: link.href });
       return false;
     }
   });
 }
 
-export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
+export function startDiscoveryQueueAutoFilter({ getStoreItem, logger } = {}) {
+  const autoLogger = logger?.child("auto-filter");
   const ruleEngine = createDiscoveryQueueRuleEngine({ getStoreItem });
   const continuedModalButtons = new WeakSet();
   const continuedClassicLinks = new WeakSet();
+  const loggedModalSuppressions = new WeakSet();
+  const loggedClassicSuppressions = new WeakSet();
+  const modalContinueActionIds = new WeakMap();
+  const classicContinueActionIds = new WeakMap();
   let stopped = false;
   let paused = false;
   let scheduled = false;
   let generation = 0;
   let evaluatedKey;
+  let observedContextKey;
   let activeConfig;
 
   const configUi = createDiscoveryQueueConfigUi({
+    logger: autoLogger,
     onSave() {
       activeConfig = configUi.getConfig();
       generation += 1;
       evaluatedKey = undefined;
+      autoLogger?.info("config.saved", {
+        autoContinueQueue: activeConfig.autoContinueQueue,
+        enabled: activeConfig.enabled,
+        generation,
+      });
       schedule();
     },
     onOpenChange(open) {
       paused = open;
+      autoLogger?.info("config.pause_changed", { paused });
       if (!open) {
         schedule();
       }
@@ -287,13 +302,14 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
   activeConfig = configUi.getConfig();
 
   function getContext() {
-    return getModalContext() ?? getClassicContext();
+    return getModalContext(autoLogger) ?? getClassicContext();
   }
 
   async function evaluateCurrent() {
     scheduled = false;
     const config = activeConfig ?? configUi.getConfig();
     if (paused) {
+      autoLogger?.debug("evaluation.skipped", { reason: "config-open" });
       return;
     }
 
@@ -303,25 +319,58 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
         modalContinueButton instanceof HTMLElement &&
         !continuedModalButtons.has(modalContinueButton)
       ) {
+        const actionId = autoLogger?.nextId("auto-continue");
         continuedModalButtons.add(modalContinueButton);
+        modalContinueActionIds.set(modalContinueButton, actionId);
+        autoLogger?.info("auto_continue.clicked", { actionId, mode: "modal" });
         modalContinueButton.click();
         return;
+      } else if (
+        modalContinueButton instanceof HTMLElement &&
+        !loggedModalSuppressions.has(modalContinueButton)
+      ) {
+        loggedModalSuppressions.add(modalContinueButton);
+        autoLogger?.debug("auto_continue.duplicate_suppressed", {
+          actionId: modalContinueActionIds.get(modalContinueButton),
+          mode: "modal",
+        });
       }
 
-      const classicContinueLink = getClassicContinueLink();
+      const classicContinueLink = getClassicContinueLink(autoLogger);
       if (
         classicContinueLink instanceof HTMLAnchorElement &&
         !continuedClassicLinks.has(classicContinueLink)
       ) {
+        const actionId = autoLogger?.nextId("auto-continue");
         continuedClassicLinks.add(classicContinueLink);
+        classicContinueActionIds.set(classicContinueLink, actionId);
+        autoLogger?.info("auto_continue.clicked", { actionId, mode: "classic" });
         classicContinueLink.click();
         return;
+      } else if (
+        classicContinueLink instanceof HTMLAnchorElement &&
+        !loggedClassicSuppressions.has(classicContinueLink)
+      ) {
+        loggedClassicSuppressions.add(classicContinueLink);
+        autoLogger?.debug("auto_continue.duplicate_suppressed", {
+          actionId: classicContinueActionIds.get(classicContinueLink),
+          mode: "classic",
+        });
       }
     }
 
     const context = getContext();
     if (!context) {
       return;
+    }
+    if (context.key !== observedContextKey) {
+      autoLogger?.info("context.changed", {
+        appId: context.appId,
+        from: observedContextKey,
+        mode: context.key?.split(":", 1)[0],
+        to: context.key,
+      });
+      observedContextKey = context.key;
     }
     configUi.ensureButton(context.buttonHost);
     if (!config.enabled || !context.appId || context.key === evaluatedKey) {
@@ -330,18 +379,63 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
 
     evaluatedKey = context.key;
     const currentGeneration = ++generation;
-    const result = await ruleEngine.evaluate({
+    const evaluationId = autoLogger?.nextId("evaluation");
+    autoLogger?.info("evaluation.started", {
       appId: context.appId,
-      reviews: context.reviews,
-      tags: context.tags,
-      config,
+      evaluationId,
+      generation: currentGeneration,
+      key: context.key,
     });
-    if (stopped || paused || currentGeneration !== generation || !result.matched) {
+    let result;
+    try {
+      result = await ruleEngine.evaluate({
+        appId: context.appId,
+        reviews: context.reviews,
+        tags: context.tags,
+        config,
+      });
+      autoLogger?.info("evaluation.completed", {
+        appId: context.appId,
+        evaluationId,
+        matched: result.matched,
+        result,
+      });
+    } catch (error) {
+      autoLogger?.error("evaluation.failed", error, {
+        appId: context.appId,
+        evaluationId,
+        generation: currentGeneration,
+      });
+      return;
+    }
+    if (stopped || paused || currentGeneration !== generation) {
+      autoLogger?.info("evaluation.stale", {
+        currentGeneration: generation,
+        evaluationGeneration: currentGeneration,
+        evaluationId,
+        paused,
+        stopped,
+      });
+      return;
+    }
+    if (!result.matched) {
       return;
     }
     const current = getContext();
     if (current?.key === context.key && current.ignoreButton instanceof HTMLElement) {
+      autoLogger?.info("evaluation.ignore_clicked", {
+        appId: context.appId,
+        evaluationId,
+        key: context.key,
+      });
       current.ignoreButton.click();
+    } else {
+      autoLogger?.info("evaluation.context_changed_before_action", {
+        appId: context.appId,
+        currentKey: current?.key,
+        evaluationId,
+        expectedKey: context.key,
+      });
     }
   }
 
@@ -379,6 +473,7 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
     subtree: true,
   });
   schedule();
+  autoLogger?.info("controller.started", { enabled: activeConfig.enabled });
 
   return () => {
     stopped = true;
@@ -386,5 +481,6 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
     observer.disconnect();
     configUi.destroy();
     ruleEngine.clear();
+    autoLogger?.info("controller.stopped");
   };
 }
