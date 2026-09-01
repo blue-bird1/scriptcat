@@ -58,6 +58,7 @@ __pycache__/
 !scripts/userscripts/discovery-queue-auto-filter.test.mjs
 !scripts/userscripts/steampy-plus-seller-batch.test.mjs
 !scripts/userscripts/steampy-plus-sale-start-time.test.mjs
+!scripts/userscripts/steampy-plus-rating.test.mjs
 !scripts/userscripts/lint-built.cjs
 !scripts/userscripts/lint.cjs
 !scripts/userscripts/scriptcat-vscode-sync.mjs

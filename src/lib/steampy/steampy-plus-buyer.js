@@ -142,7 +142,7 @@ export function createSteamPyBuyerController({
   let proPageSize = DEFAULT_PRO_BUYER_PAGE_SIZE;
 
   function processCards(vm) {
-    rating.processCards(document.querySelectorAll(".gameblock"), vm?.gameList, vm?.__steamPyPlusOriginalGameList);
+    rating.processCards(vm?.$el?.querySelectorAll(".gameblock") ?? [], vm?.gameList, vm?.__steamPyPlusOriginalGameList);
   }
 
   function applyLegacy() {
