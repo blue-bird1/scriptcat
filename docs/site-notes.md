@@ -38,7 +38,7 @@
   - 书籍卡片：`z-bookcard`；带 isbn 属性：`z-bookcard[isbn]`；搜索结果容器：`#searchResultBox > div.resItemBoxBooks > z-bookcard`、`#searchResultBox > .book-item > z-bookcard`。
   - 书单/搜索：`div.booklist-main.active > div.booklist-searchline > z-dropdown`；列表头：`.booklist-header__options`。
   - 书籍详情页：`.book-title`、`.bookProperty.property_isbn`、`.bookDetailsBox`、`.book-actions-container`、`.book-actions-buttons > .book-details-button`；bookmark：`.bookmarks[data-book_id]`。
-  - 高亮缺失 ISBN：`z-bookcard` 无 `isbn` 或 `isbn` 为空（zlib.isbn_highlight.user.js）。
+  - 高亮缺失 ISBN：`z-bookcard` 无 `isbn` 或 `isbn` 为空（zlib.isbn_highlight.user.js）。书单页 `<z-bookcard createButton>`（class `readlist-create`）是添加书籍按钮，不是书籍卡片。
 
 ## Steam 商店探索队列 (store.steampowered.com)
 

@@ -2,7 +2,7 @@
 // @name         Z-Library highlight missing ISBN Book
 // @name:zh-CN   高亮Z-Library上 缺失 ISBN 的 bookcard
 // @namespace    out
-// @version      2025.12.28
+// @version      2026.09.07
 // @description  高亮那些没有 isbn 属性或 isbn 为空的 z-bookcard 元素
 // @author       blue-bird
 // @match        https://*.z-library.sk/*

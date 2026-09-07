@@ -27,6 +27,10 @@ export function startZlibIsbnHighlight() {
     if (!el) {
       return false;
     }
+    // 自己的书单页「添加书籍」也是 z-bookcard，带 createbutton，不是书籍。
+    if (el.hasAttribute("createbutton")) {
+      return false;
+    }
     const v = el.getAttribute("isbn");
     return v === null || String(v).trim().length === 0;
   }
