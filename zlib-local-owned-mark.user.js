@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8.4
+// @version            2026.9.8.5
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -165,6 +165,19 @@
       books.push({ title, author });
     });
     return { books, skippedLines };
+  }
+  function mergeOwnedBooks(existing, incoming) {
+    const byKey = /* @__PURE__ */ new Map();
+    for (const book of [...existing, ...incoming]) {
+      if (!book || !book.title || !book.author) {
+        continue;
+      }
+      const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, book);
+      }
+    }
+    return [...byKey.values()];
   }
   function slotText(el, name) {
     const slot = el.querySelector(`[slot="${name}"]`);
@@ -346,10 +359,32 @@
         return;
       }
       chosen.text().then((text) => {
-        textarea.value = text;
+        const parsed = parseOwnedLines(text);
+        if (parsed.books.length === 0) {
+          console.error(LOG_PREFIX, "file rejected", {
+            name: chosen.name,
+            skippedLines: parsed.skippedLines
+          });
+          notifyError("文件格式无效：需要每行 `书名 | 作者`");
+          file.value = "";
+          return;
+        }
+        const merged = mergeOwnedBooks(readStore(), parsed.books);
+        textarea.value = toOwnedText(merged);
+        file.value = "";
+        console.info(LOG_PREFIX, "file merged", {
+          name: chosen.name,
+          incoming: parsed.books,
+          skippedLines: parsed.skippedLines,
+          merged
+        });
+        notifySuccess(
+          `文件有效 ${parsed.books.length} 本，合并后 ${merged.length} 本` + (parsed.skippedLines.length ? `，跳过 ${parsed.skippedLines.length} 行` : "")
+        );
       }).catch((error) => {
         console.error(LOG_PREFIX, "read file failed", error);
         notifyError(`读取文件失败：${error.message}`);
+        file.value = "";
       });
     });
   }
