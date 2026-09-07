@@ -24,12 +24,13 @@ const SHADOW_MARK_STYLE = `
             position: absolute;
             top: 0;
             left: 0;
+            max-width: 92%;
             background: #15803d;
             color: #fff;
-            font-size: 11px;
-            line-height: 1.8;
-            padding: 2px 6px 0 4px;
+            line-height: 1.25;
+            white-space: nowrap;
             border-radius: 0 0 10px 0;
+            box-sizing: border-box;
         }
     `;
 
@@ -192,6 +193,7 @@ function describeCard(el) {
     id: el.getAttribute("id"),
     title: el.getAttribute("title"),
     author: el.getAttribute("author"),
+    offsetWidth: el.offsetWidth,
   };
 }
 
@@ -261,6 +263,18 @@ function ensureOwnedMark(cover) {
   return mark;
 }
 
+function sizeOwnedMark(cover, mark) {
+  const width = cover.offsetWidth;
+  const fontSize = Math.max(7, Math.min(16, Math.round(width / 8)));
+  const label = mark.querySelector(".label");
+  if (!label) {
+    return { width, fontSize };
+  }
+  label.style.fontSize = `${fontSize}px`;
+  label.style.padding = width < 90 ? "1px 3px 0 2px" : "2px 6px 0 4px";
+  return { width, fontSize };
+}
+
 function setOwnedVisible(card, owned) {
   const covers = paintableCovers(card);
   if (covers.length === 0) {
@@ -271,6 +285,9 @@ function setOwnedVisible(card, owned) {
     const mark = ensureOwnedMark(cover);
     if (!mark) {
       continue;
+    }
+    if (owned) {
+      sizeOwnedMark(cover, mark);
     }
     mark.classList.toggle("show", owned);
     painted = true;
