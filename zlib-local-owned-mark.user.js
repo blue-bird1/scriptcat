@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8.6
+// @version            2026.9.8.7
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -412,7 +412,7 @@
     }
     const result = applyMarks([]);
     console.info(LOG_PREFIX, "clear", { previous, result });
-    notifySuccess("已删除全部本地书单");
+    notifySuccess("已清空已保存的本地书单");
   }
   function openModal() {
     if (typeof ZLibraryModal !== "function" || typeof $ === "undefined") {
@@ -428,7 +428,7 @@
       element: MODAL_ID,
       container: "zlibrary-modal-styled",
       title: "导入本地书单",
-      footer: `<div class="modal-footer"><button class="btn btn-danger" id="${CLEAR_ID}">全部删除</button><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`
+      footer: `<div class="modal-footer"><button class="btn btn-danger" id="${CLEAR_ID}">清空已保存书单</button><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`
     });
     $(document).off("click", `#${SAVE_ID}`).on("click", `#${SAVE_ID}`, () => {
       saveOwnedList();

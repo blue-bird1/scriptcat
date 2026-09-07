@@ -413,7 +413,7 @@ function clearOwnedList() {
   }
   const result = applyMarks([]);
   console.info(LOG_PREFIX, "clear", { previous, result });
-  notifySuccess("已删除全部本地书单");
+  notifySuccess("已清空已保存的本地书单");
 }
 
 function openModal() {
@@ -430,7 +430,7 @@ function openModal() {
     element: MODAL_ID,
     container: "zlibrary-modal-styled",
     title: "导入本地书单",
-    footer: `<div class="modal-footer"><button class="btn btn-danger" id="${CLEAR_ID}">全部删除</button><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
+    footer: `<div class="modal-footer"><button class="btn btn-danger" id="${CLEAR_ID}">清空已保存书单</button><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
   });
   $(document)
     .off("click", `#${SAVE_ID}`)
