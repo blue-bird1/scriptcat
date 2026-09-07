@@ -16,21 +16,15 @@ const SHADOW_MARK_STYLE = `
             z-index: 12;
             pointer-events: none;
             opacity: 0;
-        }
-        .zlocal-owned-mark.show {
-            opacity: 1;
-        }
-        .zlocal-owned-mark .label {
-            position: absolute;
-            top: 0;
-            left: 0;
-            max-width: 92%;
             background: #15803d;
             color: #fff;
             line-height: 1.25;
             white-space: nowrap;
             border-radius: 0 0 10px 0;
             box-sizing: border-box;
+        }
+        .zlocal-owned-mark.show {
+            opacity: 1;
         }
     `;
 
@@ -254,11 +248,10 @@ function ensureOwnedMark(cover) {
   if (!mark) {
     mark = document.createElement("span");
     mark.className = "zlocal-owned-mark";
-    const label = document.createElement("span");
-    label.className = "label";
-    label.textContent = "本地已有";
-    mark.append(label);
+    mark.textContent = "本地已有";
     main.append(mark);
+  } else {
+    mark.textContent = "本地已有";
   }
   return mark;
 }
@@ -266,12 +259,8 @@ function ensureOwnedMark(cover) {
 function sizeOwnedMark(cover, mark) {
   const width = cover.offsetWidth;
   const fontSize = Math.max(7, Math.min(16, Math.round(width / 8)));
-  const label = mark.querySelector(".label");
-  if (!label) {
-    return { width, fontSize };
-  }
-  label.style.fontSize = `${fontSize}px`;
-  label.style.padding = width < 90 ? "1px 3px 0 2px" : "2px 6px 0 4px";
+  mark.style.fontSize = `${fontSize}px`;
+  mark.style.padding = width < 90 ? "1px 3px 0 2px" : "2px 6px 0 4px";
   return { width, fontSize };
 }
 
