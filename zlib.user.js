@@ -3,7 +3,7 @@
 // @name:zh-CN         Z-Library 增强脚本
 // @name:en            Z-Library UI Enhance
 // @namespace          out
-// @version            2026.6.7
+// @version            2026.9.7
 // @description        改善 Zlibray 页面功能的油猴脚本
 // @description:zh-CN  给 Z-Library 一个更友好的使用体验
 // @description:en     give Z-Library  a more user friendly experience
@@ -519,21 +519,59 @@
 
 
 
+    function masonryHostOfCover(cover) {
+        const root = cover.getRootNode && cover.getRootNode()
+        if (root && root.host && root.host.tagName === 'Z-MASONRY') {
+            return root.host
+        }
+        return cover.closest('z-masonry')
+    }
+
+    function removeMasonryDownloadedCover(masonry, cover) {
+        const id = cover.getAttribute('id') || cover.id
+        if (!id) {
+            return
+        }
+        masonry.querySelectorAll(':scope > a').forEach((anchor) => {
+            if (anchor.querySelector(`z-cover[id="${id}"]`)) {
+                anchor.remove()
+            }
+        })
+        const root = masonry.shadowRoot
+        if (!root) {
+            return
+        }
+        root.querySelectorAll('.item').forEach((item) => {
+            if (item.querySelector(`z-cover[id="${id}"]`)) {
+                item.remove()
+            }
+        })
+        if (typeof masonry.buildMosaic === 'function' && root.querySelector('.item')) {
+            masonry.buildMosaic()
+        }
+    }
+
     function checkDownloadedStatus() {
-        // 遍历每个元素
         if (!enable_filter_recom) {
             return
         }
-        let zCoverList = $('z-cover')
-        zCoverList.each(function () {
-            // 检查元素的this.downloaded属性
-            if ((this.downloaded || ZLibrary.checkIsDownloaded(this.id, this.isbn)) && !this.markButton && this.id !== get_bookId()) {
-                // 如果this.downloaded为true，则隐藏该元素
-                // check is z-carousel elemet <z-carousel  
-                if ($(this).parent().parent().prop('tagName') === 'Z-CAROUSEL') {
+        const covers = [...document.querySelectorAll('z-cover')]
+        document.querySelectorAll('z-masonry').forEach((masonry) => {
+            if (masonry.shadowRoot) {
+                covers.push(...masonry.shadowRoot.querySelectorAll('z-cover'))
+            }
+        })
+        covers.forEach((cover) => {
+            if ((cover.downloaded || ZLibrary.checkIsDownloaded(cover.id, cover.isbn)) && !cover.markButton && cover.id !== get_bookId()) {
+                if (cover.closest && cover.closest('z-carousel')) {
                     return
                 }
-                $(this).parent().parent().remove()
+                const masonry = masonryHostOfCover(cover)
+                if (masonry) {
+                    removeMasonryDownloadedCover(masonry, cover)
+                    return
+                }
+                $(cover).parent().parent().remove()
             }
         });
     }
