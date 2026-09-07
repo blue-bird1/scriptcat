@@ -28,8 +28,9 @@
 // @grant              GM_setValue
 // @grant              GM_registerMenuCommand
 // @grant              GM_notification
-// @grant              unsafeWindow
 // ==/UserScript==
+
+/* global CurrentUser, ZLibraryNotify */
 
 import { startZlibDownloadHistorySync } from "../lib/zlib/download-history-sync.js";
 

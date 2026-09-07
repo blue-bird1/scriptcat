@@ -28,8 +28,9 @@
 // @grant              GM_setValue
 // @grant              GM_registerMenuCommand
 // @grant              GM_notification
-// @grant              unsafeWindow
 // ==/UserScript==
+
+/* global CurrentUser, ZLibraryNotify */
 
 (() => {
   // src/lib/zlib/download-history-sync.js
@@ -39,11 +40,10 @@
   var PAGE_USER_KEY = "downloadedBooksUser";
   var PAGE_UPDATED_KEY = "downloadedBooksUpdated";
   function zlibNotify() {
-    const Notify = unsafeWindow.ZLibraryNotify;
-    if (typeof Notify !== "function") {
+    if (typeof ZLibraryNotify !== "function") {
       return null;
     }
-    return new Notify();
+    return new ZLibraryNotify();
   }
   function notifyPage(kind, text) {
     const n = zlibNotify();
@@ -156,19 +156,18 @@
       if (!window.localStorage) {
         throw new Error("当前页没有 localStorage");
       }
-      const user = unsafeWindow.CurrentUser;
-      if (!user || user.id == null) {
+      if (typeof CurrentUser === "undefined" || CurrentUser.id == null) {
         throw new Error("当前页没有登录用户");
       }
       localStorage.setItem(PAGE_KEY, JSON.stringify(stored));
-      localStorage.setItem(PAGE_USER_KEY, user.id);
+      localStorage.setItem(PAGE_USER_KEY, CurrentUser.id);
       localStorage.setItem(PAGE_UPDATED_KEY, String((/* @__PURE__ */ new Date()).getDate() + 1));
-      if (typeof user.markDownloadedBooks === "function") {
-        user.markDownloadedBooks();
+      if (typeof CurrentUser.markDownloadedBooks === "function") {
+        CurrentUser.markDownloadedBooks();
       }
       console.info(LOG_PREFIX, "overwrote current account", {
         count: stored.length,
-        userId: user.id
+        userId: CurrentUser.id
       });
       notifySuccess(`已用 ${stored.length} 条总历史覆盖当前账号`);
     } catch (error) {

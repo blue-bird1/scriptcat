@@ -1,4 +1,4 @@
-/* global GM_getValue, GM_notification, GM_registerMenuCommand, GM_setValue, unsafeWindow */
+/* global CurrentUser, GM_getValue, GM_notification, GM_registerMenuCommand, GM_setValue, ZLibraryNotify */
 
 const LOG_PREFIX = "[zlib-download-history-sync]";
 const STORE_KEY = "downloadedBooks";
@@ -7,11 +7,10 @@ const PAGE_USER_KEY = "downloadedBooksUser";
 const PAGE_UPDATED_KEY = "downloadedBooksUpdated";
 
 function zlibNotify() {
-  const Notify = unsafeWindow.ZLibraryNotify;
-  if (typeof Notify !== "function") {
+  if (typeof ZLibraryNotify !== "function") {
     return null;
   }
-  return new Notify();
+  return new ZLibraryNotify();
 }
 
 function notifyPage(kind, text) {
@@ -135,19 +134,18 @@ function overwriteCurrentAccount() {
     if (!window.localStorage) {
       throw new Error("当前页没有 localStorage");
     }
-    const user = unsafeWindow.CurrentUser;
-    if (!user || user.id == null) {
+    if (typeof CurrentUser === "undefined" || CurrentUser.id == null) {
       throw new Error("当前页没有登录用户");
     }
     localStorage.setItem(PAGE_KEY, JSON.stringify(stored));
-    localStorage.setItem(PAGE_USER_KEY, user.id);
+    localStorage.setItem(PAGE_USER_KEY, CurrentUser.id);
     localStorage.setItem(PAGE_UPDATED_KEY, String(new Date().getDate() + 1));
-    if (typeof user.markDownloadedBooks === "function") {
-      user.markDownloadedBooks();
+    if (typeof CurrentUser.markDownloadedBooks === "function") {
+      CurrentUser.markDownloadedBooks();
     }
     console.info(LOG_PREFIX, "overwrote current account", {
       count: stored.length,
-      userId: user.id,
+      userId: CurrentUser.id,
     });
     notifySuccess(`已用 ${stored.length} 条总历史覆盖当前账号`);
   } catch (error) {
