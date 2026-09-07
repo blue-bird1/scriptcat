@@ -6,6 +6,7 @@ const MODAL_ID = "ZLO-owned-modal";
 const TEXT_ID = "ZLO-owned-text";
 const FILE_ID = "ZLO-owned-file";
 const SAVE_ID = "ZLO-owned-save";
+const CLEAR_ID = "ZLO-owned-clear";
 const MARK_CLASS = "zlocal-owned";
 const SHADOW_MARK_STYLE = `
         .zlocal-owned-mark {
@@ -399,6 +400,22 @@ function saveOwnedList() {
   );
 }
 
+function clearOwnedList() {
+  const previous = readStore();
+  GM_setValue(STORE_KEY, []);
+  const textarea = document.getElementById(TEXT_ID);
+  if (textarea) {
+    textarea.value = "";
+  }
+  const file = document.getElementById(FILE_ID);
+  if (file) {
+    file.value = "";
+  }
+  const result = applyMarks([]);
+  console.info(LOG_PREFIX, "clear", { previous, result });
+  notifySuccess("已删除全部本地书单");
+}
+
 function openModal() {
   if (typeof ZLibraryModal !== "function" || typeof $ === "undefined") {
     notifyError("当前页没有 ZLibraryModal");
@@ -413,13 +430,18 @@ function openModal() {
     element: MODAL_ID,
     container: "zlibrary-modal-styled",
     title: "导入本地书单",
-    footer: `<div class="modal-footer"><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
+    footer: `<div class="modal-footer"><button class="btn btn-danger" id="${CLEAR_ID}">全部删除</button><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
   });
   $(document)
     .off("click", `#${SAVE_ID}`)
     .on("click", `#${SAVE_ID}`, () => {
       saveOwnedList();
       modal.hide();
+    });
+  $(document)
+    .off("click", `#${CLEAR_ID}`)
+    .on("click", `#${CLEAR_ID}`, () => {
+      clearOwnedList();
     });
   modal.show();
 }
