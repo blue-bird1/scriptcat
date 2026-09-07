@@ -128,13 +128,13 @@ export function parseOwnedLines(text) {
     if (!trimmed) {
       continue;
     }
-    const tab = trimmed.indexOf("\t");
-    if (tab <= 0 || tab === trimmed.length - 1) {
+    const sep = trimmed.indexOf("|");
+    if (sep <= 0 || sep === trimmed.length - 1) {
       skipped += 1;
       continue;
     }
-    const title = trimmed.slice(0, tab).trim();
-    const author = trimmed.slice(tab + 1).trim();
+    const title = trimmed.slice(0, sep).trim();
+    const author = trimmed.slice(sep + 1).trim();
     if (!title || !author) {
       skipped += 1;
       continue;
@@ -210,8 +210,8 @@ function readStore() {
   return stored.filter((item) => item && item.title && item.author);
 }
 
-function toTsv(books) {
-  return books.map((book) => `${book.title}\t${book.author}`).join("\n");
+function toOwnedText(books) {
+  return books.map((book) => `${book.title} | ${book.author}`).join("\n");
 }
 
 function ensureModal() {
@@ -224,17 +224,16 @@ function ensureModal() {
   const form = document.createElement("form");
   form.className = "form-horizontal";
   form.addEventListener("submit", (event) => event.preventDefault());
-  const hint = document.createElement("p");
-  hint.textContent = "每行一本，格式为 书名，制表符，作者。可粘贴或上传 UTF-8 文本。";
   const textarea = document.createElement("textarea");
   textarea.id = TEXT_ID;
   textarea.className = "form-control";
   textarea.rows = 12;
+  textarea.placeholder = "足球潜规则 | 克雷格·麦盖尔";
   const file = document.createElement("input");
   file.id = FILE_ID;
   file.type = "file";
   file.accept = "text/plain,.txt";
-  form.append(hint, textarea, file);
+  form.append(textarea, file);
   root.append(form);
   document.body.append(root);
   file.addEventListener("change", () => {
@@ -279,7 +278,7 @@ function openModal() {
   ensureModal();
   const textarea = document.getElementById(TEXT_ID);
   if (textarea) {
-    textarea.value = toTsv(readStore());
+    textarea.value = toOwnedText(readStore());
   }
   const modal = new ZLibraryModal({
     element: MODAL_ID,
