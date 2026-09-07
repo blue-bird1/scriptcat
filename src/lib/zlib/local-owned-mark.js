@@ -1,0 +1,323 @@
+/* global $, GM_addStyle, GM_getValue, GM_notification, GM_registerMenuCommand, GM_setValue, ZLibraryModal, ZLibraryNotify */
+
+const LOG_PREFIX = "[zlib-local-owned-mark]";
+const STORE_KEY = "ownedBooks";
+const MODAL_ID = "ZLO-owned-modal";
+const TEXT_ID = "ZLO-owned-text";
+const FILE_ID = "ZLO-owned-file";
+const SAVE_ID = "ZLO-owned-save";
+const MARK_CLASS = "zlocal-owned";
+const MARK_STYLE = `
+        z-cover.zlocal-owned,
+        z-bookcard.zlocal-owned {
+            position: relative;
+        }
+        z-cover.zlocal-owned::after,
+        z-bookcard.zlocal-owned::after {
+            content: "本地已有";
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 11;
+            background: #15803d;
+            color: #fff;
+            font-size: 11px;
+            line-height: 1.8;
+            padding: 2px 6px 0 6px;
+            border-radius: 0 0 10px 0;
+        }
+    `;
+
+function zlibNotify() {
+  if (typeof ZLibraryNotify !== "function") {
+    return null;
+  }
+  return new ZLibraryNotify();
+}
+
+function notifyPage(kind, text) {
+  const n = zlibNotify();
+  if (n && typeof n[kind] === "function") {
+    n[kind](text);
+    return;
+  }
+  GM_notification({
+    title: "Z-Library 本地已有",
+    text,
+    timeout: 4000,
+  });
+}
+
+function notifySuccess(text) {
+  console.info(LOG_PREFIX, text);
+  notifyPage("success", text);
+}
+
+function notifyError(text) {
+  console.error(LOG_PREFIX, text);
+  notifyPage("error", text);
+}
+
+export function normalizeText(value) {
+  return String(value)
+    .normalize("NFKC")
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+export function titlesMatch(left, right) {
+  const a = normalizeText(left);
+  const b = normalizeText(right);
+  if (!a || !b) {
+    return false;
+  }
+  if (a === b) {
+    return true;
+  }
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  if (shorter.length < 4) {
+    return false;
+  }
+  return longer.includes(shorter);
+}
+
+function addAuthorKeys(keys, raw) {
+  const value = normalizeText(raw);
+  if (!value) {
+    return;
+  }
+  keys.add(value);
+  const comma = value.split(",");
+  if (comma.length === 2) {
+    const first = comma[0].trim();
+    const second = comma[1].trim();
+    if (first && second) {
+      keys.add(`${second} ${first}`);
+    }
+  }
+}
+
+export function authorKeys(value) {
+  const keys = new Set();
+  addAuthorKeys(keys, value);
+  for (const part of String(value).split(/[;；、/]| and /i)) {
+    addAuthorKeys(keys, part);
+  }
+  return keys;
+}
+
+export function authorsMatch(left, right) {
+  const a = authorKeys(left);
+  const b = authorKeys(right);
+  for (const key of a) {
+    if (b.has(key)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function parseOwnedLines(text) {
+  const books = [];
+  let skipped = 0;
+  const lines = String(text).split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const tab = trimmed.indexOf("\t");
+    if (tab <= 0 || tab === trimmed.length - 1) {
+      skipped += 1;
+      continue;
+    }
+    const title = trimmed.slice(0, tab).trim();
+    const author = trimmed.slice(tab + 1).trim();
+    if (!title || !author) {
+      skipped += 1;
+      continue;
+    }
+    books.push({ title, author });
+  }
+  return { books, skipped };
+}
+
+function slotText(el, name) {
+  const slot = el.querySelector(`[slot="${name}"]`);
+  return slot ? slot.textContent.trim() : "";
+}
+
+function cardIdentity(el) {
+  if (!el || el.nodeType !== 1) {
+    return null;
+  }
+  const tag = el.tagName.toLowerCase();
+  if (tag !== "z-cover" && tag !== "z-bookcard") {
+    return null;
+  }
+  if (el.hasAttribute("createbutton")) {
+    return null;
+  }
+  const title = (el.getAttribute("title") || slotText(el, "title") || "").trim();
+  const author = (el.getAttribute("author") || slotText(el, "author") || "").trim();
+  if (!title || !author) {
+    return null;
+  }
+  return { title, author };
+}
+
+function collectCards() {
+  const cards = [...document.querySelectorAll("z-cover, z-bookcard")];
+  document.querySelectorAll("z-masonry").forEach((masonry) => {
+    if (masonry.shadowRoot) {
+      cards.push(...masonry.shadowRoot.querySelectorAll("z-cover"));
+    }
+  });
+  return cards;
+}
+
+function isOwned(identity, books) {
+  return books.some(
+    (book) => titlesMatch(identity.title, book.title) && authorsMatch(identity.author, book.author),
+  );
+}
+
+function applyMarks(books) {
+  let marked = 0;
+  for (const card of collectCards()) {
+    const identity = cardIdentity(card);
+    if (!identity) {
+      card.classList.remove(MARK_CLASS);
+      continue;
+    }
+    if (isOwned(identity, books)) {
+      card.classList.add(MARK_CLASS);
+      marked += 1;
+    } else {
+      card.classList.remove(MARK_CLASS);
+    }
+  }
+  return marked;
+}
+
+function readStore() {
+  const stored = GM_getValue(STORE_KEY, []);
+  if (!Array.isArray(stored)) {
+    return [];
+  }
+  return stored.filter((item) => item && item.title && item.author);
+}
+
+function toTsv(books) {
+  return books.map((book) => `${book.title}\t${book.author}`).join("\n");
+}
+
+function ensureModal() {
+  if (document.getElementById(MODAL_ID)) {
+    return;
+  }
+  const root = document.createElement("div");
+  root.id = MODAL_ID;
+  root.className = "hidden";
+  const form = document.createElement("form");
+  form.className = "form-horizontal";
+  form.addEventListener("submit", (event) => event.preventDefault());
+  const hint = document.createElement("p");
+  hint.textContent = "每行一本，格式为 书名，制表符，作者。可粘贴或上传 UTF-8 文本。";
+  const textarea = document.createElement("textarea");
+  textarea.id = TEXT_ID;
+  textarea.className = "form-control";
+  textarea.rows = 12;
+  const file = document.createElement("input");
+  file.id = FILE_ID;
+  file.type = "file";
+  file.accept = "text/plain,.txt";
+  form.append(hint, textarea, file);
+  root.append(form);
+  document.body.append(root);
+  file.addEventListener("change", () => {
+    const chosen = file.files && file.files[0];
+    if (!chosen) {
+      return;
+    }
+    chosen
+      .text()
+      .then((text) => {
+        textarea.value = text;
+        console.info(LOG_PREFIX, "loaded file", { name: chosen.name, bytes: chosen.size });
+      })
+      .catch((error) => {
+        console.error(LOG_PREFIX, "read file failed", error);
+        notifyError(`读取文件失败：${error.message}`);
+      });
+  });
+}
+
+function saveOwnedList() {
+  const textarea = document.getElementById(TEXT_ID);
+  const parsed = parseOwnedLines(textarea ? textarea.value : "");
+  GM_setValue(STORE_KEY, parsed.books);
+  const marked = applyMarks(parsed.books);
+  console.info(LOG_PREFIX, "saved owned list", {
+    books: parsed.books.length,
+    skipped: parsed.skipped,
+    marked,
+  });
+  notifySuccess(
+    `已保存 ${parsed.books.length} 本，标注 ${marked} 条` +
+      (parsed.skipped ? `，跳过 ${parsed.skipped} 行` : ""),
+  );
+}
+
+function openModal() {
+  if (typeof ZLibraryModal !== "function" || typeof $ === "undefined") {
+    notifyError("当前页没有 ZLibraryModal");
+    return;
+  }
+  ensureModal();
+  const textarea = document.getElementById(TEXT_ID);
+  if (textarea) {
+    textarea.value = toTsv(readStore());
+  }
+  const modal = new ZLibraryModal({
+    element: MODAL_ID,
+    container: "zlibrary-modal-styled",
+    title: "导入本地书单",
+    footer: `<div class="modal-footer"><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
+  });
+  $(document)
+    .off("click", `#${SAVE_ID}`)
+    .on("click", `#${SAVE_ID}`, () => {
+      saveOwnedList();
+      modal.hide();
+    });
+  modal.show();
+}
+
+function observeMasonry(masonry, onChange) {
+  if (!masonry.shadowRoot || masonry.dataset.zlocalObserved === "1") {
+    return;
+  }
+  masonry.dataset.zlocalObserved = "1";
+  const observer = new MutationObserver(onChange);
+  observer.observe(masonry.shadowRoot, { childList: true, subtree: true });
+}
+
+export function startZlibLocalOwnedMark() {
+  GM_addStyle(MARK_STYLE);
+  GM_registerMenuCommand("导入本地书单并标注", openModal);
+  let scanTimer = 0;
+  const scan = () => {
+    document.querySelectorAll("z-masonry").forEach((masonry) => observeMasonry(masonry, scan));
+    applyMarks(readStore());
+  };
+  const scheduleScan = () => {
+    window.clearTimeout(scanTimer);
+    scanTimer = window.setTimeout(scan, 200);
+  };
+  scan();
+  const observer = new MutationObserver(scheduleScan);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+}
