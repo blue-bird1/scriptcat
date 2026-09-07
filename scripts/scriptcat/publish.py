@@ -32,9 +32,9 @@ else:
 
 DEFAULT_DATA_ROOT = Path.home() / ".local" / "share" / "scriptcat-extension"
 DEFAULT_EXTENSION_ROOT = (
-    Path.home() / ".codex" / "chrome-extensions" / "scriptcat" / "managed"
+    Path.home() / ".local" / "share" / "scriptcat-extension" / "managed"
 )
-DEFAULT_EXPECTED_EXTENSION_ID = "oepcbpjafionmhhelohlfhlmlaciclhc"
+DEFAULT_EXPECTED_EXTENSION_ID = "mihocogjodhedlmnebhfkiahldphcimj"
 SOURCE_PATH = Path("browser/scriptcat")
 FOCUSED_TESTS = ("src/app/service/service_worker/script_get_source.test.ts",)
 

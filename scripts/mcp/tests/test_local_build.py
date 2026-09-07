@@ -332,7 +332,7 @@ def provider_manifest(home: Path) -> Path:
 
 
 def managed_scriptcat(home: Path) -> Path:
-    return home / ".codex" / "chrome-extensions" / "scriptcat" / "managed"
+    return home / ".local" / "share" / "scriptcat-extension" / "managed"
 
 
 def managed_manifest(home: Path) -> Path:

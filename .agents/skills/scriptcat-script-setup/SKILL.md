@@ -15,7 +15,7 @@ Use this skill before browser-debugging this repository's userscripts. The test 
 uv run --project scripts --python 3.12 python scripts/scriptcat/publish.py
 ```
 
-Publication stores extension data in `~/.local/share/scriptcat-extension` and atomically replaces the complete managed extension directory at `~/.codex/chrome-extensions/scriptcat/managed`. The fixed extension ID is `oepcbpjafionmhhelohlfhlmlaciclhc`.
+Publication stores extension data in `~/.local/share/scriptcat-extension` and atomically replaces the complete managed extension directory at `~/.local/share/scriptcat-extension/managed`. The fixed extension ID is `mihocogjodhedlmnebhfkiahldphcimj`.
 
 The browser provider is the only remote build product. Its `scripts/remote/provider/` build and package stages use `192.168.50.8` through `wg0` to compile, test, and package Chromium; its offline local install stage activates `~/.local/share/scriptcat-browser/current/chrome-linux/chrome`.
 

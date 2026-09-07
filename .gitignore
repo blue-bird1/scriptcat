@@ -100,6 +100,9 @@ scripts/remote/**/*.pyc
 !.codex/
 !.codex/config.toml
 
+# Project-scoped shared MCP config for Pi and other hosts.
+!.mcp.json
+
 # Project-scoped Cursor MCP setup and userscript validation workflow.
 !.cursor/
 !.cursor/mcp.json

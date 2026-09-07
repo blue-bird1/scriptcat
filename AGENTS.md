@@ -17,8 +17,8 @@
 
 ## ScriptCat 浏览器验证与安装
 
-- **本地 managed 扩展**：`browser/scriptcat` 是跟随官方版本更新的本地 ScriptCat 扩展 submodule。fork 相对官方仅增加只读消息接口 `serviceWorker/script/getSource`，供 MCP 按 UUID 读取 ScriptCat 保存的原始 userscript 源码。扩展通过 `uv run --project scripts --python 3.12 python scripts/scriptcat/publish.py` 在本机构建、测试并发布；publisher 原子替换 `~/.codex/chrome-extensions/scriptcat/managed` 的完整目录内容，发布数据位于 `~/.local/share/scriptcat-extension`，扩展 ID 为 `oepcbpjafionmhhelohlfhlmlaciclhc`。
-- **专用 MCP**：调试或验收本仓库 `*.user.js` 时，使用 `chrome-devtools-scriptcat`（工具命名空间通常为 `mcp__chrome_devtools_scriptcat__`）。MCP 位于 `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js`，启动 browser provider 提供的 `~/.local/share/scriptcat-browser/current/chrome-linux/chrome`，并使用固定 profile `~/.codex/chrome-devtools-scriptcat-chromium-profile`。Chromium 通过 CDP pipe 以 headless 模式运行，页面流量使用本机 `http://127.0.0.1:7891` 代理。
+- **本地 managed 扩展**：`browser/scriptcat` 是跟随官方版本更新的本地 ScriptCat 扩展 submodule。fork 相对官方仅增加只读消息接口 `serviceWorker/script/getSource`，供 MCP 按 UUID 读取 ScriptCat 保存的原始 userscript 源码。扩展通过 `uv run --project scripts --python 3.12 python scripts/scriptcat/publish.py` 在本机构建、测试并发布；publisher 原子替换 `~/.local/share/scriptcat-extension/managed` 的完整目录内容，发布数据位于 `~/.local/share/scriptcat-extension`，扩展 ID 为 `mihocogjodhedlmnebhfkiahldphcimj`。
+- **专用 MCP**：调试或验收本仓库 `*.user.js` 时，使用 `chrome-devtools-scriptcat`（工具命名空间通常为 `mcp__chrome_devtools_scriptcat__`）。MCP 位于 `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js`，启动 browser provider 提供的 `~/.local/share/scriptcat-browser/current/chrome-linux/chrome`，并使用固定 profile `~/.local/share/scriptcat-mcp/chromium-profile`。Chromium 通过 CDP pipe 以 headless 模式运行，页面流量使用本机 `http://127.0.0.1:7891` 代理。Pi 从项目 `.mcp.json` 读取该服务器；Codex 从 `.codex/config.toml` 读取同一组参数。
 - **MCP lifecycle 所有权**：`chrome-devtools-scriptcat` 的唯一持久 broker 独占固定 profile 与 browser provider 进程的完整生命周期。root 与 subagent 各自通过 stdio proxy 建立独立 MCP session 和 `McpContext`，并共享 broker 持有的 browser；proxy 或单个 session 关闭不结束 browser。Agent 不得发送进程信号、结束 Chromium 或其子进程、手动启动 provider、复制固定 profile、删除 `Singleton*`，或用其他浏览器进程争用该 profile。`scripts/mcp/control.py` 从 `.codex/config.toml` 复用完整启动参数；其 `stop` 只用于系统退出或明确维护，不参与发布，不作为调试或会话清理手段。每个新 session 在其他浏览器操作前先调用 `scriptcat_status`。
 - **加载、刷新与权限**：MCP 在每个 browser lifecycle 中从配置读取 managed 目录，并通过受信 `Extensions.loadUnpacked` 原子加载或刷新该目录；请求同时携带固定 `expectedId` 与 `userScriptsAccess: true`，因此权限在首个扩展 service worker 激活前生效。该流程按目录内容刷新，不比较或假设扩展版本，也不因扩展已存在而跳过加载。`scriptcat_status` 只观察权限和就绪状态；MCP 不调用独立权限 setter，也不执行额外 reload。`userScriptsAccessEnabled` 不是 `true` 表示 lifecycle 加载不变量未满足，应检查 MCP 与扩展状态。managed 目录缺失、内容损坏或 manifest 无效时，重新执行本地 publish 命令原子修复固定目录，再开始新的 browser lifecycle。browser provider 仅提供 Chromium 可执行文件，此流程不要求修改 provider。
 - **MCP 脚本管理与验收**：以 `scriptcat_upsert_script` 写入仓库内规范化的目标 `*.user.js` 路径；MCP 会逐脚本关闭 ScriptCat 后台更新检查，避免仓库脚本被外部 `@updateURL` 覆盖。按需使用 `scriptcat_list_scripts`、`scriptcat_get_script`、`scriptcat_set_enabled` 和 `scriptcat_delete_script`，随后打开真实 `@match` 页面，确认注入、UI、控制台、网络请求和核心交互。
@@ -74,7 +74,8 @@
 | `scripts/build-userscripts.mjs` | 将 `src/userscripts/*.user.js` bundle 到仓库根同名文件 |
 | `scripts/remote/provider/` | browser provider 的 build、package、install 三阶段入口 |
 | `scripts/mcp/` | ScriptCat MCP 的本地 build、package、install 三阶段入口 |
-| `scripts/scriptcat/publish.py` | 本地构建、测试并发布 `browser/scriptcat` 到 `~/.codex/chrome-extensions/scriptcat/managed` |
+| `scripts/scriptcat/publish.py` | 本地构建、测试并发布 `browser/scriptcat` 到 `~/.local/share/scriptcat-extension/managed` |
+| `.mcp.json` | Pi 与共享 MCP 配置（`chrome-devtools-scriptcat`） |
 | `browser/provider.lock.json` | browser provider 的供应链 lock |
 | `browser/mcp.lock.json` | ScriptCat MCP 的供应链 lock |
 | `.codex/config.toml` | 配置外部 browser provider、派生 `chrome-devtools-scriptcat` MCP 与本地 Chromium 构建门禁 |

@@ -45,7 +45,7 @@ else:
 
 LOCK_PATH = Path("browser/mcp.lock.json")
 LOGGER = logging.getLogger("scriptcat.mcp")
-SCRIPTCAT_EXTENSION_ID = "oepcbpjafionmhhelohlfhlmlaciclhc"
+SCRIPTCAT_EXTENSION_ID = "mihocogjodhedlmnebhfkiahldphcimj"
 SHARED_TEST_EXECUTABLE_PATH = (
     Path.home()
     / ".local"
@@ -59,7 +59,7 @@ SHARED_TEST_PROVIDER_MANIFEST_PATH = (
     Path.home() / ".local" / "share" / "scriptcat-browser" / "current" / "manifest.json"
 )
 SHARED_TEST_MANAGED_SCRIPTCAT_PATH = (
-    Path.home() / ".codex" / "chrome-extensions" / "scriptcat" / "managed"
+    Path.home() / ".local" / "share" / "scriptcat-extension" / "managed"
 )
 SHARED_TEST_MANAGED_SCRIPTCAT_MANIFEST_PATH = (
     SHARED_TEST_MANAGED_SCRIPTCAT_PATH / "manifest.json"
