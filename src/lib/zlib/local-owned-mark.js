@@ -6,6 +6,7 @@ const MODAL_ID = "ZLO-owned-modal";
 const TEXT_ID = "ZLO-owned-text";
 const FILE_ID = "ZLO-owned-file";
 const SAVE_ID = "ZLO-owned-save";
+const MODAL_CONTAINER = "zlibrary-modal-styled";
 const MARK_CLASS = "zlocal-owned";
 const SHADOW_MARK_STYLE = `
         .zlocal-owned-mark {
@@ -315,6 +316,10 @@ function toOwnedText(books) {
   return books.map((book) => `${book.title} | ${book.author}`).join("\n");
 }
 
+function modalField(id) {
+  return document.querySelector(`#${MODAL_CONTAINER} #${id}`) || document.getElementById(id);
+}
+
 function logSave(parsed, result) {
   console.info(LOG_PREFIX, "save", {
     books: parsed.books,
@@ -368,48 +373,54 @@ function ensureModal() {
   form.append(container);
   root.append(form);
   document.body.append(root);
-  file.addEventListener("change", () => {
-    const chosen = file.files && file.files[0];
-    if (!chosen) {
-      return;
-    }
-    chosen
-      .text()
-      .then((text) => {
-        const parsed = parseOwnedLines(text);
-        if (parsed.books.length === 0) {
-          console.error(LOG_PREFIX, "file rejected", {
-            name: chosen.name,
-            skippedLines: parsed.skippedLines,
-          });
-          notifyError("文件格式无效：需要每行 `书名 | 作者`");
-          file.value = "";
-          return;
-        }
-        const merged = mergeOwnedBooks(readStore(), parsed.books);
-        textarea.value = toOwnedText(merged);
-        file.value = "";
-        console.info(LOG_PREFIX, "file merged", {
+}
+
+function importOwnedFile(event) {
+  const file = event.target;
+  const chosen = file.files && file.files[0];
+  if (!chosen) {
+    console.info(LOG_PREFIX, "file change without file", { id: file.id });
+    return;
+  }
+  const textarea = modalField(TEXT_ID);
+  chosen
+    .text()
+    .then((text) => {
+      const parsed = parseOwnedLines(text);
+      if (parsed.books.length === 0) {
+        console.error(LOG_PREFIX, "file rejected", {
           name: chosen.name,
-          incoming: parsed.books,
           skippedLines: parsed.skippedLines,
-          merged,
         });
-        notifySuccess(
-          `文件有效 ${parsed.books.length} 本，合并后 ${merged.length} 本` +
-            (parsed.skippedLines.length ? `，跳过 ${parsed.skippedLines.length} 行` : ""),
-        );
-      })
-      .catch((error) => {
-        console.error(LOG_PREFIX, "read file failed", error);
-        notifyError(`读取文件失败：${error.message}`);
+        notifyError("文件格式无效：需要每行 `书名 | 作者`");
         file.value = "";
+        return;
+      }
+      const merged = mergeOwnedBooks(readStore(), parsed.books);
+      if (textarea) {
+        textarea.value = toOwnedText(merged);
+      }
+      file.value = "";
+      console.info(LOG_PREFIX, "file merged", {
+        name: chosen.name,
+        incoming: parsed.books,
+        skippedLines: parsed.skippedLines,
+        merged,
       });
-  });
+      notifySuccess(
+        `文件有效 ${parsed.books.length} 本，合并后 ${merged.length} 本` +
+          (parsed.skippedLines.length ? `，跳过 ${parsed.skippedLines.length} 行` : ""),
+      );
+    })
+    .catch((error) => {
+      console.error(LOG_PREFIX, "read file failed", error);
+      notifyError(`读取文件失败：${error.message}`);
+      file.value = "";
+    });
 }
 
 function saveOwnedList() {
-  const textarea = document.getElementById(TEXT_ID);
+  const textarea = modalField(TEXT_ID);
   const parsed = parseOwnedLines(textarea ? textarea.value : "");
   GM_setValue(STORE_KEY, parsed.books);
   const result = applyMarks(parsed.books);
@@ -423,11 +434,11 @@ function saveOwnedList() {
 function clearOwnedList() {
   const previous = readStore();
   GM_setValue(STORE_KEY, []);
-  const textarea = document.getElementById(TEXT_ID);
+  const textarea = modalField(TEXT_ID);
   if (textarea) {
     textarea.value = "";
   }
-  const file = document.getElementById(FILE_ID);
+  const file = modalField(FILE_ID);
   if (file) {
     file.value = "";
   }
@@ -448,7 +459,7 @@ function openModal() {
   }
   const modal = new ZLibraryModal({
     element: MODAL_ID,
-    container: "zlibrary-modal-styled",
+    container: MODAL_CONTAINER,
     title: "导入本地书单",
     footer: `<div class="modal-footer"><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
   });
@@ -458,6 +469,7 @@ function openModal() {
       saveOwnedList();
       modal.hide();
     });
+  $(document).off("change", `#${FILE_ID}`).on("change", `#${FILE_ID}`, importOwnedFile);
   modal.show();
 }
 
