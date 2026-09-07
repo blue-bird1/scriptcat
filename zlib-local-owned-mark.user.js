@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8.7
+// @version            2026.9.8.8
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -40,7 +40,6 @@
   var TEXT_ID = "ZLO-owned-text";
   var FILE_ID = "ZLO-owned-file";
   var SAVE_ID = "ZLO-owned-save";
-  var CLEAR_ID = "ZLO-owned-clear";
   var MARK_CLASS = "zlocal-owned";
   var SHADOW_MARK_STYLE = `
         .zlocal-owned-mark {
@@ -428,14 +427,11 @@
       element: MODAL_ID,
       container: "zlibrary-modal-styled",
       title: "导入本地书单",
-      footer: `<div class="modal-footer"><button class="btn btn-danger" id="${CLEAR_ID}">清空已保存书单</button><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`
+      footer: `<div class="modal-footer"><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`
     });
     $(document).off("click", `#${SAVE_ID}`).on("click", `#${SAVE_ID}`, () => {
       saveOwnedList();
       modal.hide();
-    });
-    $(document).off("click", `#${CLEAR_ID}`).on("click", `#${CLEAR_ID}`, () => {
-      clearOwnedList();
     });
     modal.show();
   }
@@ -449,6 +445,7 @@
   }
   function startZlibLocalOwnedMark() {
     GM_registerMenuCommand("导入本地书单并标注", openModal);
+    GM_registerMenuCommand("清空已保存书单", clearOwnedList);
     let scanTimer = 0;
     const scan = () => {
       document.querySelectorAll("z-masonry").forEach((masonry) => observeMasonry(masonry, scan));

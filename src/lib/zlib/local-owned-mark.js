@@ -6,7 +6,6 @@ const MODAL_ID = "ZLO-owned-modal";
 const TEXT_ID = "ZLO-owned-text";
 const FILE_ID = "ZLO-owned-file";
 const SAVE_ID = "ZLO-owned-save";
-const CLEAR_ID = "ZLO-owned-clear";
 const MARK_CLASS = "zlocal-owned";
 const SHADOW_MARK_STYLE = `
         .zlocal-owned-mark {
@@ -430,18 +429,13 @@ function openModal() {
     element: MODAL_ID,
     container: "zlibrary-modal-styled",
     title: "导入本地书单",
-    footer: `<div class="modal-footer"><button class="btn btn-danger" id="${CLEAR_ID}">清空已保存书单</button><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
+    footer: `<div class="modal-footer"><button class="btn btn-success" id="${SAVE_ID}">保存并标注</button></div>`,
   });
   $(document)
     .off("click", `#${SAVE_ID}`)
     .on("click", `#${SAVE_ID}`, () => {
       saveOwnedList();
       modal.hide();
-    });
-  $(document)
-    .off("click", `#${CLEAR_ID}`)
-    .on("click", `#${CLEAR_ID}`, () => {
-      clearOwnedList();
     });
   modal.show();
 }
@@ -457,6 +451,7 @@ function observeMasonry(masonry, onChange) {
 
 export function startZlibLocalOwnedMark() {
   GM_registerMenuCommand("导入本地书单并标注", openModal);
+  GM_registerMenuCommand("清空已保存书单", clearOwnedList);
   let scanTimer = 0;
   const scan = () => {
     document.querySelectorAll("z-masonry").forEach((masonry) => observeMasonry(masonry, scan));
