@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8.8
+// @version            2026.9.8.9
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -341,16 +341,37 @@
     const form = document.createElement("form");
     form.className = "form-horizontal";
     form.addEventListener("submit", (event) => event.preventDefault());
+    const container = document.createElement("div");
+    container.className = "edit-book-container";
+    const textGroup = document.createElement("div");
+    textGroup.className = "form-group";
+    const textLabel = document.createElement("label");
+    textLabel.className = "control-label";
+    textLabel.htmlFor = TEXT_ID;
+    textLabel.textContent = "书单";
     const textarea = document.createElement("textarea");
     textarea.id = TEXT_ID;
     textarea.className = "form-control";
     textarea.rows = 12;
     textarea.placeholder = "足球潜规则 | 克雷格·麦盖尔";
+    textGroup.append(textLabel, textarea);
+    const fileGroup = document.createElement("div");
+    fileGroup.className = "form-group";
+    const fileLabel = document.createElement("label");
+    fileLabel.className = "control-label";
+    fileLabel.textContent = "从文件导入";
+    const fileBtn = document.createElement("label");
+    fileBtn.className = "btn btn-default";
+    fileBtn.htmlFor = FILE_ID;
+    fileBtn.textContent = "选择文本文件";
     const file = document.createElement("input");
     file.id = FILE_ID;
+    file.className = "hidden";
     file.type = "file";
     file.accept = "text/plain,.txt";
-    form.append(textarea, file);
+    fileGroup.append(fileLabel, fileBtn, file);
+    container.append(textGroup, fileGroup);
+    form.append(container);
     root.append(form);
     document.body.append(root);
     file.addEventListener("change", () => {
