@@ -1,4 +1,4 @@
-/* global $, GM_addStyle, GM_getValue, GM_notification, GM_registerMenuCommand, GM_setValue, ZLibraryModal, ZLibraryNotify */
+/* global $, GM_getValue, GM_notification, GM_registerMenuCommand, GM_setValue, ZLibraryModal, ZLibraryNotify */
 
 const LOG_PREFIX = "[zlib-local-owned-mark]";
 const STORE_KEY = "ownedBooks";
@@ -7,23 +7,27 @@ const TEXT_ID = "ZLO-owned-text";
 const FILE_ID = "ZLO-owned-file";
 const SAVE_ID = "ZLO-owned-save";
 const MARK_CLASS = "zlocal-owned";
-const MARK_STYLE = `
-        z-cover.zlocal-owned,
-        z-bookcard.zlocal-owned {
-            position: relative;
-        }
-        z-cover.zlocal-owned::after,
-        z-bookcard.zlocal-owned::after {
-            content: "本地已有";
+const SHADOW_MARK_STYLE = `
+        .zlocal-owned-mark {
             position: absolute;
             top: 0;
             left: 0;
-            z-index: 11;
+            z-index: 12;
+            pointer-events: none;
+            opacity: 0;
+        }
+        .zlocal-owned-mark.show {
+            opacity: 1;
+        }
+        .zlocal-owned-mark .label {
+            position: absolute;
+            top: 0;
+            left: 0;
             background: #15803d;
             color: #fff;
             font-size: 11px;
             line-height: 1.8;
-            padding: 2px 6px 0 6px;
+            padding: 2px 6px 0 4px;
             border-radius: 0 0 10px 0;
         }
     `;
@@ -204,6 +208,61 @@ function matchOwned(identity, books) {
   return null;
 }
 
+function paintableCovers(card) {
+  if (card.tagName.toLowerCase() === "z-cover") {
+    return [card];
+  }
+  if (card.shadowRoot) {
+    return [...card.shadowRoot.querySelectorAll("z-cover")];
+  }
+  return [];
+}
+
+function ensureOwnedMark(cover) {
+  const root = cover.shadowRoot;
+  if (!root) {
+    return null;
+  }
+  const main = root.querySelector(".main");
+  if (!main) {
+    return null;
+  }
+  if (!root.querySelector("style[data-zlocal-owned]")) {
+    const style = document.createElement("style");
+    style.setAttribute("data-zlocal-owned", "");
+    style.textContent = SHADOW_MARK_STYLE;
+    root.append(style);
+  }
+  let mark = main.querySelector(".zlocal-owned-mark");
+  if (!mark) {
+    mark = document.createElement("span");
+    mark.className = "zlocal-owned-mark";
+    const label = document.createElement("span");
+    label.className = "label";
+    label.textContent = "本地已有";
+    mark.append(label);
+    main.append(mark);
+  }
+  return mark;
+}
+
+function setOwnedVisible(card, owned) {
+  const covers = paintableCovers(card);
+  if (covers.length === 0) {
+    return false;
+  }
+  let painted = false;
+  for (const cover of covers) {
+    const mark = ensureOwnedMark(cover);
+    if (!mark) {
+      continue;
+    }
+    mark.classList.toggle("show", owned);
+    painted = true;
+  }
+  return painted;
+}
+
 function applyMarks(books) {
   const marked = [];
   const unmatched = [];
@@ -212,15 +271,18 @@ function applyMarks(books) {
     const identity = cardIdentity(card);
     if (!identity) {
       card.classList.remove(MARK_CLASS);
+      setOwnedVisible(card, false);
       noIdentity.push(describeCard(card));
       continue;
     }
     const matchedBook = matchOwned(identity, books);
     if (matchedBook) {
       card.classList.add(MARK_CLASS);
-      marked.push({ card: describeCard(card), identity, matchedBook });
+      const painted = setOwnedVisible(card, true);
+      marked.push({ card: describeCard(card), identity, matchedBook, painted });
     } else {
       card.classList.remove(MARK_CLASS);
+      setOwnedVisible(card, false);
       unmatched.push({ card: describeCard(card), identity });
     }
   }
@@ -335,7 +397,6 @@ function observeMasonry(masonry, onChange) {
 }
 
 export function startZlibLocalOwnedMark() {
-  GM_addStyle(MARK_STYLE);
   GM_registerMenuCommand("导入本地书单并标注", openModal);
   let scanTimer = 0;
   const scan = () => {
