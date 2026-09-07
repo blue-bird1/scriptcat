@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8
+// @version            2026.9.8.3
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -81,7 +81,6 @@
     });
   }
   function notifySuccess(text) {
-    console.info(LOG_PREFIX, text);
     notifyPage("success", text);
   }
   function notifyError(text) {
@@ -142,27 +141,27 @@
   }
   function parseOwnedLines(text) {
     const books = [];
-    let skipped = 0;
+    const skippedLines = [];
     const lines = String(text).split(/\r?\n/);
-    for (const line of lines) {
+    lines.forEach((line, index) => {
       const trimmed = line.trim();
       if (!trimmed) {
-        continue;
+        return;
       }
       const sep = trimmed.indexOf("|");
       if (sep <= 0 || sep === trimmed.length - 1) {
-        skipped += 1;
-        continue;
+        skippedLines.push({ line: index + 1, reason: "missing-pipe", text: trimmed });
+        return;
       }
       const title = trimmed.slice(0, sep).trim();
       const author = trimmed.slice(sep + 1).trim();
       if (!title || !author) {
-        skipped += 1;
-        continue;
+        skippedLines.push({ line: index + 1, reason: "empty-field", text: trimmed });
+        return;
       }
       books.push({ title, author });
-    }
-    return { books, skipped };
+    });
+    return { books, skippedLines };
   }
   function slotText(el, name) {
     const slot = el.querySelector(`[slot="${name}"]`);
@@ -186,36 +185,61 @@
     }
     return { title, author };
   }
+  function describeCard(el) {
+    return {
+      tag: el.tagName,
+      id: el.getAttribute("id"),
+      title: el.getAttribute("title"),
+      author: el.getAttribute("author")
+    };
+  }
   function collectCards() {
-    const cards = [...document.querySelectorAll("z-cover, z-bookcard")];
-    document.querySelectorAll("z-masonry").forEach((masonry) => {
-      if (masonry.shadowRoot) {
-        cards.push(...masonry.shadowRoot.querySelectorAll("z-cover"));
+    const cards = [];
+    document.querySelectorAll("z-bookcard").forEach((card) => {
+      if (!card.closest("z-masonry")) {
+        cards.push(card);
       }
+    });
+    document.querySelectorAll("z-cover").forEach((cover) => {
+      if (!cover.closest("z-masonry") && !cover.closest("z-bookcard")) {
+        cards.push(cover);
+      }
+    });
+    document.querySelectorAll("z-masonry").forEach((masonry) => {
+      const root = masonry.shadowRoot;
+      cards.push(...root ? root.querySelectorAll("z-cover") : masonry.querySelectorAll("z-cover"));
     });
     return cards;
   }
-  function isOwned(identity, books) {
-    return books.some(
-      (book) => titlesMatch(identity.title, book.title) && authorsMatch(identity.author, book.author)
-    );
+  function matchOwned(identity, books) {
+    for (const book of books) {
+      if (titlesMatch(identity.title, book.title) && authorsMatch(identity.author, book.author)) {
+        return book;
+      }
+    }
+    return null;
   }
   function applyMarks(books) {
-    let marked = 0;
+    const marked = [];
+    const unmatched = [];
+    const noIdentity = [];
     for (const card of collectCards()) {
       const identity = cardIdentity(card);
       if (!identity) {
         card.classList.remove(MARK_CLASS);
+        noIdentity.push(describeCard(card));
         continue;
       }
-      if (isOwned(identity, books)) {
+      const matchedBook = matchOwned(identity, books);
+      if (matchedBook) {
         card.classList.add(MARK_CLASS);
-        marked += 1;
+        marked.push({ card: describeCard(card), identity, matchedBook });
       } else {
         card.classList.remove(MARK_CLASS);
+        unmatched.push({ card: describeCard(card), identity });
       }
     }
-    return marked;
+    return { marked, unmatched, noIdentity };
   }
   function readStore() {
     const stored = GM_getValue(STORE_KEY, []);
@@ -226,6 +250,15 @@
   }
   function toOwnedText(books) {
     return books.map((book) => `${book.title} | ${book.author}`).join("\n");
+  }
+  function logSave(parsed, result) {
+    console.info(LOG_PREFIX, "save", {
+      books: parsed.books,
+      skippedLines: parsed.skippedLines,
+      marked: result.marked,
+      unmatched: result.unmatched,
+      noIdentity: result.noIdentity
+    });
   }
   function ensureModal() {
     if (document.getElementById(MODAL_ID)) {
@@ -256,7 +289,6 @@
       }
       chosen.text().then((text) => {
         textarea.value = text;
-        console.info(LOG_PREFIX, "loaded file", { name: chosen.name, bytes: chosen.size });
       }).catch((error) => {
         console.error(LOG_PREFIX, "read file failed", error);
         notifyError(`读取文件失败：${error.message}`);
@@ -267,14 +299,10 @@
     const textarea = document.getElementById(TEXT_ID);
     const parsed = parseOwnedLines(textarea ? textarea.value : "");
     GM_setValue(STORE_KEY, parsed.books);
-    const marked = applyMarks(parsed.books);
-    console.info(LOG_PREFIX, "saved owned list", {
-      books: parsed.books.length,
-      skipped: parsed.skipped,
-      marked
-    });
+    const result = applyMarks(parsed.books);
+    logSave(parsed, result);
     notifySuccess(
-      `已保存 ${parsed.books.length} 本，标注 ${marked} 条` + (parsed.skipped ? `，跳过 ${parsed.skipped} 行` : "")
+      `已保存 ${parsed.books.length} 本，标注 ${result.marked.length} 条` + (parsed.skippedLines.length ? `，跳过 ${parsed.skippedLines.length} 行` : "")
     );
   }
   function openModal() {
