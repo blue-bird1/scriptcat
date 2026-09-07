@@ -40,6 +40,7 @@
   - 书籍详情页：`.book-title`、`.bookProperty.property_isbn`、`.bookDetailsBox`、`.book-actions-container`、`.book-actions-buttons > .book-details-button`；bookmark：`.bookmarks[data-book_id]`。
   - 高亮缺失 ISBN：`z-bookcard` 无 `isbn` 或 `isbn` 为空（zlib.isbn_highlight.user.js）。书单页 `<z-bookcard createButton>`（class `readlist-create`）是添加书籍按钮，不是书籍卡片。
   - 首页推荐：`z-masonry[source=recommend]`，light DOM 条目 `a > z-cover`，渲染到 shadow `.item`。过滤已下载只移除对应条目，不删除 `z-masonry`。
+  - 下载历史：`localStorage.downloadedBooks` 为 `{id, isbn?, date?}[]`，并配合 `downloadedBooksUser`、`downloadedBooksUpdated`。多账号同步见 zlib-download-history-sync.user.js。
 
 ## Steam 商店探索队列 (store.steampowered.com)
 
