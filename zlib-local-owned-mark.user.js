@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8.12
+// @version            2026.9.8.13
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -33,6 +33,196 @@
 /* global $, ZLibraryModal, ZLibraryNotify */
 
 (() => {
+  // src/lib/zlib/owned-booklist.js
+  function normalizeText(value) {
+    return String(value).normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+  function titlesMatch(left, right) {
+    const a = normalizeText(left);
+    const b = normalizeText(right);
+    if (!a || !b) {
+      return false;
+    }
+    if (a === b) {
+      return true;
+    }
+    const shorter = a.length <= b.length ? a : b;
+    const longer = a.length <= b.length ? b : a;
+    if (shorter.length < 4) {
+      return false;
+    }
+    return longer.includes(shorter);
+  }
+  var NATIONALITY_RE = /^[（(][^）)]{1,12}[）)]/;
+  function addAuthorKeys(keys, raw) {
+    const stripped = String(raw).replace(NATIONALITY_RE, "").replace(/[著编译]+$/g, "").trim();
+    for (const piece of [raw, stripped]) {
+      const value = normalizeText(piece);
+      if (!value) {
+        continue;
+      }
+      keys.add(value);
+      const comma = value.split(",").map((part) => part.trim()).filter(Boolean);
+      if (comma.length === 2 && !comma[0].includes(" ")) {
+        keys.add(`${comma[1]} ${comma[0]}`);
+      } else {
+        for (const part of comma) {
+          keys.add(part);
+        }
+      }
+    }
+  }
+  function authorKeys(value) {
+    const keys = /* @__PURE__ */ new Set();
+    addAuthorKeys(keys, value);
+    for (const part of String(value).split(/[;；、/]| and /i)) {
+      addAuthorKeys(keys, part);
+    }
+    return keys;
+  }
+  function authorsMatch(left, right) {
+    const a = authorKeys(left);
+    const b = authorKeys(right);
+    for (const key of a) {
+      if (b.has(key)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  var FILE_EXT_RE = /\.(pdf|epub|mobi|txt|azw3|azw|djvu)$/i;
+  var YEAR_RE = /^\d{4}(-\d{2})?$/;
+  var ID_RE = /^\d{5,}$/;
+  var INDEX_RE = /^\d{1,3}$/;
+  var PUBLISHER_RE = /出版社|出版公司|书店|华文书局|CRC Press/i;
+  var WIKI_RE = /维基百科|wikipedia/i;
+  var ROLE_RE = /著|编|译|主编/;
+  var TRAILING_YEAR_RE = /[-–—_]{1,2}\d{4}$/;
+  var ORG_RE = /^(FIFA|UEFA|DK)$/i;
+  var TITLE_HEAD_RE = /^(the|a|an|soccer|football|goalkeeping|training|systems|girls|advanced|essential|breakaway|inner|fit)$/i;
+  function cleanField(raw) {
+    let value = String(raw).trim();
+    value = value.replace(/^[-–—_\s]+/, "").replace(/[-–—_\s]+$/, "").trim();
+    value = value.replace(TRAILING_YEAR_RE, "").trim();
+    return value;
+  }
+  function dropNoiseFields(fields) {
+    const next = [];
+    for (const field of fields) {
+      const value = cleanField(field);
+      if (!value) {
+        continue;
+      }
+      if (YEAR_RE.test(value) || ID_RE.test(value) || PUBLISHER_RE.test(value) || WIKI_RE.test(value) || ORG_RE.test(value)) {
+        continue;
+      }
+      next.push(value);
+    }
+    return next;
+  }
+  function isAuthorLike(value) {
+    if (!value || WIKI_RE.test(value) || PUBLISHER_RE.test(value) || ORG_RE.test(value)) {
+      return false;
+    }
+    if (NATIONALITY_RE.test(value) || ROLE_RE.test(value)) {
+      return true;
+    }
+    if (/,/.test(value) && /\p{L}/u.test(value)) {
+      return true;
+    }
+    if (/^[\u4e00-\u9fff·．.\s]{2,16}(等)?$/.test(value) && !/手册|训练|课程|教材|百科/.test(value)) {
+      return true;
+    }
+    const tokens = value.split(/\s+/);
+    if (tokens.length >= 2 && tokens.length <= 4) {
+      if (TITLE_HEAD_RE.test(tokens[0])) {
+        return false;
+      }
+      if (value === value.toUpperCase() && /[A-Z]/.test(value)) {
+        return false;
+      }
+      if (tokens.every((token) => /^[\p{L}.''’-]+$/u.test(token)) && value.length < 48) {
+        return true;
+      }
+    }
+    if (tokens.length === 1 && /^[A-Za-zÀ-ÖØ-öø-ÿ.'’-]+$/.test(value) && value.length >= 3 && value.length <= 14) {
+      return true;
+    }
+    return false;
+  }
+  function pickTitle(fields) {
+    if (fields.length && INDEX_RE.test(fields[0])) {
+      return fields[1] || "";
+    }
+    return fields[0] || "";
+  }
+  function pickAuthor(fields) {
+    const title = pickTitle(fields);
+    const candidates = fields.filter((field) => field !== title);
+    for (const field of candidates) {
+      if (NATIONALITY_RE.test(field) || ROLE_RE.test(field) || /,/.test(field)) {
+        return field;
+      }
+    }
+    for (const field of [...candidates].reverse()) {
+      if (isAuthorLike(field)) {
+        return field;
+      }
+    }
+    return "";
+  }
+  function parseOwnedLine(line) {
+    const trimmed = String(line).trim();
+    if (!trimmed) {
+      return { book: null, reason: "empty" };
+    }
+    const sep = trimmed.indexOf("|");
+    if (sep > 0 && sep < trimmed.length - 1) {
+      const title2 = trimmed.slice(0, sep).trim();
+      const author2 = trimmed.slice(sep + 1).trim();
+      if (title2 && author2) {
+        return { book: { title: title2, author: author2 }, reason: null };
+      }
+      return { book: null, reason: "empty-field" };
+    }
+    const fields = dropNoiseFields(trimmed.replace(FILE_EXT_RE, "").split("---"));
+    const title = pickTitle(fields);
+    const author = pickAuthor(fields);
+    if (!title || !author) {
+      return { book: null, reason: title ? "missing-author" : "missing-title" };
+    }
+    return { book: { title, author }, reason: null };
+  }
+  function parseOwnedLines(text) {
+    const books = [];
+    const skippedLines = [];
+    const lines = String(text).split(/\r?\n/);
+    lines.forEach((line, index) => {
+      const parsed = parseOwnedLine(line);
+      if (!parsed.book) {
+        if (parsed.reason !== "empty") {
+          skippedLines.push({ line: index + 1, reason: parsed.reason, text: line.trim() });
+        }
+        return;
+      }
+      books.push(parsed.book);
+    });
+    return { books, skippedLines };
+  }
+  function mergeOwnedBooks(existing, incoming) {
+    const byKey = /* @__PURE__ */ new Map();
+    for (const book of [...existing, ...incoming]) {
+      if (!book || !book.title || !book.author) {
+        continue;
+      }
+      const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
+      if (!byKey.has(key)) {
+        byKey.set(key, book);
+      }
+    }
+    return [...byKey.values()];
+  }
+
   // src/lib/zlib/local-owned-mark.js
   var LOG_PREFIX = "[zlib-local-owned-mark]";
   var STORE_KEY = "ownedBooks";
@@ -85,95 +275,6 @@
   function notifyError(text) {
     console.error(LOG_PREFIX, text);
     notifyPage("error", text);
-  }
-  function normalizeText(value) {
-    return String(value).normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
-  }
-  function titlesMatch(left, right) {
-    const a = normalizeText(left);
-    const b = normalizeText(right);
-    if (!a || !b) {
-      return false;
-    }
-    if (a === b) {
-      return true;
-    }
-    const shorter = a.length <= b.length ? a : b;
-    const longer = a.length <= b.length ? b : a;
-    if (shorter.length < 4) {
-      return false;
-    }
-    return longer.includes(shorter);
-  }
-  function addAuthorKeys(keys, raw) {
-    const value = normalizeText(raw);
-    if (!value) {
-      return;
-    }
-    keys.add(value);
-    const comma = value.split(",");
-    if (comma.length === 2) {
-      const first = comma[0].trim();
-      const second = comma[1].trim();
-      if (first && second) {
-        keys.add(`${second} ${first}`);
-      }
-    }
-  }
-  function authorKeys(value) {
-    const keys = /* @__PURE__ */ new Set();
-    addAuthorKeys(keys, value);
-    for (const part of String(value).split(/[;；、/]| and /i)) {
-      addAuthorKeys(keys, part);
-    }
-    return keys;
-  }
-  function authorsMatch(left, right) {
-    const a = authorKeys(left);
-    const b = authorKeys(right);
-    for (const key of a) {
-      if (b.has(key)) {
-        return true;
-      }
-    }
-    return false;
-  }
-  function parseOwnedLines(text) {
-    const books = [];
-    const skippedLines = [];
-    const lines = String(text).split(/\r?\n/);
-    lines.forEach((line, index) => {
-      const trimmed = line.trim();
-      if (!trimmed) {
-        return;
-      }
-      const sep = trimmed.indexOf("|");
-      if (sep <= 0 || sep === trimmed.length - 1) {
-        skippedLines.push({ line: index + 1, reason: "missing-pipe", text: trimmed });
-        return;
-      }
-      const title = trimmed.slice(0, sep).trim();
-      const author = trimmed.slice(sep + 1).trim();
-      if (!title || !author) {
-        skippedLines.push({ line: index + 1, reason: "empty-field", text: trimmed });
-        return;
-      }
-      books.push({ title, author });
-    });
-    return { books, skippedLines };
-  }
-  function mergeOwnedBooks(existing, incoming) {
-    const byKey = /* @__PURE__ */ new Map();
-    for (const book of [...existing, ...incoming]) {
-      if (!book || !book.title || !book.author) {
-        continue;
-      }
-      const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
-      if (!byKey.has(key)) {
-        byKey.set(key, book);
-      }
-    }
-    return [...byKey.values()];
   }
   function slotText(el, name) {
     const slot = el.querySelector(`[slot="${name}"]`);
@@ -399,7 +500,7 @@
           name: chosen.name,
           skippedLines: parsed.skippedLines
         });
-        notifyError("文件格式无效：需要每行 `书名 | 作者`");
+        notifyError("文件格式无效：没有可导入的书名和作者");
         file.value = "";
         return;
       }

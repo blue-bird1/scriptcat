@@ -1,0 +1,84 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+
+import {
+  authorsMatch,
+  parseOwnedLine,
+  parseOwnedLines,
+} from "../../src/lib/zlib/owned-booklist.js";
+
+test("pipe lines stay 书名 | 作者", () => {
+  assert.deepEqual(parseOwnedLine("足球潜规则 | 克雷格·麦盖尔"), {
+    book: { title: "足球潜规则", author: "克雷格·麦盖尔" },
+    reason: null,
+  });
+});
+
+test("filename lines from the local booklist become title and author", () => {
+  const samples = [
+    [
+      "足球潜规则---（英）克雷格·麦盖尔（Craig McGill）著；谷兴译---哈尔滨出版社---2004---11432193.epub",
+      { title: "足球潜规则", author: "（英）克雷格·麦盖尔（Craig McGill）著；谷兴译" },
+    ],
+    [
+      "整合运动与运动营养学：健康促进表现之视角---Integrative Sport and Exercise Nutrition---（英）Ian Craig, Justin Roberts---2026.epub",
+      {
+        title: "整合运动与运动营养学：健康促进表现之视角",
+        author: "（英）Ian Craig, Justin Roberts",
+      },
+    ],
+    [
+      "耐力：循环训练---La resistencia circuitos de entrenamiento---（西）Díaz Infantes etc.---2021.pdf",
+      { title: "耐力：循环训练", author: "（西）Díaz Infantes etc." },
+    ],
+    [
+      "足球与法---李一---中国政法大学出版社---2020---.epub",
+      { title: "足球与法", author: "李一" },
+    ],
+    [
+      "角球---Eckball---Donaubauer, Stefan---2013.epub",
+      { title: "角球", author: "Donaubauer, Stefan" },
+    ],
+    [
+      "加林查---Garrincha---Ugo Riccarelli---2013.epub",
+      { title: "加林查", author: "Ugo Riccarelli" },
+    ],
+    [
+      "少年足球技巧---福西崇史---少年サッカーのテクニック---2013-09---.pdf",
+      { title: "少年足球技巧", author: "福西崇史" },
+    ],
+    [
+      "外语学习的真实方法及误区分析---漏屋---.epub",
+      { title: "外语学习的真实方法及误区分析", author: "漏屋" },
+    ],
+  ];
+  for (const [line, book] of samples) {
+    assert.deepEqual(parseOwnedLine(line), { book, reason: null }, line);
+  }
+});
+
+test("filename lines without an author are skipped", () => {
+  assert.equal(parseOwnedLine("西班牙语习字帖.pdf").reason, "missing-author");
+  assert.equal(parseOwnedLine("01---射门训练---Torschusstraining---.pdf").reason, "missing-author");
+  assert.equal(parseOwnedLine("守门员手册---Goalkeeping Manual---FIFA---2011.pdf").reason, "missing-author");
+});
+
+test("nationality prefixes and comma order still match card authors", () => {
+  assert.equal(authorsMatch("（英）Ian Craig, Justin Roberts", "Ian Craig"), true);
+  assert.equal(authorsMatch("Donaubauer, Stefan", "Stefan Donaubauer"), true);
+});
+
+test("parseOwnedLines keeps pipe and filename rows together", () => {
+  const text = [
+    "足球潜规则 | 克雷格·麦盖尔",
+    "足球与法---李一---中国政法大学出版社---2020---.epub",
+    "西班牙语习字帖.pdf",
+  ].join("\n");
+  const parsed = parseOwnedLines(text);
+  assert.deepEqual(parsed.books, [
+    { title: "足球潜规则", author: "克雷格·麦盖尔" },
+    { title: "足球与法", author: "李一" },
+  ]);
+  assert.equal(parsed.skippedLines.length, 1);
+  assert.equal(parsed.skippedLines[0].reason, "missing-author");
+});

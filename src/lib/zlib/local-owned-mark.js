@@ -1,5 +1,12 @@
 /* global $, GM_getValue, GM_notification, GM_registerMenuCommand, GM_setValue, ZLibraryModal, ZLibraryNotify */
 
+import {
+  authorsMatch,
+  mergeOwnedBooks,
+  parseOwnedLines,
+  titlesMatch,
+} from "./owned-booklist.js";
+
 const LOG_PREFIX = "[zlib-local-owned-mark]";
 const STORE_KEY = "ownedBooks";
 const MODAL_ID = "ZLO-owned-modal";
@@ -57,105 +64,6 @@ function notifyError(text) {
   notifyPage("error", text);
 }
 
-export function normalizeText(value) {
-  return String(value)
-    .normalize("NFKC")
-    .toLowerCase()
-    .replace(/\s+/g, " ")
-    .trim();
-}
-
-export function titlesMatch(left, right) {
-  const a = normalizeText(left);
-  const b = normalizeText(right);
-  if (!a || !b) {
-    return false;
-  }
-  if (a === b) {
-    return true;
-  }
-  const shorter = a.length <= b.length ? a : b;
-  const longer = a.length <= b.length ? b : a;
-  if (shorter.length < 4) {
-    return false;
-  }
-  return longer.includes(shorter);
-}
-
-function addAuthorKeys(keys, raw) {
-  const value = normalizeText(raw);
-  if (!value) {
-    return;
-  }
-  keys.add(value);
-  const comma = value.split(",");
-  if (comma.length === 2) {
-    const first = comma[0].trim();
-    const second = comma[1].trim();
-    if (first && second) {
-      keys.add(`${second} ${first}`);
-    }
-  }
-}
-
-export function authorKeys(value) {
-  const keys = new Set();
-  addAuthorKeys(keys, value);
-  for (const part of String(value).split(/[;；、/]| and /i)) {
-    addAuthorKeys(keys, part);
-  }
-  return keys;
-}
-
-export function authorsMatch(left, right) {
-  const a = authorKeys(left);
-  const b = authorKeys(right);
-  for (const key of a) {
-    if (b.has(key)) {
-      return true;
-    }
-  }
-  return false;
-}
-
-export function parseOwnedLines(text) {
-  const books = [];
-  const skippedLines = [];
-  const lines = String(text).split(/\r?\n/);
-  lines.forEach((line, index) => {
-    const trimmed = line.trim();
-    if (!trimmed) {
-      return;
-    }
-    const sep = trimmed.indexOf("|");
-    if (sep <= 0 || sep === trimmed.length - 1) {
-      skippedLines.push({ line: index + 1, reason: "missing-pipe", text: trimmed });
-      return;
-    }
-    const title = trimmed.slice(0, sep).trim();
-    const author = trimmed.slice(sep + 1).trim();
-    if (!title || !author) {
-      skippedLines.push({ line: index + 1, reason: "empty-field", text: trimmed });
-      return;
-    }
-    books.push({ title, author });
-  });
-  return { books, skippedLines };
-}
-
-export function mergeOwnedBooks(existing, incoming) {
-  const byKey = new Map();
-  for (const book of [...existing, ...incoming]) {
-    if (!book || !book.title || !book.author) {
-      continue;
-    }
-    const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
-    if (!byKey.has(key)) {
-      byKey.set(key, book);
-    }
-  }
-  return [...byKey.values()];
-}
 
 function slotText(el, name) {
   const slot = el.querySelector(`[slot="${name}"]`);
@@ -398,7 +306,7 @@ function importOwnedFile(event) {
           name: chosen.name,
           skippedLines: parsed.skippedLines,
         });
-        notifyError("文件格式无效：需要每行 `书名 | 作者`");
+        notifyError("文件格式无效：没有可导入的书名和作者");
         file.value = "";
         return;
       }

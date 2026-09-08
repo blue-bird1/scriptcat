@@ -103,7 +103,7 @@
 | `src/userscripts/snokwo.user.js` | `src/lib/sonkwo/search-price.js`，`src/lib/steampy/{access-token,xboot-client}.js` |
 | `src/userscripts/zlib.isbn_highlight.user.js` | `src/lib/zlib/bookcard-isbn.js` |
 | `src/userscripts/zlib-download-history-sync.user.js` | `src/lib/zlib/download-history-sync.js` |
-| `src/userscripts/zlib-local-owned-mark.user.js` | `src/lib/zlib/local-owned-mark.js` |
+| `src/userscripts/zlib-local-owned-mark.user.js` | `src/lib/zlib/local-owned-mark.js`，`src/lib/zlib/owned-booklist.js` |
 | `src/userscripts/steam-discovery-queue.user.js` | `src/lib/steam/{discovery-queue,discovery-queue-auto-filter,discovery-queue-config,discovery-queue-rules}.js` |
 | `src/userscripts/steampy.user.js` | `src/lib/steampy/steam-library.js`，`src/lib/steampy/steampy-plus*.js`，`src/lib/steampy/game-manager.js` |
 
