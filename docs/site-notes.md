@@ -41,7 +41,7 @@
   - 高亮缺失 ISBN：`z-bookcard` 无 `isbn` 或 `isbn` 为空（zlib.isbn_highlight.user.js）。书单页 `<z-bookcard createButton>`（class `readlist-create`）是添加书籍按钮，不是书籍卡片。
   - 首页推荐：`z-masonry[source=recommend]`，light DOM 条目 `a > z-cover`，渲染到 shadow `.item`。过滤已下载只移除对应条目，不删除 `z-masonry`。
   - 下载历史：`localStorage.downloadedBooks` 为 `{id, isbn?, date?}[]`，并配合 `downloadedBooksUser`、`downloadedBooksUpdated`。多账号同步见 zlib-download-history-sync.user.js。
-  - 本地已有标注：一行一本，写作 `书名 | 作者`。导入也接受 `---` 文件名行；字段里的 ` -- ` 左边是译名/原名，右边是作者列表。按规范化书名与作者（含逗号反序、国籍括号）匹配 `z-bookcard`/`z-cover`，左上角绿色「本地已有」。站点自带已下载标记在封面右下角蓝色。
+  - 本地已有标注：一行一本，写作 `书名 | 作者`。导入也接受 `---` 文件名行：第一字段是书名；第二字段与书名文字系统不同则是原名，第三字段是作者，否则第二字段就是作者；后续字段不参与作者解析。
 
 ## Steam 商店探索队列 (store.steampowered.com)
 
