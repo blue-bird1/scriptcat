@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8.13
+// @version            2026.9.8.14
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -63,8 +63,13 @@
       }
       keys.add(value);
       const comma = value.split(",").map((part) => part.trim()).filter(Boolean);
-      if (comma.length === 2 && !comma[0].includes(" ")) {
-        keys.add(`${comma[1]} ${comma[0]}`);
+      const lastFirstPairs = comma.length >= 2 && comma.length % 2 === 0 && comma.every((part, index) => index % 2 === 1 || !part.includes(" "));
+      if (lastFirstPairs) {
+        for (let index = 0; index < comma.length; index += 2) {
+          keys.add(`${comma[index + 1]} ${comma[index]}`);
+          keys.add(comma[index]);
+          keys.add(comma[index + 1]);
+        }
       } else {
         for (const part of comma) {
           keys.add(part);
@@ -94,7 +99,8 @@
   var YEAR_RE = /^\d{4}(-\d{2})?$/;
   var ID_RE = /^\d{5,}$/;
   var INDEX_RE = /^\d{1,3}$/;
-  var PUBLISHER_RE = /出版社|出版公司|书店|华文书局|CRC Press/i;
+  var PUBLISHER_RE = /出版社|出版公司|书店|华文书局|CRC Press|Publishing/i;
+  var PLACE_YEAR_RE = /,\s*\d{4}$/;
   var WIKI_RE = /维基百科|wikipedia/i;
   var ROLE_RE = /著|编|译|主编/;
   var TRAILING_YEAR_RE = /[-–—_]{1,2}\d{4}$/;
@@ -113,7 +119,7 @@
       if (!value) {
         continue;
       }
-      if (YEAR_RE.test(value) || ID_RE.test(value) || PUBLISHER_RE.test(value) || WIKI_RE.test(value) || ORG_RE.test(value)) {
+      if (YEAR_RE.test(value) || ID_RE.test(value) || PUBLISHER_RE.test(value) || PLACE_YEAR_RE.test(value) || WIKI_RE.test(value) || ORG_RE.test(value)) {
         continue;
       }
       next.push(value);
@@ -185,7 +191,9 @@
       }
       return { book: null, reason: "empty-field" };
     }
-    const fields = dropNoiseFields(trimmed.replace(FILE_EXT_RE, "").split("---"));
+    const fields = dropNoiseFields(
+      trimmed.replace(FILE_EXT_RE, "").split("---").flatMap((chunk) => chunk.split(/\s+--\s+/))
+    );
     const title = pickTitle(fields);
     const author = pickAuthor(fields);
     if (!title || !author) {

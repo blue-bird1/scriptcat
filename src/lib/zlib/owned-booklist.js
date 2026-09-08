@@ -34,8 +34,16 @@ function addAuthorKeys(keys, raw) {
     }
     keys.add(value);
     const comma = value.split(",").map((part) => part.trim()).filter(Boolean);
-    if (comma.length === 2 && !comma[0].includes(" ")) {
-      keys.add(`${comma[1]} ${comma[0]}`);
+    const lastFirstPairs =
+      comma.length >= 2 &&
+      comma.length % 2 === 0 &&
+      comma.every((part, index) => index % 2 === 1 || !part.includes(" "));
+    if (lastFirstPairs) {
+      for (let index = 0; index < comma.length; index += 2) {
+        keys.add(`${comma[index + 1]} ${comma[index]}`);
+        keys.add(comma[index]);
+        keys.add(comma[index + 1]);
+      }
     } else {
       for (const part of comma) {
         keys.add(part);
@@ -68,7 +76,8 @@ const FILE_EXT_RE = /\.(pdf|epub|mobi|txt|azw3|azw|djvu)$/i;
 const YEAR_RE = /^\d{4}(-\d{2})?$/;
 const ID_RE = /^\d{5,}$/;
 const INDEX_RE = /^\d{1,3}$/;
-const PUBLISHER_RE = /出版社|出版公司|书店|华文书局|CRC Press/i;
+const PUBLISHER_RE = /出版社|出版公司|书店|华文书局|CRC Press|Publishing/i;
+const PLACE_YEAR_RE = /,\s*\d{4}$/;
 const WIKI_RE = /维基百科|wikipedia/i;
 const ROLE_RE = /著|编|译|主编/;
 const TRAILING_YEAR_RE = /[-–—_]{1,2}\d{4}$/;
@@ -89,7 +98,14 @@ function dropNoiseFields(fields) {
     if (!value) {
       continue;
     }
-    if (YEAR_RE.test(value) || ID_RE.test(value) || PUBLISHER_RE.test(value) || WIKI_RE.test(value) || ORG_RE.test(value)) {
+    if (
+      YEAR_RE.test(value) ||
+      ID_RE.test(value) ||
+      PUBLISHER_RE.test(value) ||
+      PLACE_YEAR_RE.test(value) ||
+      WIKI_RE.test(value) ||
+      ORG_RE.test(value)
+    ) {
       continue;
     }
     next.push(value);
@@ -170,7 +186,9 @@ export function parseOwnedLine(line) {
     }
     return { book: null, reason: "empty-field" };
   }
-  const fields = dropNoiseFields(trimmed.replace(FILE_EXT_RE, "").split("---"));
+  const fields = dropNoiseFields(
+    trimmed.replace(FILE_EXT_RE, "").split("---").flatMap((chunk) => chunk.split(/\s+--\s+/)),
+  );
   const title = pickTitle(fields);
   const author = pickAuthor(fields);
   if (!title || !author) {

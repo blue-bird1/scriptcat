@@ -51,6 +51,21 @@ test("filename lines from the local booklist become title and author", () => {
       "外语学习的真实方法及误区分析---漏屋---.epub",
       { title: "外语学习的真实方法及误区分析", author: "漏屋" },
     ],
+    [
+      "目标与梦想：加拿大女足庆典---Goals and dreams _ a celebration of Canadian women's soccer -- Brødsgaard, Shel, Mackin, Bob---2005.pdf",
+      {
+        title: "目标与梦想：加拿大女足庆典",
+        author: "Brødsgaard, Shel, Mackin, Bob",
+      },
+    ],
+    [
+      "执教蒂基塔卡风格---Coaching the Tiki Taka style of play -- （威尔士）Davies, Jed C---2013.pdf",
+      { title: "执教蒂基塔卡风格", author: "（威尔士）Davies, Jed C" },
+    ],
+    [
+      "玛塔---Marta -- David Machajewski -- Rosen Publishing Group---2019.pdf",
+      { title: "玛塔", author: "David Machajewski" },
+    ],
   ];
   for (const [line, book] of samples) {
     assert.deepEqual(parseOwnedLine(line), { book, reason: null }, line);
@@ -66,6 +81,7 @@ test("filename lines without an author are skipped", () => {
 test("nationality prefixes and comma order still match card authors", () => {
   assert.equal(authorsMatch("（英）Ian Craig, Justin Roberts", "Ian Craig"), true);
   assert.equal(authorsMatch("Donaubauer, Stefan", "Stefan Donaubauer"), true);
+  assert.equal(authorsMatch("Brødsgaard, Shel, Mackin, Bob", "Shel Brødsgaard"), true);
 });
 
 test("parseOwnedLines keeps pipe and filename rows together", () => {
