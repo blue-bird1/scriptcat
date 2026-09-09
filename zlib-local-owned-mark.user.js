@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.9
+// @version            2026.10.0
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -91,41 +91,48 @@
   function filenameFields(line) {
     return String(line).replace(FILE_EXT_RE, "").split("---").map(cleanField).filter((field) => field && !YEAR_RE.test(field) && !ID_RE.test(field));
   }
-  function filenameTitle(fields) {
-    return INDEX_RE.test(fields[0] || "") ? fields[1] || "" : fields[0] || "";
+  function cleanAuthor(value) {
+    return String(value).trim().replace(/^(?:\([^()]*\)|（[^（）]*）)\s*/, "");
   }
-  function filenameAuthor(fields) {
+  function parsedBook(title, foreignTitle, rawAuthor) {
+    const author = cleanAuthor(rawAuthor);
+    if (!title || !author) {
+      return { book: null, reason: title ? "missing-author" : "missing-title" };
+    }
+    return { book: { title, ...foreignTitle ? { foreignTitle } : {}, author }, reason: null };
+  }
+  function filenameBook(fields) {
     const titleIndex = INDEX_RE.test(fields[0] || "") ? 1 : 0;
     const title = fields[titleIndex] || "";
     const secondIndex = titleIndex + 1;
     const second = fields[secondIndex] || "";
-    if (!second) return "";
+    if (!second) return parsedBook(title, "", "");
     const inlineSeparator = second.indexOf(" -- ");
     if (inlineSeparator >= 0) {
       const inlineFields = second.split(/\s+--\s+/).map(cleanField).filter(Boolean);
-      if (inlineFields[1]) return inlineFields[1];
+      if (inlineFields[1]) return parsedBook(title, inlineFields[0], inlineFields[1]);
     }
     if (isDifferentLanguage(title, second)) {
-      return fields[secondIndex + 1] || "";
+      return parsedBook(title, second, fields[secondIndex + 1] || "");
     }
-    return second;
+    const following = fields[secondIndex + 1] || "";
+    const foreignTitle = isDifferentLanguage(title, following) || /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(following) ? following : "";
+    return parsedBook(title, foreignTitle, second);
   }
   function parseOwnedLine(line) {
     const trimmed = String(line).trim();
     if (!trimmed) return { book: null, reason: "empty" };
-    const separator = trimmed.indexOf("|");
-    if (separator > 0 && separator < trimmed.length - 1) {
-      const title2 = trimmed.slice(0, separator).trim();
-      const author2 = trimmed.slice(separator + 1).trim();
-      return title2 && author2 ? { book: { title: title2, author: author2 }, reason: null } : { book: null, reason: "empty-field" };
+    if (trimmed.includes("|")) {
+      const fields = trimmed.split("|").map((field) => field.trim());
+      if (fields.length !== 2 && fields.length !== 3) {
+        return { book: null, reason: "invalid-field-count" };
+      }
+      if (fields.some((field) => !field)) {
+        return { book: null, reason: "empty-field" };
+      }
+      return parsedBook(fields[0], fields.length === 3 ? fields[1] : "", fields.at(-1));
     }
-    const fields = filenameFields(trimmed);
-    const title = filenameTitle(fields);
-    const author = filenameAuthor(fields);
-    if (!title || !author) {
-      return { book: null, reason: title ? "missing-author" : "missing-title" };
-    }
-    return { book: { title, author }, reason: null };
+    return filenameBook(filenameFields(trimmed));
   }
   function parseOwnedLines(text) {
     const books = [];
@@ -137,11 +144,17 @@
     }
     return { books, skippedLines };
   }
+  function toOwnedText(books) {
+    return books.map((book) => [book.title, ...book.foreignTitle ? [book.foreignTitle] : [], cleanAuthor(book.author)].join(" | ")).join("\n");
+  }
+  function bookMatches(identity, book) {
+    return (titlesMatch(identity.title, book.title) || Boolean(book.foreignTitle && titlesMatch(identity.title, book.foreignTitle))) && authorsMatch(identity.author, book.author);
+  }
   function mergeOwnedBooks(existing, incoming) {
     const byKey = /* @__PURE__ */ new Map();
     for (const book of [...existing, ...incoming]) {
       if (!book || !book.title || !book.author) continue;
-      const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
+      const key = `${normalizeText(book.title)}\0${normalizeText(cleanAuthor(book.author))}`;
       byKey.set(key, book);
     }
     return [...byKey.values()];
@@ -251,7 +264,7 @@
   }
   function matchOwned(identity, books) {
     for (const book of books) {
-      if (titlesMatch(identity.title, book.title) && authorsMatch(identity.author, book.author)) {
+      if (bookMatches(identity, book)) {
         return book;
       }
     }
@@ -350,9 +363,6 @@
     }
     return stored.filter((item) => item && item.title && item.author);
   }
-  function toOwnedText(books) {
-    return books.map((book) => `${book.title} | ${book.author}`).join("\n");
-  }
   function modalField(id) {
     return document.querySelector(`#${MODAL_CONTAINER} #${id}`) || document.getElementById(id);
   }
@@ -382,12 +392,12 @@
     const textLabel = document.createElement("label");
     textLabel.className = "control-label";
     textLabel.htmlFor = TEXT_ID;
-    textLabel.textContent = "书单";
+    textLabel.textContent = "书单（每行：中文名 | 作者，或 中文名 | 外语名 | 作者）";
     const textarea = document.createElement("textarea");
     textarea.id = TEXT_ID;
     textarea.className = "form-control";
     textarea.rows = 12;
-    textarea.placeholder = "足球潜规则 | 克雷格·麦盖尔";
+    textarea.placeholder = "足球潜规则 | 克雷格·麦盖尔\n加林查 | Garrincha | Ugo Riccarelli";
     textGroup.append(textLabel, textarea);
     const fileGroup = document.createElement("div");
     fileGroup.className = "form-group";

@@ -1,10 +1,10 @@
 /* global $, GM_getValue, GM_notification, GM_registerMenuCommand, GM_setValue, ZLibraryModal, ZLibraryNotify */
 
 import {
-  authorsMatch,
+  bookMatches,
   mergeOwnedBooks,
   parseOwnedLines,
-  titlesMatch,
+  toOwnedText,
 } from "./owned-booklist.js";
 
 const LOG_PREFIX = "[zlib-local-owned-mark]";
@@ -120,7 +120,7 @@ function collectCards() {
 
 function matchOwned(identity, books) {
   for (const book of books) {
-    if (titlesMatch(identity.title, book.title) && authorsMatch(identity.author, book.author)) {
+    if (bookMatches(identity, book)) {
       return book;
     }
   }
@@ -226,10 +226,6 @@ function readStore() {
   return stored.filter((item) => item && item.title && item.author);
 }
 
-function toOwnedText(books) {
-  return books.map((book) => `${book.title} | ${book.author}`).join("\n");
-}
-
 function modalField(id) {
   return document.querySelector(`#${MODAL_CONTAINER} #${id}`) || document.getElementById(id);
 }
@@ -261,12 +257,12 @@ function ensureModal() {
   const textLabel = document.createElement("label");
   textLabel.className = "control-label";
   textLabel.htmlFor = TEXT_ID;
-  textLabel.textContent = "书单";
+  textLabel.textContent = "书单（每行：中文名 | 作者，或 中文名 | 外语名 | 作者）";
   const textarea = document.createElement("textarea");
   textarea.id = TEXT_ID;
   textarea.className = "form-control";
   textarea.rows = 12;
-  textarea.placeholder = "足球潜规则 | 克雷格·麦盖尔";
+  textarea.placeholder = "足球潜规则 | 克雷格·麦盖尔\n加林查 | Garrincha | Ugo Riccarelli";
   textGroup.append(textLabel, textarea);
   const fileGroup = document.createElement("div");
   fileGroup.className = "form-group";

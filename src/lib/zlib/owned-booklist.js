@@ -73,48 +73,55 @@ function filenameFields(line) {
     .filter((field) => field && !YEAR_RE.test(field) && !ID_RE.test(field));
 }
 
-function filenameTitle(fields) {
-  return INDEX_RE.test(fields[0] || "") ? fields[1] || "" : fields[0] || "";
+export function cleanAuthor(value) {
+  return String(value).trim().replace(/^(?:\([^()]*\)|（[^（）]*）)\s*/, "");
 }
 
-function filenameAuthor(fields) {
+function parsedBook(title, foreignTitle, rawAuthor) {
+  const author = cleanAuthor(rawAuthor);
+  if (!title || !author) {
+    return { book: null, reason: title ? "missing-author" : "missing-title" };
+  }
+  return { book: { title, ...(foreignTitle ? { foreignTitle } : {}), author }, reason: null };
+}
+
+function filenameBook(fields) {
   const titleIndex = INDEX_RE.test(fields[0] || "") ? 1 : 0;
   const title = fields[titleIndex] || "";
   const secondIndex = titleIndex + 1;
   const second = fields[secondIndex] || "";
-  if (!second) return "";
+  if (!second) return parsedBook(title, "", "");
 
   // Some generated names keep the author after an inline ` -- ` suffix.
   const inlineSeparator = second.indexOf(" -- ");
   if (inlineSeparator >= 0) {
     const inlineFields = second.split(/\s+--\s+/).map(cleanField).filter(Boolean);
-    if (inlineFields[1]) return inlineFields[1];
+    if (inlineFields[1]) return parsedBook(title, inlineFields[0], inlineFields[1]);
   }
 
   if (isDifferentLanguage(title, second)) {
-    return fields[secondIndex + 1] || "";
+    return parsedBook(title, second, fields[secondIndex + 1] || "");
   }
-  return second;
+  const following = fields[secondIndex + 1] || "";
+  const foreignTitle = isDifferentLanguage(title, following) || /[\p{Script=Hiragana}\p{Script=Katakana}]/u.test(following)
+    ? following : "";
+  return parsedBook(title, foreignTitle, second);
 }
 
 export function parseOwnedLine(line) {
   const trimmed = String(line).trim();
   if (!trimmed) return { book: null, reason: "empty" };
-  const separator = trimmed.indexOf("|");
-  if (separator > 0 && separator < trimmed.length - 1) {
-    const title = trimmed.slice(0, separator).trim();
-    const author = trimmed.slice(separator + 1).trim();
-    return title && author
-      ? { book: { title, author }, reason: null }
-      : { book: null, reason: "empty-field" };
+  if (trimmed.includes("|")) {
+    const fields = trimmed.split("|").map((field) => field.trim());
+    if (fields.length !== 2 && fields.length !== 3) {
+      return { book: null, reason: "invalid-field-count" };
+    }
+    if (fields.some((field) => !field)) {
+      return { book: null, reason: "empty-field" };
+    }
+    return parsedBook(fields[0], fields.length === 3 ? fields[1] : "", fields.at(-1));
   }
-  const fields = filenameFields(trimmed);
-  const title = filenameTitle(fields);
-  const author = filenameAuthor(fields);
-  if (!title || !author) {
-    return { book: null, reason: title ? "missing-author" : "missing-title" };
-  }
-  return { book: { title, author }, reason: null };
+  return filenameBook(filenameFields(trimmed));
 }
 
 export function parseOwnedLines(text) {
@@ -128,11 +135,21 @@ export function parseOwnedLines(text) {
   return { books, skippedLines };
 }
 
+export function toOwnedText(books) {
+  return books.map((book) => [book.title, ...(book.foreignTitle ? [book.foreignTitle] : []), cleanAuthor(book.author)].join(" | ")).join("\n");
+}
+
+export function bookMatches(identity, book) {
+  return (titlesMatch(identity.title, book.title) ||
+    Boolean(book.foreignTitle && titlesMatch(identity.title, book.foreignTitle))) &&
+    authorsMatch(identity.author, book.author);
+}
+
 export function mergeOwnedBooks(existing, incoming) {
   const byKey = new Map();
   for (const book of [...existing, ...incoming]) {
     if (!book || !book.title || !book.author) continue;
-    const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
+    const key = `${normalizeText(book.title)}\0${normalizeText(cleanAuthor(book.author))}`;
     byKey.set(key, book);
   }
   return [...byKey.values()];
