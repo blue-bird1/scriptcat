@@ -133,7 +133,7 @@ export function mergeOwnedBooks(existing, incoming) {
   for (const book of [...existing, ...incoming]) {
     if (!book || !book.title || !book.author) continue;
     const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
-    if (!byKey.has(key)) byKey.set(key, book);
+    byKey.set(key, book);
   }
   return [...byKey.values()];
 }

@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.9.8.15
+// @version            2026.9.9
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -142,7 +142,7 @@
     for (const book of [...existing, ...incoming]) {
       if (!book || !book.title || !book.author) continue;
       const key = `${normalizeText(book.title)}\0${normalizeText(book.author)}`;
-      if (!byKey.has(key)) byKey.set(key, book);
+      byKey.set(key, book);
     }
     return [...byKey.values()];
   }
