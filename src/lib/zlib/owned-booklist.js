@@ -11,9 +11,13 @@ export function normalizeText(value) {
     .trim();
 }
 
+function normalizeMatchText(value) {
+  return normalizeText(String(value).replace(/[\p{P}\p{S}]/gu, " "));
+}
+
 export function titlesMatch(left, right) {
-  const a = normalizeText(left);
-  const b = normalizeText(right);
+  const a = normalizeMatchText(left);
+  const b = normalizeMatchText(right);
   if (!a || !b) return false;
   if (a === b) return true;
   const shorter = a.length <= b.length ? a : b;
@@ -23,14 +27,14 @@ export function titlesMatch(left, right) {
 
 function authorCandidates(value) {
   const fields = String(value).split(/[;；、/]|\s+--\s+|---|\band\b/i);
-  return fields.flatMap((field) => field.split(",")).map((part) => normalizeText(part)).filter(Boolean);
+  return fields.flatMap((field) => field.split(",")).map((part) => part.trim()).filter(Boolean);
 }
 
 export function authorKeys(value) {
   const keys = new Set();
-  for (const candidate of authorCandidates(value)) {
-    keys.add(candidate);
-    keys.add(candidate.replace(/^[（(][^）)]{1,12}[）)]\s*/, ""));
+  for (const candidate of [value, ...authorCandidates(value)]) {
+    keys.add(normalizeMatchText(candidate));
+    keys.add(normalizeMatchText(cleanAuthor(candidate)));
   }
   return keys;
 }

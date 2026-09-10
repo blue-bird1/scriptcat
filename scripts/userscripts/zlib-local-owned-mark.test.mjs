@@ -7,6 +7,7 @@ import {
   cleanAuthor,
   parseOwnedLine,
   parseOwnedLines,
+  titlesMatch,
 } from "../../src/lib/zlib/owned-booklist.js";
 
 test("pipe lines stay 书名 | 作者", () => {
@@ -100,6 +101,25 @@ test("parseOwnedLines keeps pipe and filename rows together", () => {
   ]);
   assert.equal(parsed.skippedLines.length, 1);
   assert.equal(parsed.skippedLines[0].reason, "missing-author");
+});
+
+test("punctuation differences in filenames match titles and authors without changing imported text", () => {
+  const line = "耐力_循环训练 | Endurance_ circuit-training | (西) Díaz·Infantes";
+  const { book } = parseOwnedLine(line);
+  assert.deepEqual(book, {
+    title: "耐力_循环训练",
+    foreignTitle: "Endurance_ circuit-training",
+    author: "Díaz·Infantes",
+  });
+  assert.equal(bookMatches({ title: "耐力：循环训练", author: "Díaz Infantes" }, book), true);
+  assert.equal(bookMatches({ title: "Endurance: circuit training", author: "（西）Díaz Infantes" }, book), true);
+  assert.equal(bookMatches({ title: "Endurance: circuit training", author: "Other Author" }, book), false);
+  assert.equal(titlesMatch("《耐力》：循环，训练！", "耐力 循环 训练"), true);
+  assert.equal(titlesMatch("Sport + Nutrition ©", "Sport Nutrition"), true);
+  assert.equal(authorsMatch("Jean/Pierre", "Jean Pierre"), true);
+  assert.equal(authorsMatch("(英) Craig·McGill", "Craig McGill"), true);
+  assert.equal(titlesMatch("：_!?", " "), false);
+  assert.equal(authorsMatch("·", "-"), false);
 });
 
 test("dual titles match either Chinese or foreign card title", () => {

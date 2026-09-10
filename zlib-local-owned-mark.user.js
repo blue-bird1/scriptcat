@@ -2,7 +2,7 @@
 // @name               Z-Library local owned mark
 // @name:zh-CN         Z-Library 本地已有标注
 // @namespace          out
-// @version            2026.10.0
+// @version            2026.10.1
 // @description        Mark Z-Library cards owned locally by title and author
 // @description:zh-CN  按书名和作者标注本地已有的 Z-Library 书籍卡片
 // @author             blue-bird
@@ -41,9 +41,12 @@
   function normalizeText(value) {
     return String(value).normalize("NFKC").toLowerCase().replace(/\s+/g, " ").trim();
   }
+  function normalizeMatchText(value) {
+    return normalizeText(String(value).replace(/[\p{P}\p{S}]/gu, " "));
+  }
   function titlesMatch(left, right) {
-    const a = normalizeText(left);
-    const b = normalizeText(right);
+    const a = normalizeMatchText(left);
+    const b = normalizeMatchText(right);
     if (!a || !b) return false;
     if (a === b) return true;
     const shorter = a.length <= b.length ? a : b;
@@ -52,13 +55,13 @@
   }
   function authorCandidates(value) {
     const fields = String(value).split(/[;；、/]|\s+--\s+|---|\band\b/i);
-    return fields.flatMap((field) => field.split(",")).map((part) => normalizeText(part)).filter(Boolean);
+    return fields.flatMap((field) => field.split(",")).map((part) => part.trim()).filter(Boolean);
   }
   function authorKeys(value) {
     const keys = /* @__PURE__ */ new Set();
-    for (const candidate of authorCandidates(value)) {
-      keys.add(candidate);
-      keys.add(candidate.replace(/^[（(][^）)]{1,12}[）)]\s*/, ""));
+    for (const candidate of [value, ...authorCandidates(value)]) {
+      keys.add(normalizeMatchText(candidate));
+      keys.add(normalizeMatchText(cleanAuthor(candidate)));
     }
     return keys;
   }
