@@ -36,18 +36,19 @@
     return /^\d+$/.test(appId) ? appId : null;
   }
   function resolveSteamAppId(target) {
-    if (!(target instanceof Element)) {
+    const element = target instanceof Element ? target : target?.parentElement;
+    if (!(element instanceof Element)) {
       return null;
     }
-    const hitItem = target.closest("li.ais-Hits-item");
+    const hitItem = element.closest("li.ais-Hits-item");
     if (hitItem) {
       return parseAppId(hitItem.querySelector("a[data-appid]")?.getAttribute("data-appid"));
     }
-    const saleRow = target.closest("table.table-sales tr[data-appid]");
+    const saleRow = element.closest("table.table-sales tr[data-appid]");
     if (saleRow) {
       return parseAppId(saleRow.getAttribute("data-appid"));
     }
-    const appLink = target.closest("a.app[data-appid]");
+    const appLink = element.closest("a.app[data-appid]");
     if (appLink) {
       return parseAppId(appLink.getAttribute("data-appid"));
     }
