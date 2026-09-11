@@ -130,6 +130,16 @@
   - 用户栏：`#nav-user-action-bar ul.list-inline`；未登录：`a[href*="member.php?mod=logging&amp;action=login"]`、`a[href*="member.php?mod=register"]`。
   - keylol_to_steampy：帖子内 Steam 链接 `a[href*="store.steampowered.com/app/"]`；引用块：`#postlist > [id^="post_"]:first-of-type .quote blockquote`；排除 `.showhide`、`.sff_collapse` 等。
 
+## SteamDB (steamdb.info)
+
+- 脚本：`steamdb-open-steam-store.user.js`。匹配 `https://steamdb.info/instantsearch/*` 与 `https://steamdb.info/sales/*`。
+- 中键打开 Steam 商店：`https://store.steampowered.com/app/<appId>/`。AppID 只接受十进制正整数字符串。
+- 选择器（2026-09-11 页面样本）
+  - 即时搜索：`ol.ais-Hits-list` 内 `li.ais-Hits-item`，条目链接 `a.app[data-appid][href^="/app/"]`。
+  - 促销表：`table.table-sales tbody tr[data-appid]`。行内已有指向商店的 `a.info-icon`，游戏名链接指向 `/app/<appId>/`。
+  - 促销页表外推荐：`a.app[data-appid]`。
+- 事件挂在 `document` 捕获阶段的 `mousedown` 与 `auxclick`，不依赖结果列表是否已被 Algolia 或 DataTables 重绘。
+
 ## Bilibili 番剧
 
 - **@connect**：`api.bgm.tv`（bilibili.user.js）。

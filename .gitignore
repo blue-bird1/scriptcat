@@ -37,6 +37,8 @@ __pycache__/
 !src/lib/sonkwo/*.js
 !src/lib/steam/
 !src/lib/steam/*.js
+!src/lib/steamdb/
+!src/lib/steamdb/*.js
 !src/lib/zlib/
 !src/lib/zlib/*.js
 !src/lib/bilibili/

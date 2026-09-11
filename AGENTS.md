@@ -54,6 +54,7 @@
 | zlib-download-history-sync.user.js | 已接入 | `src/userscripts/zlib-download-history-sync.user.js` | Z-Library 多域名 | 多账号下载历史同步 |
 | zlib-local-owned-mark.user.js | 已接入 | `src/userscripts/zlib-local-owned-mark.user.js` | Z-Library 多域名 | 按书名作者标注本地已有书籍 |
 | steam-discovery-queue.user.js | 已接入 | `src/userscripts/steam-discovery-queue.user.js` | store.steampowered.com 探索队列 | 按评分、价格、标签等规则自动筛选，并在愿望单或忽略成功后进入下一项 |
+| steamdb-open-steam-store.user.js | 已接入 | `src/userscripts/steamdb-open-steam-store.user.js` | steamdb.info 即时搜索、促销列表 | 中键点击游戏条目打开 Steam 商店 |
 | steampy.user.js | 已接入 | `src/userscripts/steampy.user.js` | steampy.com | SteamPy 价格对比增强 |
 | bilibili.user.js | C（lib 已抽） | — | bilibili.com 番剧 | BGM 评分显示；`src/lib/bilibili/bgm-rating.js` |
 | page-agent.user.js | C（lib 已抽） | — | 通用 (*://*/*) | 自然语言操作网页；`src/lib/page-agent/gm-fetch.js` |
@@ -105,6 +106,7 @@
 | `src/userscripts/zlib-download-history-sync.user.js` | `src/lib/zlib/download-history-sync.js` |
 | `src/userscripts/zlib-local-owned-mark.user.js` | `src/lib/zlib/local-owned-mark.js`，`src/lib/zlib/owned-booklist.js` |
 | `src/userscripts/steam-discovery-queue.user.js` | `src/lib/steam/{discovery-queue,discovery-queue-auto-filter,discovery-queue-config,discovery-queue-rules}.js` |
+| `src/userscripts/steamdb-open-steam-store.user.js` | `src/lib/steamdb/open-steam-store.js` |
 | `src/userscripts/steampy.user.js` | `src/lib/steampy/steam-library.js`，`src/lib/steampy/steampy-plus*.js`，`src/lib/steampy/game-manager.js` |
 
 **C 级已抽 lib（入口仍为根目录单文件，待后续迁入 build）**
