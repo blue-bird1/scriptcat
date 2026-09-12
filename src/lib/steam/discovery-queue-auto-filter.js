@@ -357,7 +357,11 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
       );
       return;
     }
-    if (stopped || paused || currentGeneration !== generation || !result.matched) {
+    if (stopped || paused || currentGeneration !== generation) {
+      return;
+    }
+    if (!result.matched) {
+      progress.hide();
       return;
     }
     const current = getContext();
