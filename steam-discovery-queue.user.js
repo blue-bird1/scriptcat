@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.20
+// @version      0.3.21
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -516,6 +516,178 @@
         button?.remove();
         document.getElementById(STYLE_ID)?.remove();
         button = void 0;
+      }
+    };
+  }
+
+  // src/lib/steam/discovery-queue-progress.js
+  var DISCOVERY_QUEUE_DIALOG_SELECTOR = '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
+  var PANEL_ID = "scriptcat-steam-discovery-queue-progress";
+  function getDiscoveryQueueDialog() {
+    const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
+    return dialog instanceof HTMLElement ? dialog : void 0;
+  }
+  function getProgressHost() {
+    return getDiscoveryQueueDialog() ?? (document.body instanceof HTMLElement ? document.body : void 0);
+  }
+  function canUseDom() {
+    return typeof document?.createElement === "function";
+  }
+  function applyOverlayStyle(element) {
+    element.style.cssText = [
+      "position:fixed",
+      "inset:0",
+      "z-index:2147483647",
+      "display:flex",
+      "align-items:center",
+      "justify-content:center",
+      "padding:24px",
+      "background:rgba(12,18,26,.88)",
+      "color:#d6d7d8",
+      "font:16px/1.5 Arial,sans-serif",
+      "pointer-events:none"
+    ].join(";");
+  }
+  function applyCardStyle(card) {
+    card.style.cssText = [
+      "box-sizing:border-box",
+      "max-width:420px",
+      "width:min(420px,100%)",
+      "padding:20px 24px",
+      "border:1px solid rgba(103,193,245,.45)",
+      "border-radius:6px",
+      "background:rgba(20,30,40,.98)",
+      "box-shadow:0 8px 24px rgba(0,0,0,.45)"
+    ].join(";");
+  }
+  function createDiscoveryQueueProgress() {
+    let element;
+    let titleNode;
+    let stageNode;
+    let statsNode;
+    let hidden = false;
+    function ensureElement() {
+      if (hidden || !canUseDom()) {
+        return void 0;
+      }
+      const host = getProgressHost();
+      if (!host) {
+        return void 0;
+      }
+      if (!(element instanceof HTMLElement) || !element.isConnected) {
+        const existing = document.getElementById(PANEL_ID);
+        element = existing instanceof HTMLElement ? existing : document.createElement("div");
+        element.id = PANEL_ID;
+        element.setAttribute("role", "status");
+        element.setAttribute("aria-live", "polite");
+        if (!(existing instanceof HTMLElement)) {
+          titleNode = document.createElement("div");
+          titleNode.textContent = "Steam 探索队列";
+          titleNode.style.cssText = "margin-bottom:8px;color:#67c1f5;font-weight:700";
+          stageNode = document.createElement("div");
+          statsNode = document.createElement("div");
+          statsNode.style.cssText = "margin-top:8px;color:#8f98a0;font-size:14px";
+          const card = document.createElement("div");
+          applyCardStyle(card);
+          card.append(titleNode, stageNode, statsNode);
+          element.append(card);
+        } else {
+          titleNode = element.querySelector("[data-progress-title]");
+          stageNode = element.querySelector("[data-progress-stage]");
+          statsNode = element.querySelector("[data-progress-stats]");
+        }
+        titleNode?.setAttribute("data-progress-title", "");
+        stageNode?.setAttribute("data-progress-stage", "");
+        statsNode?.setAttribute("data-progress-stats", "");
+      }
+      applyOverlayStyle(element);
+      if (element.parentElement !== host) {
+        host.append(element);
+      }
+      return element;
+    }
+    function show({ stage, stats } = {}) {
+      hidden = false;
+      const target = ensureElement();
+      if (!target) {
+        return;
+      }
+      if (stageNode && stage !== void 0) {
+        stageNode.textContent = stage;
+      }
+      if (statsNode && stats !== void 0) {
+        statsNode.textContent = stats;
+      }
+    }
+    function hide() {
+      hidden = true;
+      element?.remove();
+      element = void 0;
+      titleNode = void 0;
+      stageNode = void 0;
+      statsNode = void 0;
+      if (typeof document?.getElementById === "function") {
+        document.getElementById(PANEL_ID)?.remove();
+      }
+    }
+    return { show, hide };
+  }
+  function createPrefilterReporter() {
+    const progress = createDiscoveryQueueProgress();
+    let checked = 0;
+    let ignored = 0;
+    let total = 0;
+    let batches = 0;
+    function statsText() {
+      return `已检查 ${checked}/${total}，已忽略 ${ignored}`;
+    }
+    function render(stage) {
+      progress.show({
+        stage,
+        stats: `第 ${Math.max(batches, 1)} 轮 · ${statsText()}`
+      });
+    }
+    return {
+      beginBatch(appIds) {
+        batches += 1;
+        total += appIds.length;
+        render(`正在加载第 ${batches} 轮（${appIds.length} 项）`);
+      },
+      beginNextRound() {
+        render("正在取下一轮");
+        console.info(
+          `[Steam 探索队列] 第 ${batches} 轮已全部过滤，正在取下一轮`
+        );
+      },
+      beginEvaluation() {
+        render(`正在筛选第 ${batches} 轮`);
+      },
+      recordEvaluation(appId, result) {
+        checked += 1;
+        render(`正在筛选第 ${batches} 轮 · App ${appId}`);
+        if (result?.matched === true) {
+          console.info(
+            `[Steam 探索队列] App ${appId} 命中筛选规则：${result.reasons.join("、")}`
+          );
+        }
+      },
+      recordIgnore(appId, succeeded) {
+        if (succeeded) {
+          ignored += 1;
+          render(`正在忽略第 ${batches} 轮命中项 · App ${appId}`);
+          console.info(`[Steam 探索队列] 已忽略 App ${appId}`);
+        }
+      },
+      finishBatch(retainedAppIds, matchedAppIds) {
+        render(
+          retainedAppIds.length > 0 ? `第 ${batches} 轮筛选完成，准备展示 ${retainedAppIds.length} 项` : `第 ${batches} 轮已全部过滤`
+        );
+        console.info(
+          `[Steam 探索队列] 第 ${batches} 轮筛选完成：筛除 ${matchedAppIds.length} 项，保留 ${retainedAppIds.length} 项`
+        );
+      },
+      close() {
+        progress.hide();
       }
     };
   }
@@ -1169,6 +1341,7 @@
     let generation = 0;
     let evaluatedKey;
     let activeConfig;
+    const progress = createDiscoveryQueueProgress();
     const configUi = createDiscoveryQueueConfigUi({
       onSave() {
         activeConfig = configUi.getConfig();
@@ -1178,7 +1351,9 @@
       },
       onOpenChange(open) {
         paused = open;
-        if (!open) {
+        if (open) {
+          progress.hide();
+        } else {
           schedule();
         }
       }
@@ -1197,12 +1372,20 @@
         const modalContinueButton = getModalContinueButton();
         if (modalContinueButton instanceof HTMLElement && !continuedModalButtons.has(modalContinueButton)) {
           continuedModalButtons.add(modalContinueButton);
+          progress.show({
+            stage: "正在取下一轮",
+            stats: "探索本轮已结束，正在继续下一次"
+          });
           modalContinueButton.click();
           return;
         }
         const classicContinueLink = getClassicContinueLink();
         if (classicContinueLink instanceof HTMLAnchorElement && !continuedClassicLinks.has(classicContinueLink)) {
           continuedClassicLinks.add(classicContinueLink);
+          progress.show({
+            stage: "正在取下一轮",
+            stats: "探索本轮已结束，正在继续下一次"
+          });
           classicContinueLink.click();
           return;
         }
@@ -1237,17 +1420,23 @@
       }
       const current = getContext();
       if (current?.key !== context.key) {
+        progress.hide();
         console.warn(
           `[Steam 探索队列] 应用 ${context.appId} 筛选完成时页面内容已经改变，因此没有自动忽略。`
         );
         return;
       }
       if (!(current.ignoreButton instanceof HTMLElement)) {
+        progress.hide();
         console.warn(
           `[Steam 探索队列] 应用 ${context.appId} 命中筛选规则，但没有找到忽略按钮，无法自动忽略。`
         );
         return;
       }
+      progress.show({
+        stage: `已跳过 App ${context.appId}`,
+        stats: "命中筛选规则，正在进入下一项"
+      });
       console.info(
         `[Steam 探索队列] 应用 ${context.appId} 命中筛选规则，已点击忽略。`
       );
@@ -1284,6 +1473,7 @@
       stopped = true;
       generation += 1;
       observer.disconnect();
+      progress.hide();
       configUi.destroy();
       ruleEngine.clear();
     };
@@ -1291,7 +1481,6 @@
 
   // src/lib/steam/discovery-queue-prefilter.js
   var DISCOVERY_QUEUE_URL = "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
-  var DISCOVERY_QUEUE_DIALOG_SELECTOR = '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
   var PERMIT_DURATION_MS = 1e4;
   var PREFILTER_CONCURRENCY = 4;
   var DISCOVERY_QUEUE_SUMMARY_APP_ID = 1;
@@ -1541,89 +1730,6 @@
       config?.minimumPositiveRate?.enabled || config?.minimumReviewCount?.enabled || config?.maximumPrice?.enabled || config?.minimumDiscount?.enabled || config?.earliestReleaseDate?.enabled || config?.ignoreFree || config?.ignoreUnreviewed || config?.ignoreDlc || config?.ignoreProfileFeaturesLimited || config?.excludedTags?.enabled || config?.requiredLanguages?.enabled
     );
   }
-  function getDiscoveryQueueDialog() {
-    const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
-    return dialog instanceof HTMLElement ? dialog : void 0;
-  }
-  function createPrefilterReporter() {
-    let checked = 0;
-    let ignored = 0;
-    let total = 0;
-    let batches = 0;
-    let element;
-    let closed = false;
-    function ensureElement() {
-      if (closed) {
-        return void 0;
-      }
-      if (element?.isConnected) {
-        return element;
-      }
-      if (!(document.body instanceof HTMLElement)) {
-        return void 0;
-      }
-      element = document.createElement("div");
-      element.style.cssText = [
-        "position:fixed",
-        "top:72px",
-        "right:24px",
-        "z-index:100000",
-        "max-width:360px",
-        "padding:12px 16px",
-        "border:1px solid rgba(103,193,245,.45)",
-        "border-radius:4px",
-        "background:rgba(20,30,40,.96)",
-        "box-shadow:0 8px 24px rgba(0,0,0,.35)",
-        "color:#d6d7d8",
-        "font:14px/1.5 Arial,sans-serif",
-        "pointer-events:none"
-      ].join(";");
-      document.body.append(element);
-      return element;
-    }
-    function render(stage) {
-      const target = ensureElement();
-      if (target) {
-        target.textContent = `${stage} · 已检查 ${checked}/${total}，已忽略 ${ignored}`;
-      }
-    }
-    return {
-      beginBatch(appIds) {
-        batches += 1;
-        total += appIds.length;
-        render(`正在加载第 ${batches} 批（${appIds.length} 项）`);
-      },
-      beginEvaluation() {
-        render(`正在筛选第 ${batches} 批`);
-      },
-      recordEvaluation(appId, result) {
-        checked += 1;
-        render(`正在筛选第 ${batches} 批`);
-        if (result?.matched === true) {
-          console.info(
-            `[Steam 探索队列] App ${appId} 命中筛选规则：${result.reasons.join("、")}`
-          );
-        }
-      },
-      recordIgnore(appId, succeeded) {
-        if (succeeded) {
-          ignored += 1;
-          render(`正在忽略第 ${batches} 批命中项`);
-          console.info(`[Steam 探索队列] 已忽略 App ${appId}`);
-        }
-      },
-      finishBatch(retainedAppIds, matchedAppIds) {
-        console.info(
-          `[Steam 探索队列] 第 ${batches} 批筛选完成：筛除 ${matchedAppIds.length} 项，保留 ${retainedAppIds.length} 项`
-        );
-      },
-      close() {
-        closed = true;
-        element?.remove();
-        element = void 0;
-      }
-    };
-  }
   function isDiscoveryQueueDataRequest(value) {
     return Boolean(
       value?.include_assets === true && value?.include_trailers === true && value?.include_basic_info === true && value?.include_tag_count === 20 && value?.include_release === true && value?.include_platforms === true && value?.include_screenshots === true && value?.include_reviews === true
@@ -1776,6 +1882,7 @@
         return [DISCOVERY_QUEUE_SUMMARY_APP_ID];
       }
       while (!stopped && currentGeneration === generation) {
+        reporter?.beginNextRound();
         let response;
         try {
           response = await Reflect.apply(originalFetch, permit.receiver, fetchArgs);

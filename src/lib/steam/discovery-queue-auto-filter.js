@@ -1,4 +1,5 @@
 import { createDiscoveryQueueConfigUi } from "./discovery-queue-config.js";
+import { createDiscoveryQueueProgress } from "./discovery-queue-progress.js";
 import { createDiscoveryQueueRuleEngine } from "./discovery-queue-rules.js";
 
 const QUEUE_OBSERVER_SELECTOR =
@@ -269,6 +270,7 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
   let evaluatedKey;
   let activeConfig;
 
+  const progress = createDiscoveryQueueProgress();
   const configUi = createDiscoveryQueueConfigUi({
     onSave() {
       activeConfig = configUi.getConfig();
@@ -278,7 +280,9 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
     },
     onOpenChange(open) {
       paused = open;
-      if (!open) {
+      if (open) {
+        progress.hide();
+      } else {
         schedule();
       }
     },
@@ -304,6 +308,10 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
         !continuedModalButtons.has(modalContinueButton)
       ) {
         continuedModalButtons.add(modalContinueButton);
+        progress.show({
+          stage: "正在取下一轮",
+          stats: "探索本轮已结束，正在继续下一次",
+        });
         modalContinueButton.click();
         return;
       }
@@ -314,6 +322,10 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
         !continuedClassicLinks.has(classicContinueLink)
       ) {
         continuedClassicLinks.add(classicContinueLink);
+        progress.show({
+          stage: "正在取下一轮",
+          stats: "探索本轮已结束，正在继续下一次",
+        });
         classicContinueLink.click();
         return;
       }
@@ -350,17 +362,23 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
     }
     const current = getContext();
     if (current?.key !== context.key) {
+      progress.hide();
       console.warn(
         `[Steam 探索队列] 应用 ${context.appId} 筛选完成时页面内容已经改变，因此没有自动忽略。`,
       );
       return;
     }
     if (!(current.ignoreButton instanceof HTMLElement)) {
+      progress.hide();
       console.warn(
         `[Steam 探索队列] 应用 ${context.appId} 命中筛选规则，但没有找到忽略按钮，无法自动忽略。`,
       );
       return;
     }
+    progress.show({
+      stage: `已跳过 App ${context.appId}`,
+      stats: "命中筛选规则，正在进入下一项",
+    });
     console.info(
       `[Steam 探索队列] 应用 ${context.appId} 命中筛选规则，已点击忽略。`,
     );
@@ -406,6 +424,7 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
     stopped = true;
     generation += 1;
     observer.disconnect();
+    progress.hide();
     configUi.destroy();
     ruleEngine.clear();
   };

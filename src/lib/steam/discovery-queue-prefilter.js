@@ -1,10 +1,12 @@
 import { loadDiscoveryQueueConfig } from "./discovery-queue-config.js";
+import {
+  createPrefilterReporter,
+  getDiscoveryQueueDialog,
+} from "./discovery-queue-progress.js";
 import { createDiscoveryQueueRuleEngine } from "./discovery-queue-rules.js";
 
 const DISCOVERY_QUEUE_URL =
   "https://api.steampowered.com/IStoreService/GetDiscoveryQueue/v1";
-const DISCOVERY_QUEUE_DIALOG_SELECTOR =
-  '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
 const PERMIT_DURATION_MS = 10_000;
 const PREFILTER_CONCURRENCY = 4;
 const DISCOVERY_QUEUE_SUMMARY_APP_ID = 1;
@@ -296,94 +298,6 @@ function hasActiveRules(config) {
   );
 }
 
-function getDiscoveryQueueDialog() {
-  const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
-  return dialog instanceof HTMLElement ? dialog : undefined;
-}
-
-function createPrefilterReporter() {
-  let checked = 0;
-  let ignored = 0;
-  let total = 0;
-  let batches = 0;
-  let element;
-  let closed = false;
-
-  function ensureElement() {
-    if (closed) {
-      return undefined;
-    }
-    if (element?.isConnected) {
-      return element;
-    }
-    if (!(document.body instanceof HTMLElement)) {
-      return undefined;
-    }
-    element = document.createElement("div");
-    element.style.cssText = [
-      "position:fixed",
-      "top:72px",
-      "right:24px",
-      "z-index:100000",
-      "max-width:360px",
-      "padding:12px 16px",
-      "border:1px solid rgba(103,193,245,.45)",
-      "border-radius:4px",
-      "background:rgba(20,30,40,.96)",
-      "box-shadow:0 8px 24px rgba(0,0,0,.35)",
-      "color:#d6d7d8",
-      "font:14px/1.5 Arial,sans-serif",
-      "pointer-events:none",
-    ].join(";");
-    document.body.append(element);
-    return element;
-  }
-
-  function render(stage) {
-    const target = ensureElement();
-    if (target) {
-      target.textContent = `${stage} · 已检查 ${checked}/${total}，已忽略 ${ignored}`;
-    }
-  }
-
-  return {
-    beginBatch(appIds) {
-      batches += 1;
-      total += appIds.length;
-      render(`正在加载第 ${batches} 批（${appIds.length} 项）`);
-    },
-    beginEvaluation() {
-      render(`正在筛选第 ${batches} 批`);
-    },
-    recordEvaluation(appId, result) {
-      checked += 1;
-      render(`正在筛选第 ${batches} 批`);
-      if (result?.matched === true) {
-        console.info(
-          `[Steam 探索队列] App ${appId} 命中筛选规则：${result.reasons.join("、")}`,
-        );
-      }
-    },
-    recordIgnore(appId, succeeded) {
-      if (succeeded) {
-        ignored += 1;
-        render(`正在忽略第 ${batches} 批命中项`);
-        console.info(`[Steam 探索队列] 已忽略 App ${appId}`);
-      }
-    },
-    finishBatch(retainedAppIds, matchedAppIds) {
-      console.info(
-        `[Steam 探索队列] 第 ${batches} 批筛选完成：筛除 ${matchedAppIds.length} 项，保留 ${retainedAppIds.length} 项`,
-      );
-    },
-    close() {
-      closed = true;
-      element?.remove();
-      element = undefined;
-    },
-  };
-}
-
 function isDiscoveryQueueDataRequest(value) {
   return Boolean(
     value?.include_assets === true &&
@@ -563,6 +477,7 @@ export function startDiscoveryQueuePrefilter({
     }
 
     while (!stopped && currentGeneration === generation) {
+      reporter?.beginNextRound();
       let response;
       try {
         response = await Reflect.apply(originalFetch, permit.receiver, fetchArgs);
