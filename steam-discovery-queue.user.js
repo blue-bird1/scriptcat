@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.21
+// @version      0.3.22
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -211,16 +211,16 @@
     }
     return config;
   }
-  function appendText(element, text) {
-    element.textContent = text;
-    return element;
+  function appendText(element2, text) {
+    element2.textContent = text;
+    return element2;
   }
   function createElement(tagName, className) {
-    const element = document.createElement(tagName);
+    const element2 = document.createElement(tagName);
     if (className) {
-      element.className = className;
+      element2.className = className;
     }
-    return element;
+    return element2;
   }
   function createSteamButton(text, className) {
     const button = createElement("button", className);
@@ -523,25 +523,30 @@
   // src/lib/steam/discovery-queue-progress.js
   var DISCOVERY_QUEUE_DIALOG_SELECTOR = '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
   var PANEL_ID = "scriptcat-steam-discovery-queue-progress";
+  var PANEL_CLASS = "scriptcat-steam-discovery-queue-progress";
   function getDiscoveryQueueDialog() {
     const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
     return dialog instanceof HTMLElement ? dialog : void 0;
   }
-  function getProgressHost() {
-    return getDiscoveryQueueDialog() ?? (document.body instanceof HTMLElement ? document.body : void 0);
-  }
   function canUseDom() {
     return typeof document?.createElement === "function";
   }
-  function applyOverlayStyle(element) {
-    element.style.cssText = [
+  function applyOverlayStyle(element2) {
+    element2.style.cssText = [
       "position:fixed",
       "inset:0",
       "z-index:2147483647",
+      "box-sizing:border-box",
+      "width:100%",
+      "height:100%",
+      "max-width:none",
+      "max-height:none",
       "display:flex",
       "align-items:center",
       "justify-content:center",
+      "margin:0",
       "padding:24px",
+      "border:none",
       "background:rgba(12,18,26,.88)",
       "color:#d6d7d8",
       "font:16px/1.5 Arial,sans-serif",
@@ -560,77 +565,159 @@
       "box-shadow:0 8px 24px rgba(0,0,0,.45)"
     ].join(";");
   }
-  function createDiscoveryQueueProgress() {
-    let element;
-    let titleNode;
-    let stageNode;
-    let statsNode;
-    let hidden = false;
-    function ensureElement() {
-      if (hidden || !canUseDom()) {
-        return void 0;
-      }
-      const host = getProgressHost();
-      if (!host) {
-        return void 0;
-      }
-      if (!(element instanceof HTMLElement) || !element.isConnected) {
-        const existing = document.getElementById(PANEL_ID);
-        element = existing instanceof HTMLElement ? existing : document.createElement("div");
-        element.id = PANEL_ID;
-        element.setAttribute("role", "status");
-        element.setAttribute("aria-live", "polite");
-        if (!(existing instanceof HTMLElement)) {
-          titleNode = document.createElement("div");
-          titleNode.textContent = "Steam 探索队列";
-          titleNode.style.cssText = "margin-bottom:8px;color:#67c1f5;font-weight:700";
-          stageNode = document.createElement("div");
-          statsNode = document.createElement("div");
-          statsNode.style.cssText = "margin-top:8px;color:#8f98a0;font-size:14px";
-          const card = document.createElement("div");
-          applyCardStyle(card);
-          card.append(titleNode, stageNode, statsNode);
-          element.append(card);
-        } else {
-          titleNode = element.querySelector("[data-progress-title]");
-          stageNode = element.querySelector("[data-progress-stage]");
-          statsNode = element.querySelector("[data-progress-stats]");
+  function dismissPanel(node) {
+    if (typeof node.hidePopover === "function") {
+      try {
+        if (node.matches?.(":popover-open")) {
+          node.hidePopover();
         }
-        titleNode?.setAttribute("data-progress-title", "");
-        stageNode?.setAttribute("data-progress-stage", "");
-        statsNode?.setAttribute("data-progress-stats", "");
+      } catch (error) {
+        console.warn("[Steam 探索队列] 关闭进度层时 hidePopover 失败", error);
       }
-      applyOverlayStyle(element);
-      if (element.parentElement !== host) {
-        host.append(element);
-      }
-      return element;
     }
-    function show({ stage, stats } = {}) {
-      hidden = false;
-      const target = ensureElement();
-      if (!target) {
+    node.remove();
+  }
+  function removeAllPanels() {
+    if (typeof document?.querySelectorAll !== "function") {
+      return;
+    }
+    for (const node of document.querySelectorAll(`.${PANEL_CLASS}`)) {
+      dismissPanel(node);
+    }
+  }
+  function getMountRoot() {
+    if (document.documentElement instanceof Element) {
+      return document.documentElement;
+    }
+    return document.body instanceof HTMLElement ? document.body : void 0;
+  }
+  var hidden = true;
+  var owner;
+  var element;
+  var titleNode;
+  var stageNode;
+  var statsNode;
+  var staleObserver;
+  function watchStalePanels() {
+    if (staleObserver || typeof MutationObserver !== "function") {
+      return;
+    }
+    const root = getMountRoot();
+    if (!root) {
+      return;
+    }
+    staleObserver = new MutationObserver((records) => {
+      if (!hidden) {
         return;
       }
-      if (stageNode && stage !== void 0) {
-        stageNode.textContent = stage;
+      for (const record of records) {
+        for (const node of record.addedNodes) {
+          if (!(node instanceof Element)) {
+            continue;
+          }
+          if (node.classList.contains(PANEL_CLASS) || node.querySelector(`.${PANEL_CLASS}`)) {
+            removeAllPanels();
+            return;
+          }
+        }
       }
-      if (statsNode && stats !== void 0) {
-        statsNode.textContent = stats;
+    });
+    staleObserver.observe(root, { childList: true, subtree: true });
+  }
+  function mountPanel(panel) {
+    const root = getMountRoot();
+    if (!root) {
+      return false;
+    }
+    if (panel.parentElement !== root) {
+      root.append(panel);
+    }
+    if (typeof panel.showPopover === "function") {
+      panel.setAttribute("popover", "manual");
+      try {
+        if (!panel.matches(":popover-open")) {
+          panel.showPopover();
+        }
+      } catch (error) {
+        console.warn("[Steam 探索队列] 无法把进度层放到顶层", error);
       }
     }
-    function hide() {
-      hidden = true;
-      element?.remove();
-      element = void 0;
-      titleNode = void 0;
-      stageNode = void 0;
-      statsNode = void 0;
-      if (typeof document?.getElementById === "function") {
-        document.getElementById(PANEL_ID)?.remove();
-      }
+    return true;
+  }
+  function ensureElement() {
+    if (hidden || !canUseDom()) {
+      return void 0;
     }
-    return { show, hide };
+    if (!(element instanceof HTMLElement) || !element.isConnected) {
+      const existing = document.querySelector(`.${PANEL_CLASS}`);
+      element = existing instanceof HTMLElement ? existing : document.createElement("div");
+      element.id = PANEL_ID;
+      element.className = PANEL_CLASS;
+      element.setAttribute("role", "status");
+      element.setAttribute("aria-live", "polite");
+      if (!(existing instanceof HTMLElement)) {
+        titleNode = document.createElement("div");
+        titleNode.textContent = "Steam 探索队列";
+        titleNode.style.cssText = "margin-bottom:8px;color:#67c1f5;font-weight:700";
+        stageNode = document.createElement("div");
+        statsNode = document.createElement("div");
+        statsNode.style.cssText = "margin-top:8px;color:#8f98a0;font-size:14px";
+        const card = document.createElement("div");
+        applyCardStyle(card);
+        card.append(titleNode, stageNode, statsNode);
+        element.replaceChildren(card);
+      } else {
+        titleNode = element.querySelector("[data-progress-title]");
+        stageNode = element.querySelector("[data-progress-stage]");
+        statsNode = element.querySelector("[data-progress-stats]");
+      }
+      titleNode?.setAttribute("data-progress-title", "");
+      stageNode?.setAttribute("data-progress-stage", "");
+      statsNode?.setAttribute("data-progress-stats", "");
+    }
+    applyOverlayStyle(element);
+    if (!mountPanel(element)) {
+      return void 0;
+    }
+    return element;
+  }
+  function showProgress(nextOwner, { stage, stats } = {}) {
+    hidden = false;
+    owner = nextOwner;
+    const target = ensureElement();
+    if (!target) {
+      return;
+    }
+    if (stageNode && stage !== void 0) {
+      stageNode.textContent = stage;
+    }
+    if (statsNode && stats !== void 0) {
+      statsNode.textContent = stats;
+    }
+  }
+  function hideProgress(nextOwner) {
+    if (owner !== void 0 && owner !== nextOwner) {
+      return;
+    }
+    hidden = true;
+    owner = void 0;
+    element = void 0;
+    titleNode = void 0;
+    stageNode = void 0;
+    statsNode = void 0;
+    removeAllPanels();
+    watchStalePanels();
+  }
+  function createDiscoveryQueueProgress() {
+    const token = {};
+    return {
+      show(state) {
+        showProgress(token, state);
+      },
+      hide() {
+        hideProgress(token);
+      }
+    };
   }
   function createPrefilterReporter() {
     const progress = createDiscoveryQueueProgress();
@@ -679,9 +766,6 @@
         }
       },
       finishBatch(retainedAppIds, matchedAppIds) {
-        render(
-          retainedAppIds.length > 0 ? `第 ${batches} 轮筛选完成，准备展示 ${retainedAppIds.length} 项` : `第 ${batches} 轮已全部过滤`
-        );
         console.info(
           `[Steam 探索队列] 第 ${batches} 轮筛选完成：筛除 ${matchedAppIds.length} 项，保留 ${retainedAppIds.length} 项`
         );
@@ -1142,9 +1226,9 @@
 
   // src/lib/steam/discovery-queue-auto-filter.js
   var QUEUE_OBSERVER_SELECTOR = '[role="dialog"], #queueActionsCtn, .discover_queue_empty';
-  function isVisible(element) {
+  function isVisible(element2) {
     return Boolean(
-      element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
+      element2 && element2.getClientRects().length > 0 && getComputedStyle(element2).visibility !== "hidden"
     );
   }
   function getAppId(url) {
@@ -1204,7 +1288,7 @@
     if (!(button instanceof HTMLElement) || !(actionGroup instanceof HTMLElement) || !(dialog instanceof HTMLElement) || !(appLink instanceof HTMLAnchorElement) || !dialog.querySelector('a[href*="/explore"][href*="dq=widget"]')) {
       return void 0;
     }
-    const actionButtons = [...actionGroup.children].map((child) => child.querySelector("[aria-label]")).filter((element) => element instanceof HTMLElement);
+    const actionButtons = [...actionGroup.children].map((child) => child.querySelector("[aria-label]")).filter((element2) => element2 instanceof HTMLElement);
     const actionIndex = actionButtons.indexOf(button);
     if (actionButtons.length !== 2 || actionIndex === -1) {
       return void 0;
@@ -1237,7 +1321,7 @@
         continue;
       }
       const dialogRect = dialog.getBoundingClientRect();
-      const candidates = [...dialog.querySelectorAll("[aria-label]")].map((element) => getModalQueueAction(element)).filter((action) => action?.action === "ignore" && action.appId).filter(({ button }) => {
+      const candidates = [...dialog.querySelectorAll("[aria-label]")].map((element2) => getModalQueueAction(element2)).filter((action) => action?.action === "ignore" && action.appId).filter(({ button }) => {
         const rect = button.getBoundingClientRect();
         return isVisible(button) && rect.left >= dialogRect.left && rect.right <= dialogRect.right;
       }).sort((left, right) => right.button.getBoundingClientRect().left - left.button.getBoundingClientRect().left);
@@ -1266,7 +1350,7 @@
     if (!appId || !(buttonHost instanceof HTMLElement)) {
       return void 0;
     }
-    const tags = [...document.querySelectorAll(".glance_tags a.app_tag")].map((element) => element.textContent?.trim()).filter(Boolean);
+    const tags = [...document.querySelectorAll(".glance_tags a.app_tag")].map((element2) => element2.textContent?.trim()).filter(Boolean);
     const reviews = getClassicReviews();
     return {
       appId,
@@ -1305,7 +1389,7 @@
       return void 0;
     }
     const actions = [...actionParent.children].filter(
-      (element) => element instanceof HTMLElement && isVisible(element)
+      (element2) => element2 instanceof HTMLElement && isVisible(element2)
     );
     return actions.length === 2 ? actions[1] : void 0;
   }
@@ -1392,10 +1476,15 @@
       }
       const context = getContext();
       if (!context) {
+        progress.hide();
         return;
       }
       configUi.ensureButton(context.buttonHost);
-      if (!config.enabled || !context.appId || context.key === evaluatedKey) {
+      if (!config.enabled || !context.appId) {
+        progress.hide();
+        return;
+      }
+      if (context.key === evaluatedKey) {
         return;
       }
       evaluatedKey = context.key;
@@ -2473,9 +2562,9 @@
   var CLASSIC_NEXT_SELECTOR = "#nextInDiscoveryQueue .btn_next_in_queue_trigger";
   var MODAL_WISHLIST_PATH = "/api/addtowishlist";
   var MODAL_QUEUE_SELECTOR = '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
-  function isVisible2(element) {
+  function isVisible2(element2) {
     return Boolean(
-      element && element.getClientRects().length > 0 && getComputedStyle(element).visibility !== "hidden"
+      element2 && element2.getClientRects().length > 0 && getComputedStyle(element2).visibility !== "hidden"
     );
   }
   function matchesAction(target, selector) {
@@ -2606,13 +2695,13 @@
       if (!(dialog instanceof HTMLElement)) {
         return;
       }
-      for (const element of dialog.querySelectorAll("[aria-label]")) {
-        if (element.childElementCount > 0) {
+      for (const element2 of dialog.querySelectorAll("[aria-label]")) {
+        if (element2.childElementCount > 0) {
           continue;
         }
-        const match = element.textContent?.trim().match(/^\(\((.+)\)\)$/u);
+        const match = element2.textContent?.trim().match(/^\(\((.+)\)\)$/u);
         if (match) {
-          element.textContent = `(${match[1]})`;
+          element2.textContent = `(${match[1]})`;
         }
       }
     }
@@ -2629,13 +2718,13 @@
     const maximumMiddleGap = Math.min(240, dialogRect.height * 0.2);
     const candidates = [
       ...dialog.querySelectorAll('[role="button"][aria-label]')
-    ].map((element) => {
-      const rect = element.getBoundingClientRect();
-      return { element, rect };
+    ].map((element2) => {
+      const rect = element2.getBoundingClientRect();
+      return { element: element2, rect };
     }).filter(
       ({ rect }) => rect.width >= 40 && rect.width <= 96 && rect.height >= 40 && rect.height <= 96
     ).filter(
-      ({ element, rect }) => isVisible2(element) && rect.left + rect.width / 2 > dialogCenter && dialogRect.right - rect.right <= maximumEdgeGap && Math.abs(rect.top + rect.height / 2 - dialogMiddle) <= maximumMiddleGap
+      ({ element: element2, rect }) => isVisible2(element2) && rect.left + rect.width / 2 > dialogCenter && dialogRect.right - rect.right <= maximumEdgeGap && Math.abs(rect.top + rect.height / 2 - dialogMiddle) <= maximumMiddleGap
     ).sort(
       (left, right) => dialogRect.right - left.rect.right - (dialogRect.right - right.rect.right) || Math.abs(left.rect.top + left.rect.height / 2 - dialogMiddle) - Math.abs(right.rect.top + right.rect.height / 2 - dialogMiddle)
     );

@@ -1,15 +1,11 @@
 export const DISCOVERY_QUEUE_DIALOG_SELECTOR =
   '[role="dialog"]:has(a[href*="/explore"][href*="dq=widget"])';
 const PANEL_ID = "scriptcat-steam-discovery-queue-progress";
+const PANEL_CLASS = "scriptcat-steam-discovery-queue-progress";
 
 export function getDiscoveryQueueDialog() {
   const dialog = document.querySelector(DISCOVERY_QUEUE_DIALOG_SELECTOR);
   return dialog instanceof HTMLElement ? dialog : undefined;
-}
-
-function getProgressHost() {
-  return getDiscoveryQueueDialog() ??
-    (document.body instanceof HTMLElement ? document.body : undefined);
 }
 
 function canUseDom() {
@@ -21,10 +17,17 @@ function applyOverlayStyle(element) {
     "position:fixed",
     "inset:0",
     "z-index:2147483647",
+    "box-sizing:border-box",
+    "width:100%",
+    "height:100%",
+    "max-width:none",
+    "max-height:none",
     "display:flex",
     "align-items:center",
     "justify-content:center",
+    "margin:0",
     "padding:24px",
+    "border:none",
     "background:rgba(12,18,26,.88)",
     "color:#d6d7d8",
     "font:16px/1.5 Arial,sans-serif",
@@ -45,81 +48,171 @@ function applyCardStyle(card) {
   ].join(";");
 }
 
-export function createDiscoveryQueueProgress() {
-  let element;
-  let titleNode;
-  let stageNode;
-  let statsNode;
-  let hidden = false;
-
-  function ensureElement() {
-    if (hidden || !canUseDom()) {
-      return undefined;
-    }
-    const host = getProgressHost();
-    if (!host) {
-      return undefined;
-    }
-    if (!(element instanceof HTMLElement) || !element.isConnected) {
-      const existing = document.getElementById(PANEL_ID);
-      element = existing instanceof HTMLElement ? existing : document.createElement("div");
-      element.id = PANEL_ID;
-      element.setAttribute("role", "status");
-      element.setAttribute("aria-live", "polite");
-      if (!(existing instanceof HTMLElement)) {
-        titleNode = document.createElement("div");
-        titleNode.textContent = "Steam 探索队列";
-        titleNode.style.cssText = "margin-bottom:8px;color:#67c1f5;font-weight:700";
-        stageNode = document.createElement("div");
-        statsNode = document.createElement("div");
-        statsNode.style.cssText = "margin-top:8px;color:#8f98a0;font-size:14px";
-        const card = document.createElement("div");
-        applyCardStyle(card);
-        card.append(titleNode, stageNode, statsNode);
-        element.append(card);
-      } else {
-        titleNode = element.querySelector("[data-progress-title]");
-        stageNode = element.querySelector("[data-progress-stage]");
-        statsNode = element.querySelector("[data-progress-stats]");
+function dismissPanel(node) {
+  if (typeof node.hidePopover === "function") {
+    try {
+      if (node.matches?.(":popover-open")) {
+        node.hidePopover();
       }
-      titleNode?.setAttribute("data-progress-title", "");
-      stageNode?.setAttribute("data-progress-stage", "");
-      statsNode?.setAttribute("data-progress-stats", "");
+    } catch (error) {
+      console.warn("[Steam 探索队列] 关闭进度层时 hidePopover 失败", error);
     }
-    applyOverlayStyle(element);
-    if (element.parentElement !== host) {
-      host.append(element);
-    }
-    return element;
   }
+  node.remove();
+}
 
-  function show({ stage, stats } = {}) {
-    hidden = false;
-    const target = ensureElement();
-    if (!target) {
+function removeAllPanels() {
+  if (typeof document?.querySelectorAll !== "function") {
+    return;
+  }
+  for (const node of document.querySelectorAll(`.${PANEL_CLASS}`)) {
+    dismissPanel(node);
+  }
+}
+
+function getMountRoot() {
+  if (document.documentElement instanceof Element) {
+    return document.documentElement;
+  }
+  return document.body instanceof HTMLElement ? document.body : undefined;
+}
+
+let hidden = true;
+let owner;
+let element;
+let titleNode;
+let stageNode;
+let statsNode;
+let staleObserver;
+
+function watchStalePanels() {
+  if (staleObserver || typeof MutationObserver !== "function") {
+    return;
+  }
+  const root = getMountRoot();
+  if (!root) {
+    return;
+  }
+  staleObserver = new MutationObserver((records) => {
+    if (!hidden) {
       return;
     }
-    if (stageNode && stage !== undefined) {
-      stageNode.textContent = stage;
+    for (const record of records) {
+      for (const node of record.addedNodes) {
+        if (!(node instanceof Element)) {
+          continue;
+        }
+        if (
+          node.classList.contains(PANEL_CLASS) ||
+          node.querySelector(`.${PANEL_CLASS}`)
+        ) {
+          removeAllPanels();
+          return;
+        }
+      }
     }
-    if (statsNode && stats !== undefined) {
-      statsNode.textContent = stats;
+  });
+  staleObserver.observe(root, { childList: true, subtree: true });
+}
+
+function mountPanel(panel) {
+  const root = getMountRoot();
+  if (!root) {
+    return false;
+  }
+  if (panel.parentElement !== root) {
+    root.append(panel);
+  }
+  if (typeof panel.showPopover === "function") {
+    panel.setAttribute("popover", "manual");
+    try {
+      if (!panel.matches(":popover-open")) {
+        panel.showPopover();
+      }
+    } catch (error) {
+      console.warn("[Steam 探索队列] 无法把进度层放到顶层", error);
     }
   }
+  return true;
+}
 
-  function hide() {
-    hidden = true;
-    element?.remove();
-    element = undefined;
-    titleNode = undefined;
-    stageNode = undefined;
-    statsNode = undefined;
-    if (typeof document?.getElementById === "function") {
-      document.getElementById(PANEL_ID)?.remove();
-    }
+function ensureElement() {
+  if (hidden || !canUseDom()) {
+    return undefined;
   }
+  if (!(element instanceof HTMLElement) || !element.isConnected) {
+    const existing = document.querySelector(`.${PANEL_CLASS}`);
+    element = existing instanceof HTMLElement ? existing : document.createElement("div");
+    element.id = PANEL_ID;
+    element.className = PANEL_CLASS;
+    element.setAttribute("role", "status");
+    element.setAttribute("aria-live", "polite");
+    if (!(existing instanceof HTMLElement)) {
+      titleNode = document.createElement("div");
+      titleNode.textContent = "Steam 探索队列";
+      titleNode.style.cssText = "margin-bottom:8px;color:#67c1f5;font-weight:700";
+      stageNode = document.createElement("div");
+      statsNode = document.createElement("div");
+      statsNode.style.cssText = "margin-top:8px;color:#8f98a0;font-size:14px";
+      const card = document.createElement("div");
+      applyCardStyle(card);
+      card.append(titleNode, stageNode, statsNode);
+      element.replaceChildren(card);
+    } else {
+      titleNode = element.querySelector("[data-progress-title]");
+      stageNode = element.querySelector("[data-progress-stage]");
+      statsNode = element.querySelector("[data-progress-stats]");
+    }
+    titleNode?.setAttribute("data-progress-title", "");
+    stageNode?.setAttribute("data-progress-stage", "");
+    statsNode?.setAttribute("data-progress-stats", "");
+  }
+  applyOverlayStyle(element);
+  if (!mountPanel(element)) {
+    return undefined;
+  }
+  return element;
+}
 
-  return { show, hide };
+function showProgress(nextOwner, { stage, stats } = {}) {
+  hidden = false;
+  owner = nextOwner;
+  const target = ensureElement();
+  if (!target) {
+    return;
+  }
+  if (stageNode && stage !== undefined) {
+    stageNode.textContent = stage;
+  }
+  if (statsNode && stats !== undefined) {
+    statsNode.textContent = stats;
+  }
+}
+
+function hideProgress(nextOwner) {
+  if (owner !== undefined && owner !== nextOwner) {
+    return;
+  }
+  hidden = true;
+  owner = undefined;
+  element = undefined;
+  titleNode = undefined;
+  stageNode = undefined;
+  statsNode = undefined;
+  removeAllPanels();
+  watchStalePanels();
+}
+
+export function createDiscoveryQueueProgress() {
+  const token = {};
+  return {
+    show(state) {
+      showProgress(token, state);
+    },
+    hide() {
+      hideProgress(token);
+    },
+  };
 }
 
 export function createPrefilterReporter() {
@@ -172,11 +265,6 @@ export function createPrefilterReporter() {
       }
     },
     finishBatch(retainedAppIds, matchedAppIds) {
-      render(
-        retainedAppIds.length > 0
-          ? `第 ${batches} 轮筛选完成，准备展示 ${retainedAppIds.length} 项`
-          : `第 ${batches} 轮已全部过滤`,
-      );
       console.info(
         `[Steam 探索队列] 第 ${batches} 轮筛选完成：筛除 ${matchedAppIds.length} 项，保留 ${retainedAppIds.length} 项`,
       );

@@ -333,10 +333,15 @@ export function startDiscoveryQueueAutoFilter({ getStoreItem } = {}) {
 
     const context = getContext();
     if (!context) {
+      progress.hide();
       return;
     }
     configUi.ensureButton(context.buttonHost);
-    if (!config.enabled || !context.appId || context.key === evaluatedKey) {
+    if (!config.enabled || !context.appId) {
+      progress.hide();
+      return;
+    }
+    if (context.key === evaluatedKey) {
       return;
     }
 
