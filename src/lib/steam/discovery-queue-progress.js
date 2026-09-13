@@ -221,12 +221,16 @@ export function createPrefilterReporter() {
   let ignored = 0;
   let total = 0;
   let batches = 0;
+  let closed = false;
 
   function statsText() {
     return `已检查 ${checked}/${total}，已忽略 ${ignored}`;
   }
 
   function render(stage) {
+    if (closed) {
+      return;
+    }
     progress.show({
       stage,
       stats: `第 ${Math.max(batches, 1)} 轮 · ${statsText()}`,
@@ -235,11 +239,17 @@ export function createPrefilterReporter() {
 
   return {
     beginBatch(appIds) {
+      if (closed) {
+        return;
+      }
       batches += 1;
       total += appIds.length;
       render(`正在加载第 ${batches} 轮（${appIds.length} 项）`);
     },
     beginNextRound() {
+      if (closed) {
+        return;
+      }
       render("正在取下一轮");
       console.info(
         `[Steam 探索队列] 第 ${batches} 轮已全部过滤，正在取下一轮`,
@@ -249,6 +259,9 @@ export function createPrefilterReporter() {
       render(`正在筛选第 ${batches} 轮`);
     },
     recordEvaluation(appId, result) {
+      if (closed) {
+        return;
+      }
       checked += 1;
       render(`正在筛选第 ${batches} 轮 · App ${appId}`);
       if (result?.matched === true) {
@@ -260,7 +273,9 @@ export function createPrefilterReporter() {
     recordIgnore(appId, succeeded) {
       if (succeeded) {
         ignored += 1;
-        render(`正在忽略第 ${batches} 轮命中项 · App ${appId}`);
+        if (!closed) {
+          render(`正在忽略第 ${batches} 轮命中项 · App ${appId}`);
+        }
         console.info(`[Steam 探索队列] 已忽略 App ${appId}`);
       }
     },
@@ -270,6 +285,7 @@ export function createPrefilterReporter() {
       );
     },
     close() {
+      closed = true;
       progress.hide();
     },
   };

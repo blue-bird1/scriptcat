@@ -2,7 +2,7 @@
 // @name         Steam Discovery Queue Auto Next
 // @name:zh-CN   Steam 探索队列自动下一项
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      0.3.22
+// @version      0.3.23
 // @description  自动筛选 Steam 探索队列，并在愿望单成功或点击忽略后进入下一项
 // @author       blue-bird1
 // @match        https://store.steampowered.com/*
@@ -725,10 +725,14 @@
     let ignored = 0;
     let total = 0;
     let batches = 0;
+    let closed = false;
     function statsText() {
       return `已检查 ${checked}/${total}，已忽略 ${ignored}`;
     }
     function render(stage) {
+      if (closed) {
+        return;
+      }
       progress.show({
         stage,
         stats: `第 ${Math.max(batches, 1)} 轮 · ${statsText()}`
@@ -736,11 +740,17 @@
     }
     return {
       beginBatch(appIds) {
+        if (closed) {
+          return;
+        }
         batches += 1;
         total += appIds.length;
         render(`正在加载第 ${batches} 轮（${appIds.length} 项）`);
       },
       beginNextRound() {
+        if (closed) {
+          return;
+        }
         render("正在取下一轮");
         console.info(
           `[Steam 探索队列] 第 ${batches} 轮已全部过滤，正在取下一轮`
@@ -750,6 +760,9 @@
         render(`正在筛选第 ${batches} 轮`);
       },
       recordEvaluation(appId, result) {
+        if (closed) {
+          return;
+        }
         checked += 1;
         render(`正在筛选第 ${batches} 轮 · App ${appId}`);
         if (result?.matched === true) {
@@ -761,7 +774,9 @@
       recordIgnore(appId, succeeded) {
         if (succeeded) {
           ignored += 1;
-          render(`正在忽略第 ${batches} 轮命中项 · App ${appId}`);
+          if (!closed) {
+            render(`正在忽略第 ${batches} 轮命中项 · App ${appId}`);
+          }
           console.info(`[Steam 探索队列] 已忽略 App ${appId}`);
         }
       },
@@ -771,6 +786,7 @@
         );
       },
       close() {
+        closed = true;
         progress.hide();
       }
     };
