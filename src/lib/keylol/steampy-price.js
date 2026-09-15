@@ -402,11 +402,15 @@ export function startKeylolSteampyPrice() {
       }
       return;
     }
-    const { keyPrice, keyTx, keySales, id: gameId } = priceData.result.content[0];
-    const formattedPrice = keyPrice && keyPrice > 0 ? `￥${keyPrice.toFixed(2)}` : "￥--";
-    const numericPrice = keyPrice && keyPrice > 0 ? parseFloat(keyPrice) : 0;
-    const formattedTx = keyTx && keyTx > 0 ? `销量${keyTx} 件` : "-- 项";
-    const formattedSales = keySales && keySales > 0 ? `销售人数${keySales} 人` : "-- 人";
+    const saleGame = priceData.result.content[0];
+    const gameId = saleGame.id;
+    const keyPrice = Number(saleGame.keyTxAmt ?? saleGame.keyPrice);
+    const keySales = Number(saleGame.keySales);
+    const formattedPrice =
+      Number.isFinite(keyPrice) && keyPrice > 0 ? `￥${keyPrice.toFixed(2)}` : "￥--";
+    const numericPrice = Number.isFinite(keyPrice) && keyPrice > 0 ? keyPrice : 0;
+    const formattedSales =
+      Number.isFinite(keySales) && keySales > 0 ? `销量${keySales} 件` : "-- 件";
 
     placeholder.innerHTML = ` | 
             <a 
@@ -415,7 +419,7 @@ export function startKeylolSteampyPrice() {
                 class="steampy-key-price-link" 
                 title="前往 SteamPY 查看 CDKey 详情"
             >
-                SteamPY Key: ${formattedPrice} | ${formattedTx} | ${formattedSales}
+                SteamPY Key: ${formattedPrice} | ${formattedSales}
             </a>
         `;
 
