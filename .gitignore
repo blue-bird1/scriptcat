@@ -33,6 +33,8 @@ __pycache__/
 !src/lib/steampy/*.js
 !src/lib/gmg/
 !src/lib/gmg/*.js
+!src/lib/planetplay/
+!src/lib/planetplay/*.js
 !src/lib/sonkwo/
 !src/lib/sonkwo/*.js
 !src/lib/steam/
@@ -58,6 +60,7 @@ __pycache__/
 !scripts/userscripts/install-to-scriptcat.mjs
 !scripts/userscripts/install-to-scriptcat.test.mjs
 !scripts/userscripts/discovery-queue-auto-filter.test.mjs
+!scripts/userscripts/steam-key-toolbar.test.mjs
 !scripts/userscripts/steampy-plus-seller-batch.test.mjs
 !scripts/userscripts/steampy-plus-sale-start-time.test.mjs
 !scripts/userscripts/steampy-plus-rating.test.mjs

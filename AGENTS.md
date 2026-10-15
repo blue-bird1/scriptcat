@@ -47,6 +47,7 @@
 | steampy-token-sync.user.js | 已接入 | `src/userscripts/steampy-token-sync.user.js` | steampy.com | SteamPy accessToken + Cookies 云端同步 |
 | douban-tag.user.js | 已接入 | `src/userscripts/douban-tag.user.js` | book.douban.com/subject/* | 豆瓣图书自动推荐标签 |
 | douban_earliest_publication.user.js | 已接入 | `src/userscripts/douban_earliest_publication.user.js` | book.douban.com/subject/* | 豆瓣图书最早出版时间标注 |
+| planetplay-order-keys.user.js | 已接入 | `src/userscripts/planetplay-order-keys.user.js` | planetplay.com/*/orders | 订单 Key 提取、批量复制与 Steam 激活 |
 | greenmangaming-bundle-claim.user.js | 已接入 | `src/userscripts/greenmangaming-bundle-claim.user.js` | greenmangamingbundles.com order-claim | GMG 捆绑包 Steam key 复制与自动激活 |
 | keylol_to_steampy_price.user.js | 已接入 | `src/userscripts/keylol_to_steampy_price.user.js` | keylol.com, steampy.com | Steam 价格及总价显示 |
 | snokwo.user.js | 已接入 | `src/userscripts/snokwo.user.js` | sonkwo.hk, steampy.com | Steam AppID 提取 |
@@ -99,7 +100,8 @@
 | `src/userscripts/steampy-token-sync.user.js` | `src/lib/steampy/token-sync.js`，及 `src/lib/userscript/*` |
 | `src/userscripts/douban-tag.user.js` | `src/lib/douban/tag-recommend.js` |
 | `src/userscripts/douban_earliest_publication.user.js` | `src/lib/douban/earliest-publication.js` |
-| `src/userscripts/greenmangaming-bundle-claim.user.js` | `src/lib/gmg/*`，`src/lib/userscript/gm-xhr.js` |
+| `src/userscripts/planetplay-order-keys.user.js` | `src/lib/planetplay/order-keys.js`，`src/lib/userscript/steam-key-toolbar.js`，`src/lib/steam/key-activation.js` |
+| `src/userscripts/greenmangaming-bundle-claim.user.js` | `src/lib/gmg/*`，`src/lib/userscript/steam-key-toolbar.js`，`src/lib/steam/key-activation.js` |
 | `src/userscripts/keylol_to_steampy_price.user.js` | `src/lib/keylol/steampy-price.js`，`src/lib/steampy/{access-token,xboot-client}.js` |
 | `src/userscripts/snokwo.user.js` | `src/lib/sonkwo/search-price.js`，`src/lib/steampy/{access-token,xboot-client}.js` |
 | `src/userscripts/zlib.isbn_highlight.user.js` | `src/lib/zlib/bookcard-isbn.js` |
