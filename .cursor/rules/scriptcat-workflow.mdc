@@ -6,7 +6,7 @@ alwaysApply: true
 # ScriptCat 工作流
 
 - `chrome-devtools-scriptcat` 保留固定 `chromium-profile` 中的脚本、GM 存储与登录态，使用 managed ScriptCat 扩展、已安装的独立 headless 官方 Google Chrome 和 CDP pipe；用户脚本调试与验收通过 `mcp__chrome_devtools_scriptcat__` 完成。
-- broker 每个 browser lifecycle 加载 managed 目录，通过 Chrome 官方扩展设置界面检查并授予 userScripts 权限；只有授权改变时再次加载扩展刷新 worker，随后完成就绪探测。
+- broker 每个 browser lifecycle 加载 managed 目录，通过 Chrome 官方扩展设置界面确保开发者模式开启并授予 userScripts 权限；只有授权改变时再次加载扩展刷新 worker，随后完成就绪探测。
 - 每次专用浏览器操作先调用 `scriptcat_status`，确认扩展 ID、版本、启用状态、`userScriptsAccessEnabled` 和 service worker 就绪状态；只有该字段为 `true` 时授权可用。
 - 以 `scriptcat_upsert_script` 写入仓库内规范化的 `*.user.js` 路径；使用对应的 ScriptCat 工具管理启用、读取、列举和删除脚本。
 - 用户日常浏览器安装使用 `pnpm install:scriptcat -- <script.user.js>`，该路径通过 VSCode sync 端口更新脚本，不管理专用 MCP profile。
