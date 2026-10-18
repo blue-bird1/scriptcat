@@ -37,7 +37,8 @@
   - `GET` doubanio.com：豆瓣封面图等资源（zlib.user.js 内 fetch 为 GET + responseType blob）。
   - `POST /papi/booklist/{id}/get-books/{page}?order=date_savedA`：`books[]` 的书籍 ID 位于 `book.id`；条目顶层含 `readlist_books_id`，不再含 `book_id`。`pagination.next` 为下一页页码或 `false`。2026-10-18 在 `z-library.mn/booklist/93824/f0e540/aak-all-about-korean.html` 实测。
   - `GET /papi/booklist/current-user/{bookId}`：站点 `z-booklists-browser` 的书单列表接口；参数为 `0` 时返回当前用户的全部书单，`readlistBookId` 为 `null`。省略参数会返回 404。2026-10-18 在 `z-library.sk` 使用两份私有书单实测。
-  - `UserBookmarks.addBookToBooklist({bookId, booklistId, successCallback, errorCallback})`：写入 `/papi/booklist/{booklistId}/add-book/{bookId}`。业务错误通过 `errorCallback` 返回，Promise 不会因此拒绝；复制必须等待成功回调后再报告完成。
+  - `GET /papi/booklist/{booklistId}/add-book/{bookId}`：添加书籍，成功响应含 `success: 1`。复制逐本等待服务端成功响应。站点 `UserBookmarks.addBookToBooklist` 通过回调返回业务错误且隐藏 HTTP 响应头；批量复制直接使用 `fetch`，以读取限流信息。
+  - 添加书籍接口实测返回 HTTP 429、非 JSON 正文及 `Retry-After: 15`。复制按响应中的整数秒等待后重试同一请求，并提示等待时间；未提供整数秒时明确报错。
 - **选择器**
   - 书籍卡片：`z-bookcard`；带 isbn 属性：`z-bookcard[isbn]`；搜索结果容器：`#searchResultBox > div.resItemBoxBooks > z-bookcard`、`#searchResultBox > .book-item > z-bookcard`。
   - 书单/搜索：`div.booklist-main.active > div.booklist-searchline > z-dropdown`；列表头：`.booklist-header__options`。

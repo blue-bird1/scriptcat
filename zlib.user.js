@@ -3,7 +3,7 @@
 // @name:zh-CN         Z-Library 增强脚本
 // @name:en            Z-Library UI Enhance
 // @namespace          out
-// @version            2026.9.9
+// @version            2026.9.10
 // @description        改善 Zlibray 页面功能的油猴脚本
 // @description:zh-CN  给 Z-Library 一个更友好的使用体验
 // @description:en     give Z-Library  a more user friendly experience
@@ -44,10 +44,35 @@
 
 // ISBN 缺失高亮见 zlib.isbn_highlight.user.js（与 src/lib/zlib/bookcard-isbn.js 共享实现）
 
-/* global $,ZLibraryNotify, i18next, ZLibraryResponse,CurrentBook,CurrentUser,ZLibrarySpinner, ZLibrary, ZLibraryContextMenu, UserBookmarks, ZLibraryMultiselect, ZLibraryModal, dispatchCustomEvent*/
+/* global $,ZLibraryNotify, i18next, ZLibraryResponse,CurrentBook,CurrentUser,ZLibrarySpinner, ZLibrary, ZLibraryContextMenu, ZLibraryMultiselect, ZLibraryModal, dispatchCustomEvent*/
 
 (function () {
     'use strict';
+
+    async function requestZLibraryJson(url, options) {
+        while (true) {
+            const response = await fetch(url, options);
+            if (response.status === 429) {
+                const retryAfter = response.headers.get("Retry-After");
+                if (!/^\d+$/.test(retryAfter ?? "")) {
+                    throw new Error(`HTTP 429 without a numeric Retry-After: ${await response.text()}`);
+                }
+                const seconds = Number(retryAfter);
+                console.warn({ time: new Date().toISOString(), level: "warn", event: "zlibrary_request_rate_limited", url, status: response.status, retryAfterSeconds: seconds, responseBody: await response.text() });
+                send_info_notify("copy_retry_after", { seconds });
+                await new Promise(resolve => setTimeout(resolve, seconds * 1000));
+                continue;
+            }
+            if (!response.ok) {
+                throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+            }
+            const json = await response.json();
+            if (json.success !== 1) {
+                throw new Error(JSON.stringify(json));
+            }
+            return json;
+        }
+    }
 
     async function getDocAsync(url) {
         function page_parser(responseText) {
@@ -226,6 +251,7 @@
             "清除完成": "Clear completed",
             "添加白名单成功": "Add whitelist success",
             "开始复制书单": "Start copying booklist",
+            "copy_retry_after": "Rate limit reached; retrying in {{seconds}} seconds",
             "start_download_with_title": "Start downloading {{title}}",
             "need set download whitelist": "Please set the download file format whitelist in Tampermonkey first, otherwise only pdf can be downloaded",
             "start_copy_booklist_page": "Start copying booklist {{page}} page",
@@ -269,6 +295,7 @@
             "清除完成": "清除完成",
             "添加白名单成功": "添加白名单成功",
             "开始复制书单": "开始复制书单",
+            "copy_retry_after": "请求过快，{{seconds}} 秒后继续复制",
             "copy booklist": "复制书单",
             "batch download": "批量下载",
             "filter_recommend": "启用推荐过滤",
@@ -797,8 +824,8 @@
                         x = readListCopyClickEvent.target.getBoundingClientRect().x;
                         y = readListCopyClickEvent.target.getBoundingClientRect().y + readListCopyClickEvent.target.getBoundingClientRect().height + window.scrollY;
                     }
-                    new ZLibraryResponse(`/papi/booklist/current-user/0`)
-                        .success(function (json) {
+                    requestZLibraryJson('/papi/booklist/current-user/0')
+                        .then(function (json) {
                             const transformedList = json.list.map(item => ({
                                 text: item.title,
                                 onClick: async () => {
@@ -809,26 +836,16 @@
                                     const context = { sourceBooklistId: CurBooklistid, targetBooklistId: item.id };
                                     let page = 1;
                                     let copied = 0;
-                                    const userBookmarks = new UserBookmarks(CurrentUser.id);
                                     send_info_notify("开始复制书单");
                                     console.info({ time: new Date().toISOString(), level: "info", event: "booklist_copy_started", ...context });
                                     try {
                                         while (page) {
                                             send_info_notify("start_copy_booklist_page", { page });
-                                            const json = await new ZLibraryResponse(new Request('/papi/booklist/' + CurBooklistid + '/get-books/' + page + '?order=date_savedA', {
+                                            const json = await requestZLibraryJson('/papi/booklist/' + CurBooklistid + '/get-books/' + page + '?order=date_savedA', {
                                                 method: 'POST'
-                                            })).error(result => {
-                                                throw new Error(result.error);
-                                            }).fetch();
+                                            });
                                             for (const entry of json.books) {
-                                                await new Promise((resolve, reject) => {
-                                                    userBookmarks.addBookToBooklist({
-                                                        bookId: entry.book.id,
-                                                        booklistId: item.id,
-                                                        successCallback: resolve,
-                                                        errorCallback: result => reject(new Error(result.error)),
-                                                    }).catch(reject);
-                                                });
+                                                await requestZLibraryJson('/papi/booklist/' + item.id + '/add-book/' + entry.book.id);
                                                 copied++;
                                             }
                                             page = json.pagination.next;
@@ -850,7 +867,10 @@
                                 list: transformedList
                             });
                         })
-                        .fetch();
+                        .catch(error => {
+                            send_error_msg("copy_book_to_booklist_error", { error: error.message });
+                            console.error({ time: new Date().toISOString(), level: "error", event: "booklist_destinations_failed", sourceBooklistId: CurBooklistid, error });
+                        });
                 })
 
 
