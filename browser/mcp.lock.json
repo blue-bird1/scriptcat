@@ -2,7 +2,7 @@
   "schema_version": 2,
   "chrome_devtools_mcp": {
     "version": "1.12.0",
-    "commit": "f68d9b463100ae5cfbb119033b12eead971e8fd4",
+    "commit": "514dbac7662bdf1aab727eb237b4d1f3117acbbe",
     "source": "https://github.com/blue-bird1/chrome-devtools-mcp.git",
     "upstream_source": "https://github.com/ChromeDevTools/chrome-devtools-mcp.git",
     "upstream_commit": "ff5204aaf572725557b4bb2f3f542fa3ead5f6a5"
