@@ -1,33 +1,18 @@
 ---
-description: scriptcat 固定上下文（环境、账号、脚本URL/API、发布基础事实）。
+description: 用户脚本的仓库身份、发布账户与资源地址
 alwaysApply: true
 ---
 
-# scriptcat 固定上下文
+# 项目身份与发布
 
-## 仓库与身份
+仓库为 `https://github.com/blue-bird1/scriptcat`，默认分支为 `main`，所有者和作者为 `blue-bird1`。脚本许可信息以各入口 metadata 为准。
 
-- **仓库**：https://github.com/blue-bird1/scriptcat
-- **所有者 / @author**：`blue-bird1`
-- **默认分支**：`main`
-- **发布渠道**：Greasy Fork
-- **License**：MIT
+## Greasy Fork
 
-## Greasy Fork 账号
+发布账户为 `blue-bird1`，用户 ID 为 `700344`。脚本列表通过 `https://api.greasyfork.org/en/users/700344.json` 查询，不在规则中重复维护。
 
-- **用户名**：`blue-bird1`
-- **user id**：`700344`
-- **主页**：https://greasyfork.org/zh-CN/users/700344-blue-bird1
-- **用户 API**：`https://api.greasyfork.org/en/users/700344.json`
+## 资源地址
 
-## 资源 URL 约定
+GitHub raw 前缀为 `https://raw.githubusercontent.com/blue-bird1/scriptcat/main/`，jsDelivr 前缀为 `https://cdn.jsdelivr.net/gh/blue-bird1/scriptcat@main/`。Greasy Fork 发布中的 `@require` 默认优先使用 raw。
 
-- raw：`https://raw.githubusercontent.com/blue-bird1/scriptcat/main/`
-- jsDelivr：`https://cdn.jsdelivr.net/gh/blue-bird1/scriptcat@main/`
-
-> 发布到 Greasy Fork 时，`@require` 默认优先 raw。
-
-## 元数据一致性约定
-
-- 脚本头中的 `@namespace`、`@author`、`@require` 必须使用本项目真实信息，禁止占位符。
-- 若仓库地址发生变更（fork / 自托管），需同步更新脚本头和文档引用。
+metadata 的 `@namespace`、`@author` 和 `@require` 使用真实项目信息，不使用占位符。仓库地址变化时，同步核对受影响的 metadata 和文档引用。
