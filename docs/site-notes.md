@@ -34,6 +34,8 @@
 - **接口**
   - `GET https://book.douban.com/isbn/{isbn}`：Z-Library 页内查豆瓣封面/信息（zlib.user.js）；response 用 HTML 解析。
   - `GET` doubanio.com：豆瓣封面图等资源（zlib.user.js 内 fetch 为 GET + responseType blob）。
+  - `POST /papi/booklist/{id}/get-books/{page}?order=date_savedA`：`books[]` 的书籍 ID 位于 `book.id`；条目顶层含 `readlist_books_id`，不再含 `book_id`。`pagination.next` 为下一页页码或 `false`。2026-10-18 在 `z-library.mn/booklist/93824/f0e540/aak-all-about-korean.html` 实测。
+  - `UserBookmarks.addBookToBooklist({bookId, booklistId, successCallback, errorCallback})`：写入 `/papi/booklist/{booklistId}/add-book/{bookId}`。业务错误通过 `errorCallback` 返回，Promise 不会因此拒绝；复制必须等待成功回调后再报告完成。
 - **选择器**
   - 书籍卡片：`z-bookcard`；带 isbn 属性：`z-bookcard[isbn]`；搜索结果容器：`#searchResultBox > div.resItemBoxBooks > z-bookcard`、`#searchResultBox > .book-item > z-bookcard`。
   - 书单/搜索：`div.booklist-main.active > div.booklist-searchline > z-dropdown`；列表头：`.booklist-header__options`。

@@ -3,7 +3,7 @@
 // @name:zh-CN         Z-Library 增强脚本
 // @name:en            Z-Library UI Enhance
 // @namespace          out
-// @version            2026.9.7
+// @version            2026.9.8
 // @description        改善 Zlibray 页面功能的油猴脚本
 // @description:zh-CN  给 Z-Library 一个更友好的使用体验
 // @description:en     give Z-Library  a more user friendly experience
@@ -787,8 +787,10 @@
                                                 position: relative;
                                                 top: 3px;"
                                      id="plugin_copy_booklist">${translate("copy booklist")}</a></div>`)
+                let copyingBooklist = false;
                 $("#plugin_copy_booklist").on("click", function (readListCopyClickEvent) {
                     readListCopyClickEvent.preventDefault()
+                    if (copyingBooklist) return;
                     let x = readListCopyClickEvent.pageX
                     let y = readListCopyClickEvent.pageY
                     if (readListCopyClickEvent.type === 'click') {
@@ -799,46 +801,47 @@
                         .success(function (json) {
                             const transformedList = json.list.map(item => ({
                                 text: item.title,
-                                onClick: () => {
-                                    const id = item.id; // 使用 item.id
-                                    let loadCount = 1;
-                                    let userBookmarks = new UserBookmarks(CurrentUser.id);
-
-                                    function loadBooks(loadCount) {
-                                        send_info_notify("start_copy_booklist_page", { page: loadCount })
-                                        new ZLibraryResponse(new Request('/papi/booklist/' + CurBooklistid + '/get-books/' + loadCount + '?order=date_savedA', {
-                                            method: 'POST'
-                                        }))
-                                            .success(function (json) {
-                                                json.books.forEach(item => {
-                                                    //   if (!ZLibrary.checkIsDownloaded(item.book_id, item.book.isbn)) {
-                                                    userBookmarks.addBookToBooklist({
-                                                        bookId: item.book_id,
-                                                        booklistId: id,
-                                                    }).catch(error => {
-                                                        send_error_msg("copy_book_to_booklist_error", { error: error })
-                                                    });
-                                                    //  }
-                                                });
-                                                // Check if there are more books to load
-                                                if (json.pagination.next) {
-                                                    setTimeout(loadBooks, 1000, json.pagination.next);
-                                                } else {
-                                                    send_ok_msg("复制书单完成")
-                                                }
-                                            })
-                                            .fetch();
-                                    }
-
-                                    send_info_notify("开始复制书单")
-
+                                onClick: async () => {
+                                    if (copyingBooklist) return;
+                                    copyingBooklist = true;
+                                    const button = $("#plugin_copy_booklist");
+                                    button.addClass("disabled").attr("aria-disabled", "true");
+                                    const context = { sourceBooklistId: CurBooklistid, targetBooklistId: item.id };
+                                    let page = 1;
+                                    let copied = 0;
+                                    const userBookmarks = new UserBookmarks(CurrentUser.id);
+                                    send_info_notify("开始复制书单");
+                                    console.info({ time: new Date().toISOString(), level: "info", event: "booklist_copy_started", ...context });
                                     try {
-                                        loadBooks(loadCount); // Initial call
+                                        while (page) {
+                                            send_info_notify("start_copy_booklist_page", { page });
+                                            const json = await new ZLibraryResponse(new Request('/papi/booklist/' + CurBooklistid + '/get-books/' + page + '?order=date_savedA', {
+                                                method: 'POST'
+                                            })).error(result => {
+                                                throw new Error(result.error);
+                                            }).fetch();
+                                            for (const entry of json.books) {
+                                                await new Promise((resolve, reject) => {
+                                                    userBookmarks.addBookToBooklist({
+                                                        bookId: entry.book.id,
+                                                        booklistId: item.id,
+                                                        successCallback: resolve,
+                                                        errorCallback: result => reject(new Error(result.error)),
+                                                    }).catch(reject);
+                                                });
+                                                copied++;
+                                            }
+                                            page = json.pagination.next;
+                                        }
+                                        send_ok_msg("复制书单完成");
+                                        console.info({ time: new Date().toISOString(), level: "info", event: "booklist_copy_completed", ...context, copied });
                                     } catch (error) {
-                                        send_error_msg("copy_book_to_booklist_error", { error: error })
-                                        console.error(error);
+                                        send_error_msg("copy_book_to_booklist_error", { error: error.message });
+                                        console.error({ time: new Date().toISOString(), level: "error", event: "booklist_copy_failed", ...context, page, copied, error });
+                                    } finally {
+                                        copyingBooklist = false;
+                                        button.removeClass("disabled").removeAttr("aria-disabled");
                                     }
-
                                 }
                             }));
 
@@ -938,7 +941,7 @@
 
 
 
-                                if (skip && ZLibrary.checkIsDownloaded(cur_book.book_id, cur_book.book.isbn)) {
+                                if (skip && ZLibrary.checkIsDownloaded(cur_book.book.id, cur_book.book.isbn)) {
                                     cur_index = cur_index + 1
                                     await downloadBooks(books, cur_index);
                                     return
@@ -951,7 +954,7 @@
                                     need_download -= 1
                                     downloadFile(cur_book.book.dl, `${cur_book.book.title}.${cur_book.book.extension}`,
                                         function () {
-                                            CurrentUser.addDownloadedBook(cur_book.book_id)
+                                            CurrentUser.addDownloadedBook(cur_book.book.id)
                                             resolve()
                                         }, (err) => {
                                             send_error_msg("download_book_error", { error: err.message });
