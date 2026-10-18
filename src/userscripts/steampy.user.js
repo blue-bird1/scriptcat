@@ -2,8 +2,8 @@
 // @name            SteamPy Plus
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
-// @namespace       http://github.com/blue-bird1/tampermonkey-script
-// @version         5.10.11
+// @namespace       https://github.com/blue-bird1/scriptcat
+// @version         5.10.12
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持鼠标中键打开Steam页面。
 // @description:en  Enhance the experience of purchasing Steampy keys, add filter functionality, and support opening Steam pages with the middle mouse button.
 // @match           https://steampy.com/*
