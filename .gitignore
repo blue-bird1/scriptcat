@@ -12,13 +12,16 @@ __pycache__/
 # Userscripts.
 !*.user.js
 
-# Project documentation that is already part of the repository.
+# Maintained documentation, grouped by responsibility.
 !docs/
-!docs/site-notes.md
-# !docs/troubleshooting.md
-# !docs/steampy-pro-cdkey-investigation.md
-# !docs/plans/
-# !docs/plans/steampy-pro-cdkey-adaptation-plan.md
+!docs/development/
+!docs/development/*.md
+!docs/userscripts/
+!docs/userscripts/*.md
+!docs/sites/
+!docs/sites/*.md
+!docs/sites/*/
+!docs/sites/*/*.md
 
 # Build inputs and vendored runtime used by tracked scripts.
 !package.json
@@ -106,10 +109,7 @@ scripts/release_tools/**/*.pyc
 !.cursor/mcp.json
 !.cursor/rules/
 !.cursor/rules/scriptcat-context.mdc
-!.cursor/rules/scriptcat-require.mdc
 !.cursor/rules/scriptcat-userscript-quality.mdc
-!.cursor/rules/userscript-browser-mcp-test.mdc
-!.cursor/rules/scriptcat-workflow.mdc
 
 # Project-local skill used by ScriptCat MCP setup.
 !.agents/

@@ -1,149 +1,20 @@
 # scriptcat
 
-## 身份
+本仓库维护运行于 ScriptCat 的用户脚本。维护者也是使用者；接口、鉴权和选择器以真实站点行为为依据，交付包含可用的交互与可理解的错误反馈。
 
-我是 scriptcat 的维护者。scriptcat 是类 Tampermonkey 的浏览器插件，脚本在此运行。本仓库是一组用户脚本，针对豆瓣、SteamPy、keylol、Z-Library、Bilibili 等站点。目标站点几乎不提供公开 API。维护者即使用者：脚本给自己和他人用，需对代码质量与对站点的真实理解负责。默认必读规则见 [scriptcat-context.mdc](.cursor/rules/scriptcat-context.mdc) 与 [scriptcat-workflow.mdc](.cursor/rules/scriptcat-workflow.mdc)。
+## 源码与提交
 
-## 视角
+- 修改脚本前读取 metadata。仓库身份与发布 URL 使用真实项目信息。
+- 有 `src/userscripts/` 入口的脚本只修改源码及 `src/lib/`，通过 `pnpm build` 生成根目录同名产物；没有入口的根目录脚本直接维护。
+- 通用能力放在 `src/lib/userscript/`，站点能力放在对应站点目录，入口保持简短。
+- 在 `main` 直接开发，不走 PR。每个可验收单元提交源码与对应产物。
 
-- **维护者即使用者**：脚本是给自己和别人用的，自己也是调用方；以「自己会用的」视角对待 UI/UX，写完不等于结束。
-- **对代码负责**：维护者要对质量、兼容与安全负责；出错时说明原因和下一步，帮用户恢复，而非只抛错。
-- **立场**：我即维护者（不是客服、不是教程作者），语气与决策与之一致。
+## 浏览器验收与安装
 
-## 油猴脚本本质与发布维护
-
-- **本质**：油猴脚本是对站点 UI、UX 与功能的改进；必须建立对站点的真实理解（结构、接口、选择器），不瞎猜。
-- **发布与责任**：一份代码对应多用户、多环境；发布渠道（如 Greasy Fork）、@version、更新说明、用户反馈形成闭环。不随便加依赖、不破坏现有用户、合规与安全由维护者负责。
-
-## ScriptCat 浏览器验证与安装
-
-- **本地 managed 扩展**：`browser/scriptcat` 是跟随官方版本更新的本地 ScriptCat 扩展 submodule。fork 相对官方仅增加只读消息接口 `serviceWorker/script/getSource`，供 MCP 按 UUID 读取 ScriptCat 保存的原始 userscript 源码。扩展通过 `uv run --project scripts --python 3.12 python scripts/scriptcat/publish.py` 在本机构建、测试并发布；publisher 原子替换 `~/.local/share/scriptcat-extension/managed` 的完整目录内容，发布数据位于 `~/.local/share/scriptcat-extension`，扩展 ID 为 `mihocogjodhedlmnebhfkiahldphcimj`。
-- **专用 MCP**：调试或验收本仓库 `*.user.js` 时，使用 `chrome-devtools-scriptcat`（工具命名空间通常为 `mcp__chrome_devtools_scriptcat__`）。MCP 位于 `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js`，启动已安装的官方 Google Chrome（`/usr/bin/google-chrome`），并保留固定 profile `~/.local/share/scriptcat-mcp/chromium-profile` 中的脚本、GM 存储与登录态。Google Chrome 通过 CDP pipe 以独立 headless 模式运行，页面流量使用本机 `http://127.0.0.1:7891` 代理。MCP 配置中的 `HTTP_PROXY` 与 `HTTPS_PROXY` 同样指向该代理。`--workspace=/home/bluebird/git/scriptcat` 显式授予仓库文件访问权限，文件操作遵循上游 filesystem roots 校验。Pi 从项目 `.mcp.json` 读取该服务器；Codex 从 `.codex/config.toml` 读取同一组参数。
-- **MCP lifecycle 所有权**：`chrome-devtools-scriptcat` 的唯一持久 broker 独占固定 profile 与浏览器进程的完整生命周期。root 与 subagent 各自通过 stdio proxy 建立独立 MCP session 和 `McpContext`，并共享 broker 持有的 browser；proxy 或单个 session 关闭不结束 browser。Agent 不得发送进程信号、结束该浏览器或其子进程、手动启动该浏览器进程、复制固定 profile、删除 `Singleton*`，或用其他浏览器进程争用该 profile。`scripts/mcp/control.py` 从 `.codex/config.toml` 复用完整启动参数；其 `stop` 只用于系统退出或明确维护，不参与发布，不作为调试或会话清理手段。每个新 session 在其他浏览器操作前先调用 `scriptcat_status`。
-- **加载、刷新与权限**：MCP 在每个 browser lifecycle 中通过 Chrome 官方扩展设置界面确保开发者模式开启，再通过标准 `Extensions.loadUnpacked` 加载或刷新配置中的 managed 目录，并核对返回的扩展 ID。随后通过官方设置界面检查并授予 userScripts 权限；只有授权发生变化时，再次加载该目录以刷新 service worker 的 API 可用状态。该流程按目录内容刷新，不比较或假设扩展版本，也不因扩展已存在而跳过加载。权限与扩展加载就绪后才提供 ScriptCat 工具。`scriptcat_status` 只观察权限和就绪状态。`userScriptsAccessEnabled` 不是 `true` 时，应检查 MCP 初始化与扩展状态。managed 目录缺失、内容损坏或 manifest 无效时，重新执行本地 publish 命令原子修复固定目录，再开始新的 browser lifecycle。
-- **MCP 脚本管理与验收**：以 `scriptcat_upsert_script` 写入仓库内规范化的目标 `*.user.js` 路径；MCP 会逐脚本关闭 ScriptCat 后台更新检查，避免仓库脚本被外部 `@updateURL` 覆盖。按需使用 `scriptcat_list_scripts`、`scriptcat_get_script`、`scriptcat_set_enabled` 和 `scriptcat_delete_script`，随后打开真实 `@match` 页面，确认注入、UI、控制台、网络请求和核心交互。
-- **用户正常浏览器安装**：用户日常浏览器使用 ScriptCat 的默认 VSCode sync 端口 `8642`。每次修改用户脚本并完成构建、测试和提交后，必须对本次修改的每个根目录 `*.user.js` 执行 `pnpm install:scriptcat -- <script.user.js>`；安装成功是任务完成条件。不传脚本时默认安装 `greenmangaming-bundle-claim.user.js`。该路径独立于专用 MCP 验收。
-
-## MCP 与扩展发布
-
-- **产品边界**：MCP 负责 `chrome-devtools-mcp` 可执行文件；managed ScriptCat 负责浏览器扩展。浏览器使用已安装的官方 Google Chrome，本仓库不编译或发布 Chromium。
-- **MCP 本地三阶段**：MCP 使用 `browser/mcp.lock.json` 和 `scripts/mcp/`，在本地依次 build、package、install。build 从 `.codex/config.toml` 的 `--executable-path` 读取浏览器路径，在 `browser/chrome-devtools-mcp` submodule 内以 `PUPPETEER_SKIP_DOWNLOAD=true` 安装依赖、编译、打包候选 runtime，并以临时 profile 对候选 runtime 运行真实共享浏览器 E2E，只把已验证 component 保存到 `~/.local/share/scriptcat-mcp-build`；package 从该 component 生成 schema 5 归档；install 先物化新 release，再由旧 runtime 进入排他 handoff 并继续持有 abstract socket；切换 `current`/`previous` 后请求旧 broker commit。broker commit 成功是不可回滚的 activation point，之后的 journal 清理异常保留新链接；commit 前失败则 abort handoff 并恢复旧链接。broker 不存在或旧 runtime 尚无 shared 模式时继续安装；活跃客户端、运行中的旧 shared runtime 不支持 handoff 及其他控制错误均在切换前中止安装。首次从不支持 handoff 的 shared runtime 升级时，维护者须先运行 `scripts/mcp/control.py stop`，再重试 install；安装器不得自动 fallback stop。运行配置继续使用 `~/.local/share/scriptcat-mcp/current/mcp/bin/chrome-devtools-mcp.js`。
-- **扩展本地发布**：managed ScriptCat 由 `scripts/scriptcat/publish.py` 在本机构建、测试并原子替换固定 managed 目录。扩展不进入 MCP 的 build、archive 与 install；发布任一产品不会改变另一个产品的安装状态。已运行 browser 中的内容刷新由下一个 MCP browser lifecycle 的 `Extensions.loadUnpacked` 完成。
-- **验收时序**：MCP 与扩展分别完成发布后，通过 MCP 验收浏览器调用、ScriptCat CRUD、真实页面注入和进程清理。
-
-## 项目
-
-- **脚本清单**：见下表。改脚本前查阅脚本头；新增或删除脚本时同步更新。
-- **源码与产物**：带 build 的脚本，**只改 `src/userscripts/` 与 `src/lib/`，再 `pnpm build` 生成根目录 `*.user.js`**；不要直接改根目录产物（会被 build 覆盖）。
-- **协作方式**：在 `main` 上直接开发，不走 PR；每完成可验收单元后 commit（含 `src/` 与 build 产物）。
-
-**Build 分级**：已接入 = 已在 `src/userscripts/`；A/B = 计划迁入 build；C = 仅抽 lib；D = 维持根目录单文件。
-
-| 脚本文件 | Build | 源码 | 目标站点 | 主要功能 |
-|----------|-------|------|----------|----------|
-| douban.user.js | 已接入 | `src/userscripts/douban.user.js` | book.douban.com/series/* | 豆瓣丛书批量操作、豆列、书单 |
-| steampy-token-sync.user.js | 已接入 | `src/userscripts/steampy-token-sync.user.js` | steampy.com | SteamPy accessToken + Cookies 云端同步 |
-| douban-tag.user.js | 已接入 | `src/userscripts/douban-tag.user.js` | book.douban.com/subject/* | 豆瓣图书自动推荐标签 |
-| douban_earliest_publication.user.js | 已接入 | `src/userscripts/douban_earliest_publication.user.js` | book.douban.com/subject/* | 豆瓣图书最早出版时间标注 |
-| planetplay-order-keys.user.js | 已接入 | `src/userscripts/planetplay-order-keys.user.js` | planetplay.com/*/orders | 订单 Key 提取、批量复制与 Steam 激活 |
-| greenmangaming-bundle-claim.user.js | 已接入 | `src/userscripts/greenmangaming-bundle-claim.user.js` | greenmangamingbundles.com order-claim | GMG 捆绑包 Steam key 复制与自动激活 |
-| keylol_to_steampy_price.user.js | 已接入 | `src/userscripts/keylol_to_steampy_price.user.js` | keylol.com, steampy.com | Steam 价格及总价显示 |
-| snokwo.user.js | 已接入 | `src/userscripts/snokwo.user.js` | sonkwo.hk, steampy.com | Steam AppID 提取 |
-| zlib.isbn_highlight.user.js | 已接入 | `src/userscripts/zlib.isbn_highlight.user.js` | Z-Library 多域名 | 高亮缺失 ISBN 的书籍卡片 |
-| zlib-download-history-sync.user.js | 已接入 | `src/userscripts/zlib-download-history-sync.user.js` | Z-Library 多域名 | 多账号下载历史同步 |
-| zlib-local-owned-mark.user.js | 已接入 | `src/userscripts/zlib-local-owned-mark.user.js` | Z-Library 多域名 | 按书名作者标注本地已有书籍 |
-| steam-discovery-queue.user.js | 已接入 | `src/userscripts/steam-discovery-queue.user.js` | store.steampowered.com 探索队列 | 按评分、价格、标签等规则自动筛选，并在愿望单或忽略成功后进入下一项 |
-| steamdb-open-steam-store.user.js | 已接入 | `src/userscripts/steamdb-open-steam-store.user.js` | steamdb.info 即时搜索、促销列表 | 中键点击游戏条目打开 Steam 商店 |
-| steampy.user.js | 已接入 | `src/userscripts/steampy.user.js` | steampy.com | SteamPy 价格对比增强 |
-| bilibili.user.js | C（lib 已抽） | — | bilibili.com 番剧 | BGM 评分显示；`src/lib/bilibili/bgm-rating.js` |
-| page-agent.user.js | C（lib 已抽） | — | 通用 (*://*/*) | 自然语言操作网页；`src/lib/page-agent/gm-fetch.js` |
-| zlib.user.js | D | — | Z-Library 多域名 | UI 增强 |
-| keylolsign.user.js | D | — | keylol.com | 每日签到 |
-| vue.user.js | D | — | 通用 (*://*/*) | scriptcat dev 调试 |
-
-## 项目结构
-
-| 路径 | 用途 |
-|------|------|
-| `src/userscripts/*.user.js` | **可 build 脚本的源码入口**（含 `@name` 等 metadata + ES module `import`） |
-| `src/lib/userscript/` | 跨脚本通用库（GM API 封装、格式化、CAT 文件存储等） |
-| `src/lib/<site>/` | 站点专用库（如 `douban/auth.js`、`steampy/token-sync.js`） |
-| `*.user.js`（仓库根） | **安装/发布用产物**；有 build 源的由 `pnpm build` 生成，其余为手写单文件 |
-| `.build/userscripts/` | esbuild 临时输出（可忽略，已在 gitignore） |
-| `.upstream/scriptcat` | ScriptCat 扩展上游源码，用于核对安装、注入、service worker 与运行时行为 |
-| `.upstream/scriptcat-vscode` | ScriptCat VSCode 插件上游源码，用于核对 VSCode sync 协议 |
-| `browser/scriptcat` | 本地 ScriptCat 扩展 submodule；由 `scripts/scriptcat/publish.py` 构建、测试并发布到 managed 目录 |
-| `scripts/build-userscripts.mjs` | 将 `src/userscripts/*.user.js` bundle 到仓库根同名文件 |
-| `scripts/mcp/` | ScriptCat MCP 的本地 build、package、install 三阶段入口 |
-| `scripts/scriptcat/publish.py` | 本地构建、测试并发布 `browser/scriptcat` 到 `~/.local/share/scriptcat-extension/managed` |
-| `.mcp.json` | Pi 与共享 MCP 配置（`chrome-devtools-scriptcat`） |
-| `browser/mcp.lock.json` | ScriptCat MCP 的供应链 lock |
-| `.codex/config.toml` | 配置已安装浏览器与 `chrome-devtools-scriptcat` MCP |
-| `scripts/userscripts/install-to-scriptcat.mjs` | 推送本地 userscript 到用户正常浏览器 ScriptCat |
-| `scripts/userscripts/lint.cjs` | 对根目录 `*.user.js` 跑 eslint-plugin-userscripts |
-| `scripts/userscripts/lint-built.cjs` | 仅 lint build 产物（`src/userscripts` 对应根目录文件） |
-| `docs/site-notes.md` | 站点逆向笔记（接口、选择器、鉴权方式） |
-| `docs/troubleshooting.md` | 常见问题排查 |
-| `docs/scriptcat-require.md` | Scriptcat @require、@connect、库格式 |
-
-## Build 层（`src/` + esbuild）
-
-适用于逻辑较多、需要复用 `src/lib/` 的脚本。共享代码通过 build **内联**到各脚本，脚本间无运行时 `@require` 依赖。
-
-| 源码入口 | 主要 lib 依赖 |
-|----------|----------------|
-| `src/userscripts/douban.user.js` | `src/lib/douban/{auth,series}.js` |
-| `src/userscripts/steampy-token-sync.user.js` | `src/lib/steampy/token-sync.js`，及 `src/lib/userscript/*` |
-| `src/userscripts/douban-tag.user.js` | `src/lib/douban/tag-recommend.js` |
-| `src/userscripts/douban_earliest_publication.user.js` | `src/lib/douban/earliest-publication.js` |
-| `src/userscripts/planetplay-order-keys.user.js` | `src/lib/planetplay/order-keys.js`，`src/lib/userscript/steam-key-toolbar.js`，`src/lib/steam/key-activation.js` |
-| `src/userscripts/greenmangaming-bundle-claim.user.js` | `src/lib/gmg/*`，`src/lib/userscript/steam-key-toolbar.js`，`src/lib/steam/key-activation.js` |
-| `src/userscripts/keylol_to_steampy_price.user.js` | `src/lib/keylol/steampy-price.js`，`src/lib/steampy/{access-token,xboot-client}.js` |
-| `src/userscripts/snokwo.user.js` | `src/lib/sonkwo/search-price.js`，`src/lib/steampy/{access-token,xboot-client}.js` |
-| `src/userscripts/zlib.isbn_highlight.user.js` | `src/lib/zlib/bookcard-isbn.js` |
-| `src/userscripts/zlib-download-history-sync.user.js` | `src/lib/zlib/download-history-sync.js` |
-| `src/userscripts/zlib-local-owned-mark.user.js` | `src/lib/zlib/local-owned-mark.js`，`src/lib/zlib/owned-booklist.js` |
-| `src/userscripts/steam-discovery-queue.user.js` | `src/lib/steam/{discovery-queue,discovery-queue-auto-filter,discovery-queue-config,discovery-queue-rules}.js` |
-| `src/userscripts/steamdb-open-steam-store.user.js` | `src/lib/steamdb/open-steam-store.js` |
-| `src/userscripts/steampy.user.js` | `src/lib/steampy/steam-library.js`，`src/lib/steampy/steampy-plus*.js`，`src/lib/steampy/game-manager.js` |
-
-**C 级已抽 lib（入口仍为根目录单文件，待后续迁入 build）**
-
-| 根目录脚本 | 已抽 lib |
-|------------|----------|
-| `bilibili.user.js` | `src/lib/bilibili/bgm-rating.js` |
-| `page-agent.user.js` | `src/lib/page-agent/gm-fetch.js`（可复用 `src/lib/userscript/gm-xhr.js`） |
-
-**约定**
-
-- metadata（`// ==UserScript==` …）写在 `src/userscripts/<name>.user.js` 顶部；build 后原样保留在产物文件开头。
-- 源码 body 使用 ES module `import`；esbuild 以 **IIFE、不 minify、无 sourcemap** 打包到根目录，保持可读。
-- 通用能力放 `src/lib/userscript/`；站点业务放 `src/lib/<site>/`；入口文件尽量薄（metadata + `import` + 启动调用）。
-- 新增 build 脚本：在 `src/userscripts/` 添加入口 → 按需加 lib → 更新 `.gitignore` 白名单 → 更新本表 → `pnpm build:check`。
-
-**常用命令**
-
-```fish
-pnpm build:check                         # build 全部入口 + lint 产物
-pnpm build                               # 仅 build
-pnpm run lint:userscripts -- foo.user.js
-pnpm install:scriptcat -- steampy-token-sync.user.js
-
-# 本地发布 managed ScriptCat 扩展
-uv run --project scripts --python 3.12 python scripts/scriptcat/publish.py
-
-# ScriptCat MCP broker 管理；stop 仅用于系统退出或明确维护
-uv run --project scripts --python 3.12 python scripts/mcp/control.py status
-uv run --project scripts --python 3.12 python scripts/mcp/control.py stop
-
-# ScriptCat MCP 本地发布：fish 中显式按阶段执行；install 自动完成旧 broker 交接
-set mcp_component_build_id (uv run --project scripts --python 3.12 python scripts/mcp/build.py)
-set mcp_archive /tmp/scriptcat-mcp-portable.tar.zst
-set mcp_release_build_id (uv run --project scripts --python 3.12 python scripts/mcp/package.py --build-id $mcp_component_build_id --output $mcp_archive)
-set mcp_archive_sha256 (string trim < "$mcp_archive.sha256")
-uv run --project scripts --python 3.12 python scripts/mcp/install.py $mcp_archive --lock browser/mcp.lock.json --build-id $mcp_release_build_id --archive-sha256 $mcp_archive_sha256
-```
-
-## 参考
-
-[Tampermonkey 技能](.agents/skills/tampermonkey/SKILL.md) | [site-notes](docs/site-notes.md) | [troubleshooting](docs/troubleshooting.md) | [scriptcat-require](docs/scriptcat-require.md)
+- 本仓库用户脚本使用 `chrome-devtools-scriptcat` 和 `scriptcat-script-setup` 技能验收。打开真实 `@match` 页面检查注入、UI、控制台、网络请求及核心交互；静态 DOM 或 lint/build 不能替代运行验收。
+- 每个新 MCP session 首先调用 `scriptcat_status`，确认扩展启用、`userScriptsAccessEnabled: true`、service worker 和 backend 就绪，再用 `scriptcat_upsert_script` 写入仓库内规范化的目标脚本路径。
+- 持久 broker 独占固定 profile 与浏览器进程。不得发送进程信号、手动启动浏览器、复制 profile、删除 `Singleton*`，或用其他进程争用该 profile。关闭 proxy 或 session 不结束浏览器。
+- lifecycle 初始化负责开启开发者模式、加载 managed 目录和授予 userScripts 权限。加载按目录内容执行，不按版本或已注册状态跳过；仅权限改变时再次加载以刷新 worker。`scriptcat_status` 只观察，不能用额外授权或重新加载绕过初始化失败。
+- 浏览器使用已安装的官方 Google Chrome。本仓库分别发布 MCP 与 managed 扩展，不编译或发布 Chromium。
+- `scripts/mcp/control.py stop` 只用于明确维护或系统退出，不用于调试清理，也不代替 MCP 发布中的排他 handoff。安装器不得在交接失败后自动 fallback stop。
+- 每次修改用户脚本并完成构建、测试和提交后，对本轮每个根目录产物执行 `pnpm install:scriptcat -- <script.user.js>`。安装到日常浏览器成功才算完成；该流程独立于专用 MCP 验收。
