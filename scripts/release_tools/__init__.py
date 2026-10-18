@@ -1,1 +1,1 @@
-"""Shared release tooling for local and remote products."""
+"""Shared release tooling for local products."""

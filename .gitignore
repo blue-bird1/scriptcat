@@ -73,10 +73,9 @@ __pycache__/
 !vendor/
 !vendor/page-agent.js
 
-# Browser and MCP source pins, local publication tools, and remote provider tooling.
+# MCP source pin and local publication tools.
 !browser/
 !browser/mcp.lock.json
-!browser/provider.lock.json
 !browser/chrome-devtools-mcp
 !browser/scriptcat
 !.gitmodules
@@ -94,13 +93,6 @@ scripts/mcp/**/*.pyc
 !scripts/release_tools/**
 scripts/release_tools/__pycache__/
 scripts/release_tools/**/*.pyc
-!scripts/remote/
-!scripts/remote/**
-scripts/remote/__pycache__/
-scripts/remote/**/*.pyc
-!scripts/hooks/
-!scripts/hooks/block-local-chromium-build-commands.py
-!scripts/hooks/test_block_local_chromium_build_commands.py
 
 # Project-scoped Codex MCP setup for ScriptCat debugging.
 !.codex/

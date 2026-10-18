@@ -26,6 +26,7 @@ if __package__ in (None, ""):
         require_commands,
     )
     from mcp._component import materialize_component, read_component
+    from mcp._control import load_mcp_invocation
     from mcp._identity import component_build_id
     from mcp._lock import UpstreamLock, load_lock, validate_mcp_submodule
 else:
@@ -40,24 +41,14 @@ else:
         require_commands,
     )
     from ._component import materialize_component, read_component
+    from ._control import load_mcp_invocation
     from ._identity import component_build_id
     from ._lock import UpstreamLock, load_lock, validate_mcp_submodule
 
 LOCK_PATH = Path("browser/mcp.lock.json")
 LOGGER = logging.getLogger("scriptcat.mcp")
 SCRIPTCAT_EXTENSION_ID = "mihocogjodhedlmnebhfkiahldphcimj"
-SHARED_TEST_EXECUTABLE_PATH = (
-    Path.home()
-    / ".local"
-    / "share"
-    / "scriptcat-browser"
-    / "current"
-    / "chrome-linux"
-    / "chrome"
-)
-SHARED_TEST_PROVIDER_MANIFEST_PATH = (
-    Path.home() / ".local" / "share" / "scriptcat-browser" / "current" / "manifest.json"
-)
+MCP_CONFIG_PATH = Path(".codex/config.toml")
 SHARED_TEST_MANAGED_SCRIPTCAT_PATH = (
     Path.home() / ".local" / "share" / "scriptcat-extension" / "managed"
 )
@@ -70,26 +61,12 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(
         description="Build and focus-test the local MCP component.",
         epilog=(
-            "Requires a clean main checkout, an initialized clean MCP submodule, the "
-            f"installed provider at {SHARED_TEST_EXECUTABLE_PATH}, its release "
-            f"manifest at {SHARED_TEST_PROVIDER_MANIFEST_PATH}, and managed "
-            "ScriptCat at "
-            f"{SHARED_TEST_MANAGED_SCRIPTCAT_PATH}. Publish ScriptCat with:\n"
+            "Requires a clean main checkout, an initialized clean MCP submodule, "
+            "the executable configured by --executable-path in .codex/config.toml, "
+            f"and managed ScriptCat at {SHARED_TEST_MANAGED_SCRIPTCAT_PATH}. "
+            "Publish ScriptCat with:\n"
             "  uv run --project scripts --python 3.12 python "
-            "scripts/scriptcat/publish.py\n"
-            "Install the provider with:\n"
-            "  set provider_component_build_id (uv run --project scripts "
-            "--python 3.12 python scripts/remote/provider/build.py)\n"
-            "  set provider_archive /tmp/scriptcat-browser-portable.tar.zst\n"
-            "  set provider_release_build_id (uv run --project scripts "
-            "--python 3.12 python scripts/remote/provider/package.py --build-id "
-            "$provider_component_build_id --output $provider_archive)\n"
-            "  set provider_archive_sha256 (string trim < "
-            '"$provider_archive.sha256")\n'
-            "  uv run --project scripts --python 3.12 python "
-            "scripts/remote/provider/install.py $provider_archive --lock "
-            "browser/provider.lock.json --build-id $provider_release_build_id "
-            "--archive-sha256 $provider_archive_sha256\n\n"
+            "scripts/scriptcat/publish.py\n\n"
             "The build installs frozen pnpm dependencies, compiles, runs focused "
             "tests, bundles the candidate runtime, and executes the formal shared "
             "browser E2E with a temporary Chromium profile against that exact "
@@ -144,24 +121,34 @@ def run(argv: Sequence[str]) -> int:
 
 def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
     checkout = root / "browser" / "chrome-devtools-mcp"
-    validate_shared_test_prerequisites(root)
+    executable_path = validate_shared_test_prerequisites(root)
+    test_environment = (
+        os.environ
+        | load_mcp_invocation(root / MCP_CONFIG_PATH).env
+        | {
+            "LC_ALL": "C.UTF-8",
+            "LANG": "C.UTF-8",
+            "PUPPETEER_EXECUTABLE_PATH": str(executable_path),
+        }
+    )
     LOGGER.info("installing frozen MCP dependencies")
     run_build_command(
         ("pnpm", "install", "--frozen-lockfile", "--config.node-linker=hoisted"),
         cwd=checkout,
+        env=os.environ | {"PUPPETEER_SKIP_DOWNLOAD": "true"},
     )
     LOGGER.info("building MCP sources")
     run_build_command(("pnpm", "build"), cwd=checkout)
     LOGGER.info("running focused MCP tests")
     run_build_command(
         (
-            "node",
-            "scripts/test.mjs",
-            "--",
+            "pnpm",
+            "test:no-build",
             "tests/cli.test.ts",
             "tests/shutdown.test.ts",
         ),
         cwd=checkout,
+        env=test_environment,
     )
     LOGGER.info("bundling MCP runtime")
     run_build_command(("pnpm", "bundle"), cwd=checkout)
@@ -175,20 +162,17 @@ def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
         LOGGER.info("running shared browser E2E against candidate runtime")
         run_build_command(
             (
-                "node",
-                "scripts/test.mjs",
-                "--",
+                "pnpm",
+                "test:no-build",
                 "tests/shared-browser.test.ts",
             ),
             cwd=checkout,
-            env=os.environ
+            env=test_environment
             | {
                 "CHROME_DEVTOOLS_MCP_SHARED_TEST_ENTRY_PATH": str(
                     runtime / "bin" / "chrome-devtools-mcp.js"
                 ),
-                "CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH": str(
-                    SHARED_TEST_EXECUTABLE_PATH
-                ),
+                "CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH": str(executable_path),
                 "CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH": str(
                     SHARED_TEST_MANAGED_SCRIPTCAT_PATH
                 ),
@@ -201,19 +185,28 @@ def build_component(root: Path, build_root: Path, lock: UpstreamLock) -> None:
         materialize_component(runtime.parent, build_root / "builds", lock, epoch)
 
 
-def validate_shared_test_prerequisites(root: Path) -> None:
+def configured_browser_executable(root: Path) -> Path:
+    invocation = load_mcp_invocation(root / MCP_CONFIG_PATH)
+    arguments = invocation.args[invocation.shared_index + 1 :]
+    paths = []
+    for index, argument in enumerate(arguments):
+        if argument.startswith("--executable-path="):
+            paths.append(argument.removeprefix("--executable-path="))
+        elif argument == "--executable-path" and index + 1 < len(arguments):
+            paths.append(arguments[index + 1])
+    if len(paths) != 1 or not paths[0] or paths[0].startswith("--"):
+        raise WorkflowError("MCP config must select one browser with --executable-path")
+    return resolve(root, Path(paths[0]))
+
+
+def validate_shared_test_prerequisites(root: Path) -> Path:
     if not root.is_dir():
         raise WorkflowError(f"ScriptCat repository root is unavailable: {root}")
-    if not SHARED_TEST_EXECUTABLE_PATH.is_file() or not os.access(
-        SHARED_TEST_EXECUTABLE_PATH, os.X_OK
-    ):
+    executable_path = configured_browser_executable(root)
+    if not executable_path.is_file() or not os.access(executable_path, os.X_OK):
         raise WorkflowError(
-            f"browser provider executable is unavailable: {SHARED_TEST_EXECUTABLE_PATH}"
+            f"configured browser executable is unavailable: {executable_path}"
         )
-    require_json_object(
-        SHARED_TEST_PROVIDER_MANIFEST_PATH,
-        "browser provider release manifest",
-    )
     if not SHARED_TEST_MANAGED_SCRIPTCAT_PATH.is_dir():
         raise WorkflowError(
             "managed ScriptCat directory is unavailable: "
@@ -223,6 +216,7 @@ def validate_shared_test_prerequisites(root: Path) -> None:
         SHARED_TEST_MANAGED_SCRIPTCAT_MANIFEST_PATH,
         "managed ScriptCat manifest",
     )
+    return executable_path
 
 
 def require_json_object(path: Path, label: str) -> None:

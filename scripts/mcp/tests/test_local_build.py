@@ -14,7 +14,7 @@ from scripts.mcp._identity import component_build_id
 from scripts.mcp._lock import load_lock
 
 FORK_URL = "https://example.invalid/chrome-devtools-mcp.git"
-VERSION = "1.5.0"
+VERSION = "1.12.0"
 PNPM_STDOUT = "pnpm-progress-stdout"
 PNPM_STDERR = "pnpm-progress-stderr"
 NODE_HELP_STDOUT = "node-help-stdout"
@@ -52,16 +52,24 @@ class LocalMcpBuildTest(unittest.TestCase):
                 lock.mcp.commit,
             )
             invocations = invocation_log.read_text(encoding="utf-8").splitlines()
+            self.assertIn("PUPPETEER_SKIP_DOWNLOAD=true", invocations)
             focused_test = next(
                 invocation
                 for invocation in invocations
-                if "tests/cli.test.ts" in invocation
+                if invocation.startswith("node ") and "tests/cli.test.ts" in invocation
             )
             shared_test = next(
                 invocation
                 for invocation in invocations
-                if SHARED_TEST_FILE in invocation
+                if invocation.startswith("node ") and SHARED_TEST_FILE in invocation
             )
+            for invocation in (focused_test, shared_test):
+                self.assertIn("LC_ALL=C.UTF-8", invocation)
+                self.assertIn("LANG=C.UTF-8", invocation)
+                self.assertIn(
+                    f"PUPPETEER_EXECUTABLE_PATH={installed_browser(base)}",
+                    invocation,
+                )
             self.assertNotIn(SHARED_TEST_FILE, focused_test)
             self.assertIn(
                 f"{SHARED_ENTRY_ENV}=",
@@ -74,9 +82,11 @@ class LocalMcpBuildTest(unittest.TestCase):
             home = Path(environment["HOME"])
             self.assertIn(
                 "CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH="
-                f"{provider_executable(home)}",
+                f"{installed_browser(base)}",
                 shared_test,
             )
+            self.assertIn("HTTP_PROXY=http://127.0.0.1:7891", shared_test)
+            self.assertIn("HTTPS_PROXY=http://127.0.0.1:7891", shared_test)
             self.assertIn(
                 "CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH="
                 f"{managed_scriptcat(home)}",
@@ -115,6 +125,9 @@ class LocalMcpBuildTest(unittest.TestCase):
                 ]
             ]
             self.assertEqual(len(help_invocations), 2)
+            for invocation in help_invocations:
+                self.assertIn("LC_ALL=zh_CN.UTF-8", invocation)
+                self.assertIn("LANG=zh_CN.UTF-8", invocation)
             self.assertNotIn(" shared ", f" {help_invocations[0]} ")
             self.assertIn(" shared --help", help_invocations[1])
 
@@ -133,6 +146,36 @@ class LocalMcpBuildTest(unittest.TestCase):
             self.assertIn("managed ScriptCat manifest", completed.stderr)
             invocation_log = Path(environment["FAKE_INVOCATION_LOG"])
             self.assertFalse(invocation_log.exists())
+
+    def test_browser_configuration_failure_precedes_dependency_install(self) -> None:
+        for failure in ("missing-executable", "missing-selection"):
+            with (
+                self.subTest(failure=failure),
+                tempfile.TemporaryDirectory(dir="/tmp") as name,
+            ):
+                base = Path(name)
+                root, lock_path = create_parent_checkout(base)
+                build_root = base / "component-store"
+                fake_bin = create_fake_toolchain(base)
+                environment = fake_environment(fake_bin)
+                if failure == "missing-executable":
+                    installed_browser(base).unlink()
+                else:
+                    config = root / ".codex" / "config.toml"
+                    config.write_text(
+                        "[mcp_servers.chrome-devtools-scriptcat]\n"
+                        'command = "node"\n'
+                        'args = ["runtime.js", "shared"]\n',
+                        encoding="utf-8",
+                    )
+                    git(root, "add", ".codex/config.toml")
+                    git_commit(root, "configure browser")
+
+                completed = run_build_cli(root, lock_path, build_root, environment)
+
+                self.assertEqual(completed.returncode, 1)
+                self.assertFalse(Path(environment["FAKE_INVOCATION_LOG"]).exists())
+                self.assertFalse((build_root / "builds").exists())
 
     def test_shared_e2e_failure_does_not_materialize_component(self) -> None:
         with tempfile.TemporaryDirectory(dir="/tmp") as name:
@@ -221,6 +264,17 @@ def create_parent_checkout(base: Path) -> tuple[Path, Path]:
         + "\n",
         encoding="utf-8",
     )
+    config = root / ".codex" / "config.toml"
+    config.parent.mkdir()
+    config.write_text(
+        "[mcp_servers.chrome-devtools-scriptcat]\n"
+        'command = "node"\n'
+        'env = { HTTP_PROXY = "http://127.0.0.1:7891", '
+        'HTTPS_PROXY = "http://127.0.0.1:7891" }\n'
+        'args = ["runtime.js", "shared", '
+        f'"--executable-path={installed_browser(base)}"]\n',
+        encoding="utf-8",
+    )
     git(root, "add", ".")
     git_commit(root, "parent")
     return root, lock_path
@@ -237,7 +291,12 @@ def create_fake_toolchain(base: Path) -> Path:
         "printf '%s\\n' \"$FAKE_PNPM_STDOUT\"\n"
         "printf '%s\\n' \"$FAKE_PNPM_STDERR\" >&2\n"
         'case "$1" in\n'
-        "  install) exit 0 ;;\n"
+        "  install)\n"
+        "    printf 'PUPPETEER_SKIP_DOWNLOAD=%s\\n' "
+        '"${PUPPETEER_SKIP_DOWNLOAD:-}" >> "$FAKE_INVOCATION_LOG"\n'
+        "    exit 0 ;;\n"
+        "  test:no-build) shift; exec node scripts/test.js "
+        '--test-skip-pattern=THIRD_PARTY_NOTICES "$@" ;;\n'
         "  build|bundle)\n"
         "    mkdir -p build/src/bin\n"
         "    printf '#!/usr/bin/env node\\n' > build/src/bin/chrome-devtools-mcp.js\n"
@@ -256,6 +315,12 @@ def create_fake_toolchain(base: Path) -> Path:
         '"${CHROME_DEVTOOLS_MCP_SHARED_TEST_ENTRY_PATH:-}"\n'
         "  printf ' CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH=%s' "
         '"${CHROME_DEVTOOLS_MCP_SHARED_TEST_EXECUTABLE_PATH:-}"\n'
+        "  printf ' LC_ALL=%s' \"${LC_ALL:-}\"\n"
+        "  printf ' LANG=%s' \"${LANG:-}\"\n"
+        "  printf ' PUPPETEER_EXECUTABLE_PATH=%s' "
+        '"${PUPPETEER_EXECUTABLE_PATH:-}"\n'
+        "  printf ' HTTP_PROXY=%s' \"${HTTP_PROXY:-}\"\n"
+        "  printf ' HTTPS_PROXY=%s' \"${HTTPS_PROXY:-}\"\n"
         "  printf ' CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH=%s' "
         '"${CHROME_DEVTOOLS_MCP_SHARED_TEST_MANAGED_SCRIPTCAT_PATH:-}"\n'
         "  printf ' CHROME_DEVTOOLS_MCP_SHARED_TEST_SCRIPTCAT_REPOSITORY_ROOT=%s' "
@@ -292,6 +357,11 @@ def fake_environment(fake_bin: Path) -> dict[str, str]:
     create_shared_prerequisites(home)
     return os.environ | {
         "HOME": str(home),
+        "LC_ALL": "zh_CN.UTF-8",
+        "LANG": "zh_CN.UTF-8",
+        "PUPPETEER_SKIP_DOWNLOAD": "false",
+        "HTTP_PROXY": "http://unused.invalid",
+        "HTTPS_PROXY": "http://unused.invalid",
         "PATH": f"{fake_bin}:{os.environ['PATH']}",
         "FAKE_PNPM_STDOUT": PNPM_STDOUT,
         "FAKE_PNPM_STDERR": PNPM_STDERR,
@@ -302,11 +372,10 @@ def fake_environment(fake_bin: Path) -> dict[str, str]:
 
 
 def create_shared_prerequisites(home: Path) -> None:
-    executable = provider_executable(home)
+    executable = installed_browser(home.parent)
     executable.parent.mkdir(parents=True)
     executable.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     executable.chmod(0o755)
-    provider_manifest(home).write_text("{}\n", encoding="utf-8")
     managed = managed_scriptcat(home)
     managed.mkdir(parents=True)
     managed_manifest(home).write_text(
@@ -315,20 +384,8 @@ def create_shared_prerequisites(home: Path) -> None:
     )
 
 
-def provider_executable(home: Path) -> Path:
-    return (
-        home
-        / ".local"
-        / "share"
-        / "scriptcat-browser"
-        / "current"
-        / "chrome-linux"
-        / "chrome"
-    )
-
-
-def provider_manifest(home: Path) -> Path:
-    return home / ".local" / "share" / "scriptcat-browser" / "current" / "manifest.json"
+def installed_browser(base: Path) -> Path:
+    return base / "installed-browser" / "chrome"
 
 
 def managed_scriptcat(home: Path) -> Path:
