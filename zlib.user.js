@@ -3,7 +3,7 @@
 // @name:zh-CN         Z-Library 增强脚本
 // @name:en            Z-Library UI Enhance
 // @namespace          out
-// @version            2026.9.8
+// @version            2026.9.9
 // @description        改善 Zlibray 页面功能的油猴脚本
 // @description:zh-CN  给 Z-Library 一个更友好的使用体验
 // @description:en     give Z-Library  a more user friendly experience
@@ -797,7 +797,7 @@
                         x = readListCopyClickEvent.target.getBoundingClientRect().x;
                         y = readListCopyClickEvent.target.getBoundingClientRect().y + readListCopyClickEvent.target.getBoundingClientRect().height + window.scrollY;
                     }
-                    new ZLibraryResponse(`/papi/booklist/current-user/`)
+                    new ZLibraryResponse(`/papi/booklist/current-user/0`)
                         .success(function (json) {
                             const transformedList = json.list.map(item => ({
                                 text: item.title,

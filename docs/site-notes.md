@@ -31,10 +31,12 @@
 
 - **@connect**：`book.douban.com`、`doubanio.com`（zlib.user.js）。
 - **域名**：脚本匹配 `*.z-library.sk`、`*.z-lib.fm`、`*.z-lib.gs`、`*.1lib.sk` 等；跳转搜索使用 `zh.1lib.sk`。
+- **身份核验**：验收使用官方账号明确发布的 `z-library.sk`。域名公告：https://mastodon.social/@Z_Lib_official/115983241337366646 。备用邮箱 `blackbox@z-library.so` 的官方公告：https://mastodon.social/@Z_Lib_official/115982676684123606 。不以搜索结果、页面外观或同名域名判定身份。
 - **接口**
   - `GET https://book.douban.com/isbn/{isbn}`：Z-Library 页内查豆瓣封面/信息（zlib.user.js）；response 用 HTML 解析。
   - `GET` doubanio.com：豆瓣封面图等资源（zlib.user.js 内 fetch 为 GET + responseType blob）。
   - `POST /papi/booklist/{id}/get-books/{page}?order=date_savedA`：`books[]` 的书籍 ID 位于 `book.id`；条目顶层含 `readlist_books_id`，不再含 `book_id`。`pagination.next` 为下一页页码或 `false`。2026-10-18 在 `z-library.mn/booklist/93824/f0e540/aak-all-about-korean.html` 实测。
+  - `GET /papi/booklist/current-user/{bookId}`：站点 `z-booklists-browser` 的书单列表接口；参数为 `0` 时返回当前用户的全部书单，`readlistBookId` 为 `null`。省略参数会返回 404。2026-10-18 在 `z-library.sk` 使用两份私有书单实测。
   - `UserBookmarks.addBookToBooklist({bookId, booklistId, successCallback, errorCallback})`：写入 `/papi/booklist/{booklistId}/add-book/{bookId}`。业务错误通过 `errorCallback` 返回，Promise 不会因此拒绝；复制必须等待成功回调后再报告完成。
 - **选择器**
   - 书籍卡片：`z-bookcard`；带 isbn 属性：`z-bookcard[isbn]`；搜索结果容器：`#searchResultBox > div.resItemBoxBooks > z-bookcard`、`#searchResultBox > .book-item > z-bookcard`。
