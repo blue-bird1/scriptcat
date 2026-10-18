@@ -17,6 +17,8 @@
 
 详情地址为 `/subject/{subjectId}/`，ISBN 地址为 `/isbn/{isbn}`。相关 HTML 请求使用 `Accept: text/html`。
 
+`zlib.user.js` 从 ISBN 页面解析书籍资料，再通过 `GM_xmlhttpRequest` 以 blob 读取 `doubanio.com` 封面资源，用于 Z-Library 信息补全。
+
 推荐标签依赖页面全局 `DoubanAdRequest.crtr`。最早出版时间依赖“其他版本”容器 `div.gray_ad.version_works`、其 `li.mb8.pl` 条目与 `/works/` 链接。
 
 标签与出版时间实现分别位于 `src/lib/douban/tag-recommend.js`、`src/lib/douban/earliest-publication.js`。
