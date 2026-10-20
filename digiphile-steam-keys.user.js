@@ -1,14 +1,15 @@
 // ==UserScript==
 // @name         Digiphile Steam Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.0.4
-// @description  批量刮开、读取和复制 Digiphile Steam Key
+// @version      1.1.0
+// @description  批量读取、复制和激活 Digiphile Steam Key
 // @author       blue-bird1
 // @match        https://www.digiphile.co/customer/*
 // @grant        GM_addStyle
 // @grant        GM_setClipboard
 // @grant        GM_xmlhttpRequest
 // @connect      api.digiphile.co
+// @connect      store.steampowered.com
 // @run-at       document-idle
 // @license      MIT
 // @downloadURL  https://raw.githubusercontent.com/blue-bird1/scriptcat/main/digiphile-steam-keys.user.js
@@ -139,6 +140,142 @@
     return { available: false, fresh: false, label: `不可用 · ${item.status}` };
   }
 
+  // src/lib/steam/key-activation.js
+  var STORE = "https://store.steampowered.com";
+  var RESULTS = {
+    9: "已拥有",
+    13: "地区限制",
+    14: "无效 Key",
+    15: "已被使用",
+    24: "缺少基础游戏",
+    36: "需要 PS3 激活",
+    50: "钱包/礼品卡代码",
+    53: "Steam 限速"
+  };
+  function logKeyEvent(level, event, context = {}) {
+    console[level]({ timestamp: (/* @__PURE__ */ new Date()).toISOString(), level, event, ...context });
+  }
+  async function getSteamSession(runId) {
+    const response = await gmXhr({ method: "GET", url: STORE + "/" });
+    if (response.status !== 200) throw new Error(`Steam 首页返回 HTTP ${response.status}`);
+    const html = response.responseText;
+    const account = html.match(/g_AccountID = (\d+)/);
+    const session = html.match(/g_sessionID = "(\w+)"/);
+    if (!account || Number(account[1]) === 0 || !session) {
+      throw new Error("请先在当前浏览器登录 Steam 商店，再重试");
+    }
+    logKeyEvent("info", "steam_session_ready", { runId, accountId: account[1] });
+    return session[1];
+  }
+  async function activateSteamKey(key, sessionId, runId) {
+    const response = await gmXhr({
+      method: "POST",
+      url: STORE + "/account/ajaxregisterkey/",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded; charset=UTF-8",
+        Origin: STORE,
+        Referer: STORE + "/account/registerkey"
+      },
+      data: new URLSearchParams({ product_key: key, sessionid: sessionId }).toString()
+    });
+    logKeyEvent("info", "steam_key_response", { runId, key, status: response.status, response: response.responseText });
+    if (response.status !== 200) throw new Error(`Steam 激活接口返回 HTTP ${response.status}`);
+    const result = JSON.parse(response.responseText);
+    const code = Number(result.purchase_result_details);
+    return {
+      state: result.success === 1 ? "success" : "failed",
+      message: result.success === 1 ? "激活成功" : RESULTS[code] || `激活失败（代码 ${code}）`,
+      stop: code === 53
+    };
+  }
+
+  // src/lib/userscript/steam-key-toolbar.js
+  var STEAM_KEY_PATTERN = /^(?:[A-Z0-9]{5}-){2,5}[A-Z0-9]{5}$/;
+
+  // src/lib/digiphile/activation.js
+  async function activateSelection(state, runId, update) {
+    const selectedIds = [...state.selected];
+    let currentItem = null;
+    let success = 0;
+    state.completed = 0;
+    state.total = 0;
+    log("info", "digiphile.activation_started", runId, { selectedIds });
+    update("正在核对所选 Key…");
+    try {
+      state.items = await listSteamKeys(runId);
+      const itemsById = new Map(state.items.map((item) => [item.id, item]));
+      const availableIds = selectedIds.filter((id) => itemsById.has(id) && availability(itemsById.get(id)).available);
+      state.selected = new Set(availableIds);
+      if (availableIds.length !== selectedIds.length) {
+        log("warn", "digiphile.activation_selection_changed", runId, { selectedIds, availableIds });
+        update(`已取消选择 ${selectedIds.length - availableIds.length} 个不可用的 Key，请检查列表后重试。`, true);
+        return;
+      }
+      if (state.stopping) return;
+      const pending = availableIds.filter((id) => state.activations.get(id)?.state !== "success").map((id) => ({ ...itemsById.get(id), key: state.results.get(id)?.steamKeyValue.trim().toUpperCase() }));
+      if (!pending.length) {
+        log("info", "digiphile.activation_already_completed", runId);
+        update("所选 Key 已全部激活成功。");
+        return;
+      }
+      if (pending.some((item) => !item.key)) {
+        log("warn", "digiphile.activation_unread_selection", runId);
+        update("请先读取所选 Key。", true);
+        return;
+      }
+      if (pending.some((item) => !STEAM_KEY_PATTERN.test(item.key))) {
+        log("warn", "digiphile.activation_invalid_key", runId, { itemIds: pending.filter((item) => !STEAM_KEY_PATTERN.test(item.key)).map((item) => item.id) });
+        update("所选 Key 格式不正确，请重新读取后重试。", true);
+        return;
+      }
+      state.total = pending.length;
+      update("正在检查 Steam 登录状态…");
+      const session = await getSteamSession(runId);
+      if (state.stopping) return;
+      const unavailable = pending.find((item) => !availability(item).available);
+      if (unavailable) throw new Error(`“${unavailable.title}”${availability(unavailable).label}，请刷新列表。`);
+      if (!window.confirm(`将向当前浏览器已登录的 Steam 商店账号提交 ${pending.length} 个 Key。确认激活？`)) {
+        log("info", "digiphile.activation_cancelled", runId);
+        update("已取消。");
+        return;
+      }
+      log("info", "digiphile.activation_confirmed", runId, { itemIds: pending.map((item) => item.id) });
+      for (const item of pending) {
+        if (state.stopping) break;
+        currentItem = item;
+        const info = availability(item);
+        if (!info.available) throw new Error(`“${item.title}”${info.label}，请刷新列表。`);
+        state.activations.set(item.id, { state: "pending", message: "正在激活…" });
+        update(`${state.completed}/${state.total} · 正在激活：${item.title}`);
+        const result = await activateSteamKey(item.key, session, runId);
+        state.activations.set(item.id, result);
+        state.completed += 1;
+        if (result.state === "success") success += 1;
+        log(result.state === "success" ? "info" : "warn", "digiphile.key_activation_result", runId, { itemId: item.id, ...result });
+        update(`${state.completed}/${state.total} · ${item.title}：${result.message}`, result.state !== "success");
+        if (result.stop) {
+          update(`Steam 限速，已停止（已处理 ${state.completed}/${state.total}）。`, true);
+          return;
+        }
+        if (state.stopping) break;
+        if (state.completed < state.total) await new Promise((resolve) => setTimeout(resolve, 2e3));
+      }
+      if (!state.stopping) {
+        log("info", "digiphile.activation_completed", runId, { completed: state.completed, total: state.total, success });
+        update(`已处理 ${state.completed}/${state.total} 个 Key，成功 ${success} 个，未成功 ${state.completed - success} 个。`, success !== state.completed);
+      }
+    } catch (error) {
+      if (currentItem) state.activations.set(currentItem.id, { state: "failed", message: `激活失败：${error.message}` });
+      logError("digiphile.activation_failed", runId, error, { itemId: currentItem?.id, completed: state.completed });
+      update(`激活失败（${state.completed}/${state.total}）：${error.message}`, true);
+    } finally {
+      if (state.stopping) {
+        log("info", "digiphile.activation_stopped", runId, { completed: state.completed, total: state.total });
+        if (!state.error) update(`已停止，已处理 ${state.completed}/${state.total} 个 Key。`);
+      }
+    }
+  }
+
   // src/lib/digiphile/controller.js
   function createController(render) {
     const state = {
@@ -146,6 +283,7 @@
       selected: /* @__PURE__ */ new Set(),
       results: /* @__PURE__ */ new Map(),
       itemMessages: /* @__PURE__ */ new Map(),
+      activations: /* @__PURE__ */ new Map(),
       loaded: false,
       busy: false,
       stopping: false,
@@ -208,7 +346,8 @@
       if (!state.busy || state.stopping) return;
       state.stopping = true;
       log("info", "digiphile.stop_requested", activeRunId);
-      update("当前请求完成后停止。");
+      if (!state.error) update("当前请求完成后停止。");
+      else render(state);
     }
     async function run() {
       if (state.busy || !state.selected.size) return;
@@ -285,6 +424,21 @@
         render(state);
       }
     }
+    async function activate() {
+      if (state.busy || !state.selected.size) return;
+      const runId = crypto.randomUUID();
+      activeRunId = runId;
+      state.busy = true;
+      state.stopping = false;
+      try {
+        await activateSelection(state, runId, update);
+      } finally {
+        state.busy = false;
+        state.stopping = false;
+        activeRunId = null;
+        render(state);
+      }
+    }
     function getResults() {
       return state.items.filter((item) => state.results.has(item.id) && availability(item).available).map((item) => ({ ...item, ...state.results.get(item.id) }));
     }
@@ -305,7 +459,7 @@
         update(`复制失败：${error.message}。请手动复制 Key。`, true);
       }
     }
-    return { state, refresh, run, stop, select, toggle, copy, getResults };
+    return { state, refresh, run, activate, stop, select, toggle, copy, getResults };
   }
 
   // src/lib/digiphile/panel.js
@@ -334,6 +488,7 @@
     const clear = button("取消全选", () => controller.select("none"));
     const run = button("读取所选 Key", controller.run);
     run.className = "dp-keys-primary";
+    const activate = button("激活所选 Key", controller.activate);
     const stop = button("停止", controller.stop);
     const copy = button("复制 Key", () => controller.copy(false));
     const copyTitles = button("复制游戏名与 Key", () => controller.copy(true));
@@ -347,7 +502,7 @@
     const table = element("table");
     const head = element("thead");
     const headingRow = element("tr");
-    for (const text of ["选择", "游戏", "状态", "Key"]) {
+    for (const text of ["选择", "游戏", "状态", "Key", "激活结果"]) {
       const th = element("th", text);
       th.scope = "col";
       headingRow.append(th);
@@ -379,8 +534,9 @@
       key.className = "dp-keys-key";
       key.placeholder = "未读取";
       keyCell.append(key);
-      row.append(choice, game, status, keyCell);
-      return { row, checkbox, title, expiry, status, key };
+      const activation = element("td");
+      row.append(choice, game, status, keyCell, activation);
+      return { row, checkbox, title, expiry, status, key, activation };
     }
     function render(state) {
       const items = state.items.filter((item) => !isExpired(item));
@@ -392,6 +548,7 @@
       message.classList.toggle("dp-keys-error", state.error);
       for (const control of [refresh, selectNew, selectAll, clear]) control.disabled = state.busy;
       run.disabled = state.busy || !selectedCount;
+      activate.disabled = state.busy || !selectedCount;
       stop.disabled = !state.busy || state.stopping;
       copy.disabled = copyTitles.disabled = state.busy || !results.size;
       const currentIds = new Set(items.map((item) => item.id));
@@ -413,6 +570,9 @@
         fields.title.textContent = item.title;
         fields.expiry.textContent = item.expiresAt ? `到期时间：${new Date(item.expiresAt).toLocaleString()}` : "";
         fields.status.textContent = [info.label, info.available && (state.itemMessages.get(item.id) || result?.source)].filter(Boolean).join(" · ");
+        const activation = state.activations.get(item.id);
+        fields.activation.textContent = activation?.message || "";
+        fields.activation.classList.toggle("dp-keys-error", activation?.state === "failed");
         fields.key.setAttribute("aria-label", `${item.title} 的 Key`);
         const key = result?.steamKeyValue || "";
         if (fields.key.value !== key) fields.key.value = key;

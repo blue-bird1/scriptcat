@@ -1,9 +1,10 @@
 import { availability, listSteamKeys, readSteamKey } from "./api.js";
+import { activateSelection } from "./activation.js";
 import { log, logError } from "./log.js";
 
 export function createController(render) {
   const state = {
-    items: [], selected: new Set(), results: new Map(), itemMessages: new Map(),
+    items: [], selected: new Set(), results: new Map(), itemMessages: new Map(), activations: new Map(),
     loaded: false, busy: false, stopping: false, completed: 0, total: 0,
     message: "正在读取 Key 列表…", error: false,
   };
@@ -66,7 +67,8 @@ export function createController(render) {
     if (!state.busy || state.stopping) return;
     state.stopping = true;
     log("info", "digiphile.stop_requested", activeRunId);
-    update("当前请求完成后停止。");
+    if (!state.error) update("当前请求完成后停止。");
+    else render(state);
   }
 
   async function run() {
@@ -145,6 +147,22 @@ export function createController(render) {
     }
   }
 
+  async function activate() {
+    if (state.busy || !state.selected.size) return;
+    const runId = crypto.randomUUID();
+    activeRunId = runId;
+    state.busy = true;
+    state.stopping = false;
+    try {
+      await activateSelection(state, runId, update);
+    } finally {
+      state.busy = false;
+      state.stopping = false;
+      activeRunId = null;
+      render(state);
+    }
+  }
+
   function getResults() {
     return state.items.filter(item => state.results.has(item.id) && availability(item).available)
       .map(item => ({ ...item, ...state.results.get(item.id) }));
@@ -168,5 +186,5 @@ export function createController(render) {
     }
   }
 
-  return { state, refresh, run, stop, select, toggle, copy, getResults };
+  return { state, refresh, run, activate, stop, select, toggle, copy, getResults };
 }

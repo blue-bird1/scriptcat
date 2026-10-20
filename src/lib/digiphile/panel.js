@@ -27,6 +27,7 @@ export function createPanel(controller) {
   const clear = button("取消全选", () => controller.select("none"));
   const run = button("读取所选 Key", controller.run);
   run.className = "dp-keys-primary";
+  const activate = button("激活所选 Key", controller.activate);
   const stop = button("停止", controller.stop);
   const copy = button("复制 Key", () => controller.copy(false));
   const copyTitles = button("复制游戏名与 Key", () => controller.copy(true));
@@ -41,7 +42,7 @@ export function createPanel(controller) {
   const table = element("table");
   const head = element("thead");
   const headingRow = element("tr");
-  for (const text of ["选择", "游戏", "状态", "Key"]) {
+  for (const text of ["选择", "游戏", "状态", "Key", "激活结果"]) {
     const th = element("th", text);
     th.scope = "col";
     headingRow.append(th);
@@ -74,8 +75,9 @@ export function createPanel(controller) {
     key.className = "dp-keys-key";
     key.placeholder = "未读取";
     keyCell.append(key);
-    row.append(choice, game, status, keyCell);
-    return { row, checkbox, title, expiry, status, key };
+    const activation = element("td");
+    row.append(choice, game, status, keyCell, activation);
+    return { row, checkbox, title, expiry, status, key, activation };
   }
 
   function render(state) {
@@ -88,6 +90,7 @@ export function createPanel(controller) {
     message.classList.toggle("dp-keys-error", state.error);
     for (const control of [refresh, selectNew, selectAll, clear]) control.disabled = state.busy;
     run.disabled = state.busy || !selectedCount;
+    activate.disabled = state.busy || !selectedCount;
     stop.disabled = !state.busy || state.stopping;
     copy.disabled = copyTitles.disabled = state.busy || !results.size;
 
@@ -110,6 +113,9 @@ export function createPanel(controller) {
       fields.title.textContent = item.title;
       fields.expiry.textContent = item.expiresAt ? `到期时间：${new Date(item.expiresAt).toLocaleString()}` : "";
       fields.status.textContent = [info.label, info.available && (state.itemMessages.get(item.id) || result?.source)].filter(Boolean).join(" · ");
+      const activation = state.activations.get(item.id);
+      fields.activation.textContent = activation?.message || "";
+      fields.activation.classList.toggle("dp-keys-error", activation?.state === "failed");
       fields.key.setAttribute("aria-label", `${item.title} 的 Key`);
       const key = result?.steamKeyValue || "";
       if (fields.key.value !== key) fields.key.value = key;
