@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.11.3
+// @version         5.12.0
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持优惠券查询，支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, coupon lookup, and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -787,6 +787,8 @@
   var PAGE_COUNT_STORAGE_KEY = "steamPyPlusCouponListingPageCount";
   var MAX_PAY_STORAGE_KEY = "steamPyPlusCouponListingMaxPay";
   var COUPON_ID_STORAGE_KEY = "steamPyPlusCouponListingCouponId";
+  var ENABLED_STORAGE_KEY = "steamPyPlusCouponListingEnabled";
+  var MENU_ID = "steam-py-plus-coupon-listing";
   var MANUAL_DEDUCTION_STORAGE_KEY = "steamPyPlusCouponListingDeduction";
   var MANUAL_MINIMUM_STORAGE_KEY = "steamPyPlusCouponListingMinimum";
   var LISTING_PAGE_SIZE = 20;
@@ -871,8 +873,11 @@
     shouldShow = null,
     isGameOwned = null,
     getValue = GM_getValue,
-    setValue = GM_setValue
+    setValue = GM_setValue,
+    registerMenuCommand = GM_registerMenuCommand
   } = {}) {
+    let enabled = getValue(ENABLED_STORAGE_KEY, false) === true;
+    let menusRegistered = false;
     let vm = null;
     let button = null;
     let dialog = null;
@@ -994,13 +999,14 @@
         log("error", "coupon_client_missing", {});
         return;
       }
+      const loadGeneration = generation;
       try {
         const collected = [];
-        const loadGeneration = generation;
         let pageNumber = 1;
         let totalElements = null;
         while (loadGeneration === generation) {
           const page = await client.fetchPromoCodeList({ pageNumber, pageSize: COUPON_PAGE_SIZE });
+          if (loadGeneration !== generation) return;
           const content = Array.isArray(page?.content) ? page.content : null;
           if (!content) throw new Error("卡券中心返回的数据格式无效");
           if (totalElements === null && Number.isFinite(Number(page.totalElements))) {
@@ -1035,10 +1041,11 @@
           note.textContent = `已读取 ${matched.length} 张未使用的 CDK 优惠券。`;
         }
       } catch (error) {
+        log("error", "coupon_list_failed", { message: error?.message || String(error) });
+        if (loadGeneration !== generation) return;
         coupons = [];
         renderCoupons();
         if (note) note.textContent = `优惠券读取失败：${error?.message || error}。请手动填写。`;
-        log("error", "coupon_list_failed", { message: error?.message || String(error) });
       }
     }
     function appendRow(index, name, price, payable, status, href) {
@@ -1096,6 +1103,7 @@
         const pageNumber = startPage + offset;
         if (totalPages !== null && pageNumber > totalPages) break;
         const page = await loadGamePage(pageNumber, currentRegion);
+        if (queryGeneration !== generation) return null;
         if (!page.content) throw new Error(`第 ${pageNumber} 页游戏列表格式无效`);
         if (Number.isFinite(page.totalPages)) totalPages = page.totalPages;
         const unowned = page.content.filter((game) => {
@@ -1135,6 +1143,7 @@
           pageNumber,
           pageSize: LISTING_PAGE_SIZE
         });
+        if (queryGeneration !== generation) return null;
         const content = Array.isArray(page?.content) ? page.content : null;
         if (!content) throw new Error("列表数据无效");
         if (totalElements === null && Number.isFinite(Number(page?.totalElements))) {
@@ -1173,7 +1182,7 @@
       };
     }
     async function runQuery() {
-      if (querying) return;
+      if (!enabled || !vm || !dialog || querying) return;
       const deduction = parseCouponAmount(deductionInput?.value);
       const minimum = parseCouponAmount(minimumInput?.value);
       const maxPay = parseCouponAmount(maxPayInput?.value);
@@ -1292,7 +1301,7 @@
       runQuery();
     }
     function openDialog() {
-      if (dialog) return;
+      if (!enabled || !vm || dialog) return;
       const overlay = document.createElement("div");
       overlay.id = DIALOG_ID;
       overlay.style.cssText = "position:fixed;z-index:10000;inset:0;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.38);";
@@ -1371,6 +1380,7 @@
       loadCoupons();
     }
     function mount() {
+      if (!enabled || !vm) return false;
       if (button?.isConnected) return true;
       const anchor = document.querySelector(FILTER_ANCHOR_SELECTOR2);
       if (!anchor) return false;
@@ -1391,16 +1401,34 @@
       if (!vm) return;
       mount();
     }
-    function cleanup() {
-      generation += 1;
-      querying = false;
+    function unmount() {
       closeDialog();
       button?.remove();
       button = null;
+    }
+    function cleanup() {
+      unmount();
       vm = null;
       coupons = [];
     }
-    return { cleanup, mount, start };
+    function registerMenu() {
+      const stateLabel = enabled ? "已开启（点击关闭）" : "已关闭（点击开启）";
+      registerMenuCommand(`优惠券查询：${stateLabel}`, toggleEnabled, { id: MENU_ID });
+    }
+    function toggleEnabled() {
+      enabled = !enabled;
+      setValue(ENABLED_STORAGE_KEY, enabled);
+      if (enabled) mount();
+      else unmount();
+      registerMenu();
+      log("info", "coupon_listing_toggled", { enabled });
+    }
+    function registerMenus() {
+      if (menusRegistered) return;
+      menusRegistered = true;
+      registerMenu();
+    }
+    return { cleanup, mount, registerMenus, start };
   }
 
   // src/lib/steampy/steampy-plus-toolbar.js
@@ -3269,6 +3297,7 @@
     const saleStartTime = createSteamPySaleStartTimeController();
     installSteamPyAjaxHooks({ ajaxHooker: ajaxHooker2, jQuery, onHotGames: rating.setHotGameData });
     libraryManager.registerMenus();
+    couponListing.registerMenus();
     elmGetter2.selector(jQuery);
     let legacyActive = false;
     let proActive = false;

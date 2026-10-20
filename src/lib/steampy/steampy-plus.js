@@ -64,6 +64,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
 
   installSteamPyAjaxHooks({ ajaxHooker, jQuery, onHotGames: rating.setHotGameData });
   libraryManager.registerMenus();
+  couponListing.registerMenus();
   elmGetter.selector(jQuery);
 
   let legacyActive = false;
