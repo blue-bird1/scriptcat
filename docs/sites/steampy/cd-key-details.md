@@ -16,6 +16,12 @@ Steam AppID、`steamApp` 记录 ID 和 `steamGame.id` 属于不同标识空间�
 
 站点 `steamAva` 列仍使用 Vue 2 的 `h("Avatar", {props: {src}})` 形式，Vue 3 将其渲染为空的 `avatar` 标签。脚本仅替换该列的渲染函数，以 `row.steamAva` 创建标准图片。
 
+## 在售挂单
+
+详情表请求对应地区的 `GET {keySale}/listSale`。已确认参数为 `pageNumber`、`pageSize=20`、`sort=keyPrice`、`order=asc`、`startDate`、`endDate`、`gameId`。
+
+响应列表在 `result.content`，总数在 `result.totalElements`。详情表直接渲染的行字段为 `stock`、`keyPrice`、`saleId`、`discount`、`steamAva`。
+
 ## 创建时间
 
 `listSale` 行含 `saleId`，不含 `createTime`。国区 `steamKeySale/listSelf` 与全球区 `usKeySale/listSelf` 的第一方样本确认以下编码：

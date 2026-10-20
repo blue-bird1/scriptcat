@@ -2,7 +2,16 @@
 
 ## 原生列表
 
-主列表接口为 `GET /xboot/steamGame/keyHot`，默认 `pageSize=30`。响应分页字段为 `content`、`totalPages`、`totalElements`、`size`、`number`、`numberOfElements`、`first`、`last`、`empty`。
+主列表接口按地区区分：
+
+| 地区 | 路径 |
+| --- | --- |
+| cn | `GET /xboot/steamGame/keyHot` |
+| ru | `GET /xboot/ruSteamGame/keyHot` |
+| us | `GET /xboot/usSteamGame/keyHot` |
+| tl | `GET /xboot/tlSteamGame/keyHot` |
+
+默认 `pageSize=30`。页面 `cdkListApi(searchForm)` 返回 envelope，列表在 `result.content`，分页字段为 `result.totalPages`、`result.totalElements`。`searchForm` 含 `pageNumber`、`pageSize`、`sort`、`order`、`startDate`、`endDate`。
 
 已有站点样本确认 `pageSize=100` 返回 100 条；该值不是已确认的最大上限。Vue 3 主实例通过 `searchForm.pageSize`、`changePageSize`、`changePage` 和 `getGameList` 管理分页，主分页器没有页大小选择器。
 

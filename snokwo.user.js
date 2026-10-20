@@ -240,16 +240,29 @@
     async function fetchSteamGameByAppId(appId) {
       return requestJson(buildSearchUrl("/xboot/steamGame/searchByAppId", { appId }));
     }
-    async function fetchKeySaleList({ region = "cn", gameId }) {
+    async function fetchKeySaleList({ region = "cn", gameId, pageNumber = 1, pageSize = 20 }) {
       const endpoints = getKeySaleEndpoints(region);
       return requestJson(buildSearchUrl(`${endpoints.keySale}/listSale`, {
-        pageNumber: 1,
-        pageSize: 20,
+        pageNumber,
+        pageSize,
         sort: "keyPrice",
         order: "asc",
         startDate: "",
         endDate: "",
         gameId
+      }));
+    }
+    async function fetchSteamGameKeyHot({ region = "cn", ...params }) {
+      const endpoints = getKeySaleEndpoints(region);
+      return requestJson(buildSearchUrl(`${endpoints.game}/keyHot`, params));
+    }
+    async function fetchPromoCodeList(params = {}) {
+      return requestJson(buildSearchUrl("/xboot/promoCode/listSelfNew", {
+        pageNumber: 1,
+        pageSize: 27,
+        sort: "createTime",
+        order: "desc",
+        ...params
       }));
     }
     async function startKeySale({
@@ -283,6 +296,8 @@
       fetchSaleKeyByUrl,
       fetchSaleKeyByName,
       fetchKeySaleList,
+      fetchSteamGameKeyHot,
+      fetchPromoCodeList,
       fetchSteamAppList,
       fetchSteamGameByAppId,
       startKeySale,

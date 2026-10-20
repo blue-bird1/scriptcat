@@ -2,6 +2,7 @@ import { readSteampyLocalToken } from "./access-token.js";
 import { installSteamPyAjaxHooks } from "./steampy-plus-ajax-hooks.js";
 import { createSteamPyAdvancedFilterController } from "./steampy-plus-advanced-filter.js";
 import { createSteamPyBuyerController } from "./steampy-plus-buyer.js";
+import { createSteamPyCouponListingController } from "./steampy-plus-coupon-listing.js";
 import { createSteamPyPriceFilter } from "./steampy-plus-filter.js";
 import { createSteamPyRatingEnhancer } from "./steampy-plus-rating.js";
 import { createSteamPySaleStartTimeController } from "./steampy-plus-sale-start-time.js";
@@ -40,7 +41,18 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
     fetchSteamGameByAppId: xbootClient.fetchSteamGameByAppId,
     setHideDlcSuspended: filter.setHideDlcSuspended,
   });
-  buyer = createSteamPyBuyerController({ advancedFilter, elmGetter, jQuery, filter, rating });
+  const couponListing = createSteamPyCouponListingController({
+    client: xbootClient,
+    shouldShow: filter.shouldShow,
+  });
+  buyer = createSteamPyBuyerController({
+    advancedFilter,
+    elmGetter,
+    jQuery,
+    filter,
+    rating,
+    couponListing,
+  });
   const seller = createSteamPySellerController({
     client: xbootClient,
     parseBatchCsv,
