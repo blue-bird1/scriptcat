@@ -263,7 +263,7 @@ export function createSteamPyBuyerController({
   function installProWatcher(vm) {
     if (vm.__steamPyPlusWatcherInstalled || typeof vm.$watch !== "function") return;
     vm.__steamPyPlusWatcherInstalled = true;
-    vm.__steamPyPlusUnwatch = vm.$watch("gameList", () => {
+    vm.__steamPyPlusUnwatch = vm.$watch(() => [vm.gameList, vm.showSearchResult], () => {
       if (proVm !== vm) return;
       captureSourceList(vm);
       applyPro();
