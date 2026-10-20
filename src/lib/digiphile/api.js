@@ -81,8 +81,12 @@ export async function readSteamKey(item, runId) {
   return { ...item, status: "Revealed", steamKeyValue: body.steamKeyValue };
 }
 
+export function isExpired(item, now = Date.now()) {
+  return Boolean(item.expiresAt) && Date.parse(item.expiresAt) <= now;
+}
+
 export function availability(item, now = Date.now()) {
-  if (item.expiresAt && Date.parse(item.expiresAt) <= now) {
+  if (isExpired(item, now)) {
     return { available: false, fresh: false, label: "已过期" };
   }
   if (item.isGift) return { available: false, fresh: false, label: "礼物，请在站点处理" };

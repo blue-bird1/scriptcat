@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Digiphile Steam Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.0.3
+// @version      1.0.4
 // @description  批量刮开、读取和复制 Digiphile Steam Key
 // @author       blue-bird1
 // @match        https://www.digiphile.co/customer/*

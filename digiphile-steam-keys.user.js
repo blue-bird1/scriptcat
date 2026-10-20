@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Digiphile Steam Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.0.3
+// @version      1.0.4
 // @description  批量刮开、读取和复制 Digiphile Steam Key
 // @author       blue-bird1
 // @match        https://www.digiphile.co/customer/*
@@ -126,8 +126,11 @@
     });
     return { ...item, status: "Revealed", steamKeyValue: body.steamKeyValue };
   }
+  function isExpired(item, now = Date.now()) {
+    return Boolean(item.expiresAt) && Date.parse(item.expiresAt) <= now;
+  }
   function availability(item, now = Date.now()) {
-    if (item.expiresAt && Date.parse(item.expiresAt) <= now) {
+    if (isExpired(item, now)) {
       return { available: false, fresh: false, label: "已过期" };
     }
     if (item.isGift) return { available: false, fresh: false, label: "礼物，请在站点处理" };
@@ -380,24 +383,25 @@
       return { row, checkbox, title, expiry, status, key };
     }
     function render(state) {
+      const items = state.items.filter((item) => !isExpired(item));
       const results = new Map(controller.getResults().map((item) => [item.id, item]));
-      const selectedCount = state.items.filter((item) => state.selected.has(item.id) && availability(item).available).length;
-      const freshCount = state.items.filter((item) => availability(item).fresh).length;
-      summary.textContent = `共 ${state.items.length} 个 Key · 可刮开 ${freshCount} 个 · 已选 ${selectedCount} 个 · 已读取 ${results.size} 个`;
+      const selectedCount = items.filter((item) => state.selected.has(item.id) && availability(item).available).length;
+      const freshCount = items.filter((item) => availability(item).fresh).length;
+      summary.textContent = `共 ${items.length} 个 Key · 可刮开 ${freshCount} 个 · 已选 ${selectedCount} 个 · 已读取 ${results.size} 个`;
       message.textContent = state.message;
       message.classList.toggle("dp-keys-error", state.error);
       for (const control of [refresh, selectNew, selectAll, clear]) control.disabled = state.busy;
       run.disabled = state.busy || !selectedCount;
       stop.disabled = !state.busy || state.stopping;
       copy.disabled = copyTitles.disabled = state.busy || !results.size;
-      const currentIds = new Set(state.items.map((item) => item.id));
+      const currentIds = new Set(items.map((item) => item.id));
       for (const [id, fields] of rows) {
         if (!currentIds.has(id)) {
           fields.row.remove();
           rows.delete(id);
         }
       }
-      state.items.forEach((item, index) => {
+      items.forEach((item, index) => {
         if (!rows.has(item.id)) rows.set(item.id, buildRow(item.id));
         const fields = rows.get(item.id);
         if (body.children[index] !== fields.row) body.insertBefore(fields.row, body.children[index] || null);
