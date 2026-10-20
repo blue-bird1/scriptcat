@@ -69,6 +69,8 @@ export function listSteamKeys(runId) {
 }
 
 export async function readSteamKey(item, runId) {
+  const info = availability(item);
+  if (!info.available) throw new Error(`“${item.title}”${info.label}，请刷新列表。`);
   const action = item.status === "Revealed" ? "view" : "reveal";
   const body = await request("POST", `/customer/steam-keys/${encodeURIComponent(item.id)}/${action}`, runId, value => {
     if (typeof value?.steamKeyValue !== "string" || !value.steamKeyValue.trim()) {
@@ -80,13 +82,11 @@ export async function readSteamKey(item, runId) {
 }
 
 export function availability(item, now = Date.now()) {
+  if (item.expiresAt && Date.parse(item.expiresAt) <= now) {
+    return { available: false, fresh: false, label: "已过期" };
+  }
   if (item.isGift) return { available: false, fresh: false, label: "礼物，请在站点处理" };
   if (item.status === "Revealed") return { available: true, fresh: false, label: "已刮开" };
-  if (item.status === "Assigned") {
-    if (item.expiresAt && Date.parse(item.expiresAt) <= now) {
-      return { available: false, fresh: false, label: "已过期" };
-    }
-    return { available: true, fresh: true, label: "未刮开" };
-  }
+  if (item.status === "Assigned") return { available: true, fresh: true, label: "未刮开" };
   return { available: false, fresh: false, label: `不可用 · ${item.status}` };
 }

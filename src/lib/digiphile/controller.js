@@ -26,7 +26,8 @@ export function createController(render) {
 
   function toggle(id, checked) {
     if (state.busy) return;
-    if (checked) state.selected.add(id);
+    const item = state.items.find(value => value.id === id);
+    if (checked && item && availability(item).available) state.selected.add(id);
     else state.selected.delete(id);
     render(state);
   }
@@ -86,15 +87,14 @@ export function createController(render) {
       state.items = await listSteamKeys(runId);
       if (state.stopping) return;
       const itemsById = new Map(state.items.map(item => [item.id, item]));
-      const pendingIds = selectedIds.filter(id => !state.results.has(id));
-      const invalidIds = pendingIds.filter(id => !itemsById.has(id) || !availability(itemsById.get(id)).available);
+      const invalidIds = selectedIds.filter(id => !itemsById.has(id) || !availability(itemsById.get(id)).available);
       if (invalidIds.length) {
         state.selected = new Set(selectedIds.filter(id => itemsById.has(id) && availability(itemsById.get(id)).available));
         log("warn", "digiphile.selection_changed", runId, { unavailableIds: invalidIds });
         update(`已取消选择 ${invalidIds.length} 个不可用的 Key，请检查列表后重试。`, true);
         return;
       }
-      const pending = pendingIds.map(id => itemsById.get(id));
+      const pending = selectedIds.filter(id => !state.results.has(id)).map(id => itemsById.get(id));
       state.total = pending.length;
       if (!pending.length) {
         log("info", "digiphile.batch_already_read", runId);
@@ -114,12 +114,10 @@ export function createController(render) {
         if (state.stopping) break;
         currentItem = item;
         const info = availability(item);
-        // 有效期可能在确认框打开期间结束，发出 reveal 前再次核对。
-        if (!info.available) throw new Error(`“${item.title}”已不可用，请刷新列表。`);
         state.itemMessages.set(item.id, info.fresh ? "正在刮开…" : "正在读取…");
         update(`${state.completed}/${state.total} · ${info.fresh ? "正在刮开" : "正在读取"}：${item.title}`);
         const result = await readSteamKey(item, runId);
-        state.results.set(item.id, { ...result, source: info.fresh ? "本次刮开" : "本次读取" });
+        state.results.set(item.id, { steamKeyValue: result.steamKeyValue, source: info.fresh ? "本次刮开" : "本次读取" });
         state.items = state.items.map(value => value.id === item.id ? { ...value, status: "Revealed" } : value);
         state.itemMessages.delete(item.id);
         state.completed += 1;
@@ -147,10 +145,19 @@ export function createController(render) {
     }
   }
 
+  function getResults() {
+    return state.items.filter(item => state.results.has(item.id) && availability(item).available)
+      .map(item => ({ ...item, ...state.results.get(item.id) }));
+  }
+
   function copy(withTitle) {
     const runId = crypto.randomUUID();
-    const results = [...state.results.values()];
-    if (!results.length) return;
+    const results = getResults();
+    if (!results.length) {
+      log("info", "digiphile.copy_unavailable", runId);
+      update("没有可复制的 Key，请刷新列表。");
+      return;
+    }
     try {
       GM_setClipboard(results.map(item => withTitle ? `${item.title}\t${item.steamKeyValue}` : item.steamKeyValue).join("\n"), "text");
       log("info", "digiphile.keys_copied", runId, { count: results.length, withTitle });
@@ -161,5 +168,5 @@ export function createController(render) {
     }
   }
 
-  return { state, refresh, run, stop, select, toggle, copy };
+  return { state, refresh, run, stop, select, toggle, copy, getResults };
 }

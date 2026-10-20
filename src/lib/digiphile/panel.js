@@ -79,37 +79,36 @@ export function createPanel(controller) {
   }
 
   function render(state) {
-    const selectedCount = state.selected.size;
+    const results = new Map(controller.getResults().map(item => [item.id, item]));
+    const selectedCount = state.items.filter(item => state.selected.has(item.id) && availability(item).available).length;
     const freshCount = state.items.filter(item => availability(item).fresh).length;
-    summary.textContent = `共 ${state.items.length} 个 Key · 可刮开 ${freshCount} 个 · 已选 ${selectedCount} 个 · 已读取 ${state.results.size} 个`;
+    summary.textContent = `共 ${state.items.length} 个 Key · 可刮开 ${freshCount} 个 · 已选 ${selectedCount} 个 · 已读取 ${results.size} 个`;
     message.textContent = state.message;
     message.classList.toggle("dp-keys-error", state.error);
     for (const control of [refresh, selectNew, selectAll, clear]) control.disabled = state.busy;
     run.disabled = state.busy || !selectedCount;
     stop.disabled = !state.busy || state.stopping;
-    copy.disabled = copyTitles.disabled = state.busy || !state.results.size;
+    copy.disabled = copyTitles.disabled = state.busy || !results.size;
 
-    const listedIds = new Set(state.items.map(item => item.id));
-    const items = [...state.items, ...[...state.results.values()].filter(item => !listedIds.has(item.id))];
-    const currentIds = new Set(items.map(item => item.id));
+    const currentIds = new Set(state.items.map(item => item.id));
     for (const [id, fields] of rows) {
       if (!currentIds.has(id)) {
         fields.row.remove();
         rows.delete(id);
       }
     }
-    items.forEach((item, index) => {
+    state.items.forEach((item, index) => {
       if (!rows.has(item.id)) rows.set(item.id, buildRow(item.id));
       const fields = rows.get(item.id);
       if (body.children[index] !== fields.row) body.insertBefore(fields.row, body.children[index] || null);
       const info = availability(item);
-      const result = state.results.get(item.id);
-      fields.checkbox.checked = state.selected.has(item.id);
-      fields.checkbox.disabled = state.busy || !info.available || !listedIds.has(item.id);
+      const result = info.available ? results.get(item.id) : null;
+      fields.checkbox.checked = info.available && state.selected.has(item.id);
+      fields.checkbox.disabled = state.busy || !info.available;
       fields.checkbox.setAttribute("aria-label", `选择 ${item.title}`);
       fields.title.textContent = item.title;
       fields.expiry.textContent = item.expiresAt ? `到期时间：${new Date(item.expiresAt).toLocaleString()}` : "";
-      fields.status.textContent = [info.label, state.itemMessages.get(item.id) || result?.source].filter(Boolean).join(" · ");
+      fields.status.textContent = [info.label, info.available && (state.itemMessages.get(item.id) || result?.source)].filter(Boolean).join(" · ");
       fields.key.setAttribute("aria-label", `${item.title} 的 Key`);
       const key = result?.steamKeyValue || "";
       if (fields.key.value !== key) fields.key.value = key;

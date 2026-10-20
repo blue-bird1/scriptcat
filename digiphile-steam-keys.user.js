@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Digiphile Steam Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.0.1
+// @version      1.0.2
 // @description  批量刮开、读取和复制 Digiphile Steam Key
 // @author       blue-bird1
 // @match        https://www.digiphile.co/customer/*
@@ -116,6 +116,8 @@
     });
   }
   async function readSteamKey(item, runId) {
+    const info = availability(item);
+    if (!info.available) throw new Error(`“${item.title}”${info.label}，请刷新列表。`);
     const action = item.status === "Revealed" ? "view" : "reveal";
     const body = await request("POST", `/customer/steam-keys/${encodeURIComponent(item.id)}/${action}`, runId, (value) => {
       if (typeof value?.steamKeyValue !== "string" || !value.steamKeyValue.trim()) {
@@ -125,14 +127,12 @@
     return { ...item, status: "Revealed", steamKeyValue: body.steamKeyValue };
   }
   function availability(item, now = Date.now()) {
+    if (item.expiresAt && Date.parse(item.expiresAt) <= now) {
+      return { available: false, fresh: false, label: "已过期" };
+    }
     if (item.isGift) return { available: false, fresh: false, label: "礼物，请在站点处理" };
     if (item.status === "Revealed") return { available: true, fresh: false, label: "已刮开" };
-    if (item.status === "Assigned") {
-      if (item.expiresAt && Date.parse(item.expiresAt) <= now) {
-        return { available: false, fresh: false, label: "已过期" };
-      }
-      return { available: true, fresh: true, label: "未刮开" };
-    }
+    if (item.status === "Assigned") return { available: true, fresh: true, label: "未刮开" };
     return { available: false, fresh: false, label: `不可用 · ${item.status}` };
   }
 
@@ -167,7 +167,8 @@
     }
     function toggle(id, checked) {
       if (state.busy) return;
-      if (checked) state.selected.add(id);
+      const item = state.items.find((value) => value.id === id);
+      if (checked && item && availability(item).available) state.selected.add(id);
       else state.selected.delete(id);
       render(state);
     }
@@ -224,15 +225,14 @@
         state.items = await listSteamKeys(runId);
         if (state.stopping) return;
         const itemsById = new Map(state.items.map((item) => [item.id, item]));
-        const pendingIds = selectedIds.filter((id) => !state.results.has(id));
-        const invalidIds = pendingIds.filter((id) => !itemsById.has(id) || !availability(itemsById.get(id)).available);
+        const invalidIds = selectedIds.filter((id) => !itemsById.has(id) || !availability(itemsById.get(id)).available);
         if (invalidIds.length) {
           state.selected = new Set(selectedIds.filter((id) => itemsById.has(id) && availability(itemsById.get(id)).available));
           log("warn", "digiphile.selection_changed", runId, { unavailableIds: invalidIds });
           update(`已取消选择 ${invalidIds.length} 个不可用的 Key，请检查列表后重试。`, true);
           return;
         }
-        const pending = pendingIds.map((id) => itemsById.get(id));
+        const pending = selectedIds.filter((id) => !state.results.has(id)).map((id) => itemsById.get(id));
         state.total = pending.length;
         if (!pending.length) {
           log("info", "digiphile.batch_already_read", runId);
@@ -252,11 +252,10 @@
           if (state.stopping) break;
           currentItem = item;
           const info = availability(item);
-          if (!info.available) throw new Error(`“${item.title}”已不可用，请刷新列表。`);
           state.itemMessages.set(item.id, info.fresh ? "正在刮开…" : "正在读取…");
           update(`${state.completed}/${state.total} · ${info.fresh ? "正在刮开" : "正在读取"}：${item.title}`);
           const result = await readSteamKey(item, runId);
-          state.results.set(item.id, { ...result, source: info.fresh ? "本次刮开" : "本次读取" });
+          state.results.set(item.id, { steamKeyValue: result.steamKeyValue, source: info.fresh ? "本次刮开" : "本次读取" });
           state.items = state.items.map((value) => value.id === item.id ? { ...value, status: "Revealed" } : value);
           state.itemMessages.delete(item.id);
           state.completed += 1;
@@ -283,10 +282,17 @@
         render(state);
       }
     }
+    function getResults() {
+      return state.items.filter((item) => state.results.has(item.id) && availability(item).available).map((item) => ({ ...item, ...state.results.get(item.id) }));
+    }
     function copy(withTitle) {
       const runId = crypto.randomUUID();
-      const results = [...state.results.values()];
-      if (!results.length) return;
+      const results = getResults();
+      if (!results.length) {
+        log("info", "digiphile.copy_unavailable", runId);
+        update("没有可复制的 Key，请刷新列表。");
+        return;
+      }
       try {
         GM_setClipboard(results.map((item) => withTitle ? `${item.title}	${item.steamKeyValue}` : item.steamKeyValue).join("\n"), "text");
         log("info", "digiphile.keys_copied", runId, { count: results.length, withTitle });
@@ -296,7 +302,7 @@
         update(`复制失败：${error.message}。请手动复制 Key。`, true);
       }
     }
-    return { state, refresh, run, stop, select, toggle, copy };
+    return { state, refresh, run, stop, select, toggle, copy, getResults };
   }
 
   // src/lib/digiphile/panel.js
@@ -374,36 +380,35 @@
       return { row, checkbox, title, expiry, status, key };
     }
     function render(state) {
-      const selectedCount = state.selected.size;
+      const results = new Map(controller.getResults().map((item) => [item.id, item]));
+      const selectedCount = state.items.filter((item) => state.selected.has(item.id) && availability(item).available).length;
       const freshCount = state.items.filter((item) => availability(item).fresh).length;
-      summary.textContent = `共 ${state.items.length} 个 Key · 可刮开 ${freshCount} 个 · 已选 ${selectedCount} 个 · 已读取 ${state.results.size} 个`;
+      summary.textContent = `共 ${state.items.length} 个 Key · 可刮开 ${freshCount} 个 · 已选 ${selectedCount} 个 · 已读取 ${results.size} 个`;
       message.textContent = state.message;
       message.classList.toggle("dp-keys-error", state.error);
       for (const control of [refresh, selectNew, selectAll, clear]) control.disabled = state.busy;
       run.disabled = state.busy || !selectedCount;
       stop.disabled = !state.busy || state.stopping;
-      copy.disabled = copyTitles.disabled = state.busy || !state.results.size;
-      const listedIds = new Set(state.items.map((item) => item.id));
-      const items = [...state.items, ...[...state.results.values()].filter((item) => !listedIds.has(item.id))];
-      const currentIds = new Set(items.map((item) => item.id));
+      copy.disabled = copyTitles.disabled = state.busy || !results.size;
+      const currentIds = new Set(state.items.map((item) => item.id));
       for (const [id, fields] of rows) {
         if (!currentIds.has(id)) {
           fields.row.remove();
           rows.delete(id);
         }
       }
-      items.forEach((item, index) => {
+      state.items.forEach((item, index) => {
         if (!rows.has(item.id)) rows.set(item.id, buildRow(item.id));
         const fields = rows.get(item.id);
         if (body.children[index] !== fields.row) body.insertBefore(fields.row, body.children[index] || null);
         const info = availability(item);
-        const result = state.results.get(item.id);
-        fields.checkbox.checked = state.selected.has(item.id);
-        fields.checkbox.disabled = state.busy || !info.available || !listedIds.has(item.id);
+        const result = info.available ? results.get(item.id) : null;
+        fields.checkbox.checked = info.available && state.selected.has(item.id);
+        fields.checkbox.disabled = state.busy || !info.available;
         fields.checkbox.setAttribute("aria-label", `选择 ${item.title}`);
         fields.title.textContent = item.title;
         fields.expiry.textContent = item.expiresAt ? `到期时间：${new Date(item.expiresAt).toLocaleString()}` : "";
-        fields.status.textContent = [info.label, state.itemMessages.get(item.id) || result?.source].filter(Boolean).join(" · ");
+        fields.status.textContent = [info.label, info.available && (state.itemMessages.get(item.id) || result?.source)].filter(Boolean).join(" · ");
         fields.key.setAttribute("aria-label", `${item.title} 的 Key`);
         const key = result?.steamKeyValue || "";
         if (fields.key.value !== key) fields.key.value = key;
