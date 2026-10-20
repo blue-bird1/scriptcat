@@ -28,6 +28,8 @@ __pycache__/
 !pnpm-lock.yaml
 !src/
 !src/lib/
+!src/lib/digiphile/
+!src/lib/digiphile/*.js
 !src/lib/douban/
 !src/lib/douban/*.js
 !src/lib/keylol/
