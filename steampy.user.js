@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.11.2
+// @version         5.11.3
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持优惠券查询，支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, coupon lookup, and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -1214,7 +1214,7 @@
           setProgress(ownedSkipped > 0 ? `没有待查询游戏，已跳过已拥有 ${ownedSkipped}` : "当前筛选下没有游戏");
           return;
         }
-        async function worker() {
+        const worker = async () => {
           while (queryGeneration === generation) {
             const index = nextIndex;
             nextIndex += 1;
@@ -1253,7 +1253,7 @@
             setProgress(progressText(done, total, usable, ownedSkipped));
             log("info", "game_checked", { index, status: result.status, price: result.price ?? null });
           }
-        }
+        };
         await Promise.all(Array.from({ length: QUERY_CONCURRENCY }, () => worker()));
         if (queryGeneration !== generation) return;
         setProgress(progressText(total, total, usable, ownedSkipped));
@@ -1392,6 +1392,69 @@
     return { cleanup, mount, start };
   }
 
+  // src/lib/steampy/steampy-plus-toolbar.js
+  var TOOLBAR_ATTRIBUTE = "data-steam-py-plus-buyer-toolbar";
+  var TOOLBAR_SELECTOR = `[${TOOLBAR_ATTRIBUTE}]`;
+  var STYLE_ID = "steamPyPlusBuyerToolbarStyle";
+  var TOOLBAR_STYLE = `
+  ${TOOLBAR_SELECTOR} {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    column-gap: .12rem;
+    align-items: center;
+  }
+
+  ${TOOLBAR_SELECTOR} > .tag {
+    position: static;
+    grid-area: 1 / 1;
+    margin-left: .2rem;
+  }
+
+  ${TOOLBAR_SELECTOR} > .title {
+    grid-area: 1 / 1 / 2 / 3;
+    pointer-events: none;
+  }
+
+  ${TOOLBAR_SELECTOR} > .searchCDK {
+    position: static;
+    grid-area: 1 / 2;
+    min-width: 0;
+    max-width: 100%;
+    justify-self: end;
+  }
+
+  ${TOOLBAR_SELECTOR} > .searchCDK > .flex-row {
+    max-width: 100%;
+  }
+
+  ${TOOLBAR_SELECTOR} > .searchCDK .ivu-input-wrapper {
+    min-width: 0;
+  }
+
+  ${TOOLBAR_SELECTOR} > .searchCDK > .flex-row > :is(.f12-rem, button) {
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+`;
+  function mountSteamPyBuyerToolbar() {
+    const toolbar = document.querySelector(".tag.flex-row.align-items-center")?.parentElement;
+    if (!toolbar?.querySelector(":scope > .searchCDK")) return;
+    if (!document.getElementById(STYLE_ID)) {
+      const style = document.createElement("style");
+      style.id = STYLE_ID;
+      style.textContent = TOOLBAR_STYLE;
+      document.head.appendChild(style);
+    }
+    if (toolbar.hasAttribute(TOOLBAR_ATTRIBUTE)) return;
+    toolbar.setAttribute(TOOLBAR_ATTRIBUTE, "");
+    console.info({
+      time: (/* @__PURE__ */ new Date()).toISOString(),
+      level: "info",
+      event: "buyer_toolbar_layout_mounted",
+      href: location.href
+    });
+  }
+
   // src/lib/steampy/steampy-plus-filter.js
   var FILTER_STORAGE_KEY = "steamPriceFilterState";
   var DEFAULT_FILTER_STATE = {
@@ -1457,6 +1520,7 @@
       return button;
     }
     function mount() {
+      mountSteamPyBuyerToolbar();
       if (document.getElementById("priceFilterContainer")) return;
       const target = document.querySelector(".tag.flex-row.align-items-center");
       if (!target) return;

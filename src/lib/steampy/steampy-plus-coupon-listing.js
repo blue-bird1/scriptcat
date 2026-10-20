@@ -477,7 +477,7 @@ export function createSteamPyCouponListingController({
         return;
       }
 
-      async function worker() {
+      const worker = async () => {
         while (queryGeneration === generation) {
           const index = nextIndex;
           nextIndex += 1;
@@ -516,7 +516,7 @@ export function createSteamPyCouponListingController({
           setProgress(progressText(done, total, usable, ownedSkipped));
           log("info", "game_checked", { index, status: result.status, price: result.price ?? null });
         }
-      }
+      };
 
       await Promise.all(Array.from({ length: QUERY_CONCURRENCY }, () => worker()));
       if (queryGeneration !== generation) return;

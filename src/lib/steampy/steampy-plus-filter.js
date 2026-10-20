@@ -1,3 +1,5 @@
+import { mountSteamPyBuyerToolbar } from "./steampy-plus-toolbar.js";
+
 const FILTER_STORAGE_KEY = "steamPriceFilterState";
 const DEFAULT_FILTER_STATE = {
   minPrice: 0,
@@ -79,6 +81,7 @@ export function createSteamPyPriceFilter({ libraryManager, onApply }) {
   }
 
   function mount() {
+    mountSteamPyBuyerToolbar();
     if (document.getElementById("priceFilterContainer")) return;
     const target = document.querySelector(".tag.flex-row.align-items-center");
     if (!target) return;
