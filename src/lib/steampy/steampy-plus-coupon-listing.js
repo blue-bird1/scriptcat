@@ -649,7 +649,7 @@ export function createSteamPyCouponListingController({
     button.textContent = "优惠券查询";
     button.style.cssText = "margin-left:.08rem;";
     button.addEventListener("click", openDialog);
-    anchor.append(button);
+    anchor.insertBefore(button, anchor.querySelector(":scope > #priceFilterContainer"));
     return true;
   }
 

@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.12.0
+// @version         5.12.1
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持优惠券查询，支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, coupon lookup, and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -1392,7 +1392,7 @@
       button.textContent = "优惠券查询";
       button.style.cssText = "margin-left:.08rem;";
       button.addEventListener("click", openDialog);
-      anchor.append(button);
+      anchor.insertBefore(button, anchor.querySelector(":scope > #priceFilterContainer"));
       return true;
     }
     function start(nextVm) {
