@@ -42,8 +42,7 @@ async function request(method, path, runId, validate) {
       throw new Error(`Digiphile 请求失败（HTTP ${response.status}）${apiMessage(body) ? `：${apiMessage(body)}` : "。"}`);
     }
     validate(body);
-    // Key 只交给页面内存；成功响应不写入控制台。
-    log("debug", "digiphile.request_completed", runId, { requestId, status: response.status });
+    log("debug", "digiphile.request_completed", runId, { requestId, status: response.status, response: raw });
     return body;
   } catch (error) {
     error.requestId = requestId;

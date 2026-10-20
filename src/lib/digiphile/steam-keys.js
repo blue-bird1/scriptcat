@@ -25,6 +25,9 @@ export function startDigiphileSteamKeys() {
     if (panel?.root.isConnected) return;
     const heading = [...document.querySelectorAll("h1")].find(node => node.textContent.trim() === "My Steam Game Keys");
     if (!heading) return;
+    // 列表内容在客户端查询完成后出现；此时再挂载，避免改动服务端 DOM 导致 React 水合失败。
+    const content = heading.parentElement.parentElement;
+    if (![...content.querySelectorAll("h3")].some(node => !node.textContent.startsWith("Available Keys"))) return;
     panel = createPanel(controller);
     heading.before(panel.root);
     log("info", "digiphile.panel_mounted", lifecycleId);

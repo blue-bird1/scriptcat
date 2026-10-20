@@ -94,7 +94,7 @@
         throw new Error(`Digiphile 请求失败（HTTP ${response.status}）${apiMessage(body) ? `：${apiMessage(body)}` : "。"}`);
       }
       validate(body);
-      log("debug", "digiphile.request_completed", runId, { requestId, status: response.status });
+      log("debug", "digiphile.request_completed", runId, { requestId, status: response.status, response: raw });
       return body;
     } catch (error) {
       error.requestId = requestId;
@@ -151,7 +151,6 @@
       message: "正在读取 Key 列表…",
       error: false
     };
-    const attemptedReveals = /* @__PURE__ */ new Set();
     let activeRunId = null;
     function update(message, error = false) {
       state.message = message;
@@ -240,12 +239,6 @@
           update("所选 Key 均已显示，可直接复制。");
           return;
         }
-        const unresolved = pending.find((item) => availability(item).fresh && attemptedReveals.has(item.id));
-        if (unresolved) {
-          log("warn", "digiphile.reveal_unconfirmed", runId, { itemId: unresolved.id });
-          update(`“${unresolved.title}”上次刮开结果尚未确认，当前仍显示未刮开。请稍后刷新列表，确认已刮开后再读取；本页不会重发该刮开请求。`, true);
-          return;
-        }
         const newCount = pending.filter((item) => availability(item).fresh).length;
         const confirmation = newCount ? `即将首次刮开 ${newCount} 个 Key，并读取 ${pending.length - newCount} 个已刮开 Key。
 
@@ -265,12 +258,10 @@
           if (!info.available) throw new Error(`“${item.title}”已不可用，请刷新列表。`);
           state.itemMessages.set(item.id, info.fresh ? "正在刮开…" : "正在读取…");
           update(`${state.completed}/${state.total} · ${info.fresh ? "正在刮开" : "正在读取"}：${item.title}`);
-          if (info.fresh) attemptedReveals.add(item.id);
           const result = await readSteamKey(item, runId);
           state.results.set(item.id, { ...result, source: info.fresh ? "本次新刮开" : "已刮开 · 已读取" });
           state.items = state.items.map((value) => value.id === item.id ? { ...value, status: "Revealed" } : value);
           state.itemMessages.delete(item.id);
-          attemptedReveals.delete(item.id);
           state.completed += 1;
           log("info", "digiphile.key_read", runId, { itemId: item.id, action: info.fresh ? "reveal" : "view" });
           render(state);
@@ -280,7 +271,7 @@
           update(`完成 ${state.completed}/${state.total}。已取得的 Key 可在下方选择文本或复制。`);
         }
       } catch (error) {
-        const uncertain = currentItem && attemptedReveals.has(currentItem.id);
+        const uncertain = currentItem?.status === "Assigned";
         if (currentItem) state.itemMessages.set(currentItem.id, uncertain ? "刮开结果待核对 · 重试前刷新列表" : "读取失败 · 可重试");
         logError("digiphile.batch_failed", runId, error, { itemId: currentItem?.id, completed: state.completed });
         update(`已停止（${state.completed}/${state.total}）：${error.message}${uncertain ? " 刮开可能已完成；重试会先核对列表，已刮开项改为读取，不重复刮开。" : ""} 已取得的 Key 已保留。`, true);
@@ -482,6 +473,8 @@
       if (panel?.root.isConnected) return;
       const heading = [...document.querySelectorAll("h1")].find((node) => node.textContent.trim() === "My Steam Game Keys");
       if (!heading) return;
+      const content = heading.parentElement.parentElement;
+      if (![...content.querySelectorAll("h3")].some((node) => !node.textContent.startsWith("Available Keys"))) return;
       panel = createPanel(controller);
       heading.before(panel.root);
       log("info", "digiphile.panel_mounted", lifecycleId);
