@@ -230,13 +230,20 @@ export function createSteamPyCouponListingController({
     if (otherDetails) otherDetails.hidden = others.length === 0;
   }
 
-  async function resolveGameId(game) {
+  async function resolveGame(game) {
     const direct = game?.id ?? game?.gameId;
-    if (direct !== null && direct !== undefined && direct !== "") return String(direct);
-    if (game?.appId === null || game?.appId === undefined || game?.appId === "") return null;
-    const result = await client.fetchSteamGameByAppId(game.appId);
-    const gameId = result?.content?.[0]?.id;
-    return gameId === null || gameId === undefined || gameId === "" ? null : String(gameId);
+    const gameId = direct === null || direct === undefined || direct === "" ? null : String(direct);
+    const type = game?.steamApp?.type;
+    if (gameId && type) return { gameId, type };
+    const appId = appIdOf(game);
+    if (appId === null) return { gameId, type: type || null };
+    const response = await client.fetchSteamGameByAppId(appId);
+    const matched = response?.content?.find((item) => appIdOf(item) === appId);
+    const matchedId = matched?.id;
+    return {
+      gameId: gameId ?? (matchedId === null || matchedId === undefined || matchedId === "" ? null : String(matchedId)),
+      type: type || matched?.steamApp?.type || null,
+    };
   }
 
   async function loadGamePage(pageNumber, currentRegion) {
@@ -285,9 +292,9 @@ export function createSteamPyCouponListingController({
     return { games, ownedSkipped };
   }
 
-  function progressText(done, total, usable, ownedSkipped) {
+  function progressText(done, total, usable, ownedSkipped, dlcSkipped) {
     const owned = ownedSkipped > 0 ? `，已跳过已拥有 ${ownedSkipped}` : "";
-    return `已处理 ${done}/${total}，符合金额条件 ${usable}${owned}`;
+    return `已处理 ${done}/${total}，符合金额条件 ${usable}${owned}，已排除 DLC ${dlcSkipped}`;
   }
 
   async function findListing(gameId, currentRegion, minimum, deduction, maxPay, queryGeneration) {
@@ -386,8 +393,9 @@ export function createSteamPyCouponListingController({
       const total = games.length;
       let done = 0;
       let usable = 0;
+      let dlcSkipped = 0;
       let nextIndex = 0;
-      setProgress(progressText(0, total, 0, ownedSkipped));
+      setProgress(progressText(0, total, 0, ownedSkipped, dlcSkipped));
       if (!total) {
         setProgress(ownedSkipped > 0 ? `没有待查询游戏，已跳过已拥有 ${ownedSkipped}` : "当前筛选下没有游戏");
         return;
@@ -408,9 +416,19 @@ export function createSteamPyCouponListingController({
               if (startButton) startButton.textContent = "查询";
               generation += 1;
             } else {
-              const gameId = await resolveGameId(game);
+              const { gameId, type } = await resolveGame(game);
               if (queryGeneration !== generation) return;
-              if (!gameId) result = { price: null, payable: null, status: STATUS_NO_GAME, gameId: null };
+              if (type === "dlc") {
+                done += 1;
+                dlcSkipped += 1;
+                setProgress(progressText(done, total, usable, ownedSkipped, dlcSkipped));
+                log("info", "game_skipped", { index, appId: appIdOf(game), gameId, type, reason: "dlc" });
+                continue;
+              }
+              if (type !== "game") {
+                result = { price: null, payable: null, status: `无法确认商品类型（${type ?? "缺失"}）`, gameId };
+                log("warn", "game_type_unresolved", { index, appId: appIdOf(game), gameId, type });
+              } else if (!gameId) result = { price: null, payable: null, status: STATUS_NO_GAME, gameId: null };
               else result = { ...await findListing(gameId, currentRegion, minimum, deduction, maxPay, queryGeneration), gameId };
             }
           } catch (error) {
@@ -427,15 +445,15 @@ export function createSteamPyCouponListingController({
             href: result.gameId ? `https://steampy.com/cdkDetail?name=${currentRegion}&gameId=${result.gameId}` : "",
           });
           renderResults(maxPay);
-          setProgress(progressText(done, total, usable, ownedSkipped));
+          setProgress(progressText(done, total, usable, ownedSkipped, dlcSkipped));
           log("info", "game_checked", { index, status: result.status, price: result.price ?? null });
         }
       };
 
       await Promise.all(Array.from({ length: QUERY_CONCURRENCY }, () => worker()));
       if (queryGeneration !== generation) return;
-      setProgress(progressText(total, total, usable, ownedSkipped));
-      log("info", "scan_finished", { total, usable });
+      setProgress(progressText(total, total, usable, ownedSkipped, dlcSkipped));
+      log("info", "scan_finished", { total, usable, ownedSkipped, dlcSkipped });
     } catch (error) {
       if (queryGeneration !== generation) return;
       setProgress(error?.message || String(error));
@@ -453,7 +471,6 @@ export function createSteamPyCouponListingController({
       generation += 1;
       querying = false;
       if (startButton) startButton.textContent = "查询";
-      clearResults();
       setProgress(`已停止。${progress?.textContent || ""}`);
       log("info", "scan_cancelled", {});
       return;
@@ -489,7 +506,7 @@ export function createSteamPyCouponListingController({
     const form = document.createElement("div");
     form.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.1rem;";
     const intro = document.createElement("p");
-    intro.textContent = "从当前商品页起，沿用页面已应用的高级筛选和排序，跳过已拥有的游戏。有货且达到门槛的结果按预估实付升序显示；保留超限项，供选择接近目标的候选。其他结果默认折叠。";
+    intro.textContent = "从当前商品页起，沿用页面已应用的高级筛选和排序，跳过已拥有的游戏并排除 DLC。有货且达到门槛的本体按预估实付升序显示；保留超限项，供选择接近目标的候选。其他结果默认折叠。";
     intro.style.cssText = "margin:0;font-size:.13rem;color:#515a6e;";
     form.append(
       field("满减门槛", minimumInput),
