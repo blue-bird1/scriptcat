@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.13.1
+// @version         5.14.0
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件估算实付，支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, payment estimates from manually entered discounts, and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -829,6 +829,48 @@
   function formatPrice(value) {
     return Number.isFinite(value) ? `￥${value.toFixed(2)}` : "--";
   }
+  function createResultTable() {
+    const table = document.createElement("table");
+    table.style.cssText = "width:100%;border-collapse:collapse;font-size:.13rem;";
+    const head = document.createElement("tr");
+    ["游戏", "挂单价", "预估实付", "结果"].forEach((text) => {
+      const cell = document.createElement("th");
+      cell.textContent = text;
+      cell.style.cssText = "padding:.08rem .1rem;border:1px solid #e8eaec;text-align:left;background:#f5f7fa;";
+      head.append(cell);
+    });
+    const thead = document.createElement("thead");
+    const body = document.createElement("tbody");
+    thead.append(head);
+    table.append(thead, body);
+    return { table, body };
+  }
+  function createResultRow(result, maxPay) {
+    const row = document.createElement("tr");
+    const nameCell = document.createElement("td");
+    nameCell.style.cssText = "padding:.06rem .1rem;border:1px solid #e8eaec;";
+    if (result.href) {
+      const link = document.createElement("a");
+      link.href = result.href;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = result.name;
+      link.style.cssText = "color:#2d8cf0;text-decoration:none;";
+      nameCell.append(link);
+    } else {
+      nameCell.textContent = result.name;
+    }
+    row.append(nameCell);
+    const status = result.status === STATUS_OVER_MAX ? `超出${formatPrice((Math.round(result.payable * 100) - Math.round(maxPay * 100)) / 100)}` : result.status;
+    [formatPrice(result.price), formatPrice(result.payable), status].forEach((text, index) => {
+      const cell = document.createElement("td");
+      cell.textContent = text;
+      cell.style.cssText = "padding:.06rem .1rem;border:1px solid #e8eaec;";
+      if (index === 2 && result.status === STATUS_USABLE) cell.style.color = "#16a34a";
+      row.append(cell);
+    });
+    return row;
+  }
   function gameNameOf(game) {
     return game?.gameNameCn || game?.gameName || game?.name || "未命名游戏";
   }
@@ -863,6 +905,11 @@
     let pageCountInput = null;
     let progress = null;
     let startButton = null;
+    let mainBody = null;
+    let otherBody = null;
+    let otherDetails = null;
+    let otherSummary = null;
+    let results = /* @__PURE__ */ new Map();
     let generation = 0;
     let querying = false;
     function region() {
@@ -887,6 +934,7 @@
       if (dialog) persistInputs();
       generation += 1;
       querying = false;
+      clearResults();
       dialog?.remove();
       dialog = null;
       deductionInput = null;
@@ -895,6 +943,10 @@
       pageCountInput = null;
       progress = null;
       startButton = null;
+      mainBody = null;
+      otherBody = null;
+      otherDetails = null;
+      otherSummary = null;
     }
     function field(labelText, control) {
       const label = document.createElement("label");
@@ -913,32 +965,29 @@
       input.style.cssText = "height:.32rem;padding:0 .08rem;border:1px solid #dcdee2;border-radius:.04rem;font-size:.13rem;color:#17233d;box-sizing:border-box;";
       return input;
     }
-    function appendRow(index, name, price, payable, status, href) {
-      const tbody = dialog?.querySelector("tbody");
-      const row = tbody?.children[index];
-      if (!row) return;
-      const nameCell = document.createElement("td");
-      nameCell.style.cssText = "padding:.06rem .1rem;border:1px solid #e8eaec;";
-      if (href) {
-        const link = document.createElement("a");
-        link.href = href;
-        link.target = "_blank";
-        link.rel = "noopener noreferrer";
-        link.textContent = name;
-        link.style.cssText = "color:#2d8cf0;text-decoration:none;";
-        nameCell.append(link);
-      } else {
-        nameCell.textContent = name;
+    function clearResults() {
+      results = /* @__PURE__ */ new Map();
+      mainBody?.replaceChildren();
+      otherBody?.replaceChildren();
+      if (otherDetails) {
+        otherDetails.open = false;
+        otherDetails.hidden = true;
       }
-      const cells = [nameCell];
-      [formatPrice(price), formatPrice(payable), status].forEach((text, index2) => {
-        const cell = document.createElement("td");
-        cell.textContent = text;
-        cell.style.cssText = "padding:.06rem .1rem;border:1px solid #e8eaec;";
-        if (index2 === 2 && status === STATUS_USABLE) cell.style.color = "#16a34a";
-        cells.push(cell);
-      });
-      row.replaceChildren(...cells);
+      if (otherSummary) otherSummary.textContent = "其他结果（0）";
+    }
+    function renderResults(maxPay) {
+      const candidates = [];
+      const others = [];
+      for (const result of results.values()) {
+        if (Number.isFinite(result.price) && Number.isFinite(result.payable)) candidates.push(result);
+        else others.push(result);
+      }
+      candidates.sort((left, right) => left.payable - right.payable || left.price - right.price || left.index - right.index);
+      others.sort((left, right) => left.index - right.index);
+      mainBody?.replaceChildren(...candidates.map((result) => createResultRow(result, maxPay)));
+      otherBody?.replaceChildren(...others.map((result) => createResultRow(result, maxPay)));
+      if (otherSummary) otherSummary.textContent = `其他结果（${others.length}）`;
+      if (otherDetails) otherDetails.hidden = others.length === 0;
     }
     async function resolveGameId(game) {
       const direct = game?.id ?? game?.gameId;
@@ -1073,7 +1122,8 @@
       const queryGeneration = ++generation;
       querying = true;
       if (startButton) startButton.textContent = "停止";
-      dialog.querySelector("tbody")?.replaceChildren();
+      clearResults();
+      setProgress("正在读取商品列表");
       log("info", "scan_started", {
         region: currentRegion,
         startPage: Number(vm?.searchForm?.pageNumber) || 1,
@@ -1091,8 +1141,6 @@
         let done = 0;
         let usable = 0;
         let nextIndex = 0;
-        const tbody = dialog?.querySelector("tbody");
-        for (let index = 0; index < total; index += 1) tbody?.append(document.createElement("tr"));
         setProgress(progressText(0, total, 0, ownedSkipped));
         if (!total) {
           setProgress(ownedSkipped > 0 ? `没有待查询游戏，已跳过已拥有 ${ownedSkipped}` : "当前筛选下没有游戏");
@@ -1125,14 +1173,13 @@
             if (queryGeneration !== generation) return;
             done += 1;
             if (result.status === STATUS_USABLE) usable += 1;
-            appendRow(
+            results.set(index, {
+              ...result,
               index,
-              gameNameOf(game),
-              result.price,
-              result.payable,
-              result.status,
-              result.gameId ? `https://steampy.com/cdkDetail?name=${currentRegion}&gameId=${result.gameId}` : ""
-            );
+              name: gameNameOf(game),
+              href: result.gameId ? `https://steampy.com/cdkDetail?name=${currentRegion}&gameId=${result.gameId}` : ""
+            });
+            renderResults(maxPay);
             setProgress(progressText(done, total, usable, ownedSkipped));
             log("info", "game_checked", { index, status: result.status, price: result.price ?? null });
           }
@@ -1157,7 +1204,8 @@
         generation += 1;
         querying = false;
         if (startButton) startButton.textContent = "查询";
-        setProgress("已停止");
+        clearResults();
+        setProgress(`已停止。${progress?.textContent || ""}`);
         log("info", "scan_cancelled", {});
         return;
       }
@@ -1190,7 +1238,7 @@
       const form = document.createElement("div");
       form.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.1rem;";
       const intro = document.createElement("p");
-      intro.textContent = "手动填写支付满减条件，查找有货、达到满减门槛且预估实付不超过上限的游戏。从当前商品页起，沿用页面已应用的高级筛选和排序。";
+      intro.textContent = "从当前商品页起，沿用页面已应用的高级筛选和排序，跳过已拥有的游戏。有货且达到门槛的结果按预估实付升序显示；保留超限项，供选择接近目标的候选。其他结果默认折叠。";
       intro.style.cssText = "margin:0;font-size:.13rem;color:#515a6e;";
       form.append(
         field("满减门槛", minimumInput),
@@ -1211,19 +1259,17 @@
       startButton.addEventListener("click", toggleQuery);
       const tableWrap = document.createElement("div");
       tableWrap.style.cssText = "flex:1;min-height:0;overflow:auto;";
-      const table = document.createElement("table");
-      table.style.cssText = "width:100%;border-collapse:collapse;font-size:.13rem;";
-      const head = document.createElement("tr");
-      ["游戏", "挂单价", "预估实付", "结果"].forEach((text) => {
-        const cell = document.createElement("th");
-        cell.textContent = text;
-        cell.style.cssText = "padding:.08rem .1rem;border:1px solid #e8eaec;text-align:left;background:#f5f7fa;";
-        head.append(cell);
-      });
-      const thead = document.createElement("thead");
-      thead.append(head);
-      table.append(thead, document.createElement("tbody"));
-      tableWrap.append(table);
+      const mainTable = createResultTable();
+      const otherTable = createResultTable();
+      mainBody = mainTable.body;
+      otherBody = otherTable.body;
+      otherDetails = document.createElement("details");
+      otherDetails.style.cssText = "margin-top:.12rem;font-size:.13rem;";
+      otherSummary = document.createElement("summary");
+      otherSummary.style.cssText = "cursor:pointer;padding:.06rem 0;";
+      otherDetails.append(otherSummary, otherTable.table);
+      tableWrap.append(mainTable.table, otherDetails);
+      clearResults();
       panel.append(header, intro, form, note, progress, startButton, tableWrap);
       overlay.append(panel);
       overlay.addEventListener("click", (event) => {
