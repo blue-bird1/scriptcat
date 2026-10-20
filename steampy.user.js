@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.11.1
+// @version         5.11.2
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持优惠券查询，支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, coupon lookup, and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -851,9 +851,14 @@
       totalElements: Number(page?.totalElements)
     };
   }
+  function appIdOf(game) {
+    const parsed = Number(game?.appId);
+    return Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
+  }
   function createSteamPyCouponListingController({
     client,
     shouldShow = null,
+    isGameOwned = null,
     getValue = GM_getValue,
     setValue = GM_setValue
   } = {}) {
@@ -1073,6 +1078,7 @@
     async function collectGames(pageCount, currentRegion, queryGeneration) {
       const startPage = Number(vm?.searchForm?.pageNumber) || 1;
       const games = [];
+      let ownedSkipped = 0;
       let totalPages = null;
       for (let offset = 0; offset < pageCount; offset += 1) {
         if (queryGeneration !== generation) return null;
@@ -1081,11 +1087,18 @@
         const page = await loadGamePage(pageNumber, currentRegion);
         if (!page.content) throw new Error(`第 ${pageNumber} 页游戏列表格式无效`);
         if (Number.isFinite(page.totalPages)) totalPages = page.totalPages;
-        const visible = typeof shouldShow === "function" ? page.content.filter((game) => shouldShow(game)) : page.content;
+        const unowned = page.content.filter((game) => {
+          const appId = appIdOf(game);
+          return appId === null || !isGameOwned?.(appId);
+        });
+        const pageOwnedSkipped = page.content.length - unowned.length;
+        ownedSkipped += pageOwnedSkipped;
+        const visible = typeof shouldShow === "function" ? unowned.filter((game) => shouldShow(game)) : unowned;
         games.push(...visible);
         log("info", "game_page_loaded", {
           pageNumber,
           received: page.content.length,
+          ownedSkipped: pageOwnedSkipped,
           visible: visible.length,
           totalPages: Number.isFinite(page.totalPages) ? page.totalPages : null
         });
@@ -1093,7 +1106,11 @@
         if (!page.content.length) break;
         if (totalPages !== null && pageNumber >= totalPages) break;
       }
-      return games;
+      return { games, ownedSkipped };
+    }
+    function progressText(done, total, usable, ownedSkipped) {
+      const owned = ownedSkipped > 0 ? `，已跳过已拥有 ${ownedSkipped}` : "";
+      return `已处理 ${done}/${total}，可用 ${usable}${owned}`;
     }
     async function findListing(gameId, currentRegion, minimum, deduction, maxPay, queryGeneration) {
       let pageNumber = 1;
@@ -1182,17 +1199,19 @@
         pageCount
       });
       try {
-        const games = await collectGames(pageCount, currentRegion, queryGeneration);
-        if (queryGeneration !== generation || !games) return;
+        const collected = await collectGames(pageCount, currentRegion, queryGeneration);
+        if (queryGeneration !== generation || !collected) return;
+        const games = collected.games;
+        const ownedSkipped = collected.ownedSkipped;
         const total = games.length;
         let done = 0;
         let usable = 0;
         let nextIndex = 0;
         const tbody = dialog?.querySelector("tbody");
         for (let index = 0; index < total; index += 1) tbody?.append(document.createElement("tr"));
-        setProgress(`已处理 0/${total}，可用 0`);
+        setProgress(progressText(0, total, 0, ownedSkipped));
         if (!total) {
-          setProgress("当前筛选下没有游戏");
+          setProgress(ownedSkipped > 0 ? `没有待查询游戏，已跳过已拥有 ${ownedSkipped}` : "当前筛选下没有游戏");
           return;
         }
         async function worker() {
@@ -1231,13 +1250,13 @@
               result.status,
               result.gameId ? `https://steampy.com/cdkDetail?name=${currentRegion}&gameId=${result.gameId}` : ""
             );
-            setProgress(`已处理 ${done}/${total}，可用 ${usable}`);
+            setProgress(progressText(done, total, usable, ownedSkipped));
             log("info", "game_checked", { index, status: result.status, price: result.price ?? null });
           }
         }
         await Promise.all(Array.from({ length: QUERY_CONCURRENCY }, () => worker()));
         if (queryGeneration !== generation) return;
-        setProgress(`已完成，可用 ${usable}`);
+        setProgress(progressText(total, total, usable, ownedSkipped));
         log("info", "scan_finished", { total, usable });
       } catch (error) {
         if (queryGeneration !== generation) return;
@@ -3155,7 +3174,8 @@
     });
     const couponListing = createSteamPyCouponListingController({
       client: xbootClient,
-      shouldShow: filter.shouldShow
+      shouldShow: filter.shouldShow,
+      isGameOwned: libraryManager.isGameOwned
     });
     buyer = createSteamPyBuyerController({
       advancedFilter,
