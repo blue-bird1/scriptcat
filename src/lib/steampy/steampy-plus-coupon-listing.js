@@ -12,6 +12,14 @@ const QUERY_CONCURRENCY = 2;
 const REGIONS = new Set(["cn", "ru", "us", "tl"]);
 const WEB_DEVICES = new Set([0, 3]);
 const LOG_PREFIX = "[SteamPy Plus][CouponListing]";
+const STATUS_USABLE = "可用";
+const STATUS_OVER_MAX = "实付超过上限";
+const STATUS_NO_LISTING = "无库存";
+const STATUS_BELOW_MIN = "未达使用门槛";
+const STATUS_WRONG_GAME = "不适用于此游戏";
+const STATUS_NO_GAME = "无法识别商品";
+const STATUS_TOKEN = "登录已失效";
+const MANUAL_NOTE = "未选择优惠券时，填写面额和使用门槛。使用门槛为 0 表示无使用门槛。";
 
 function log(level, event, fields = {}) {
   const entry = { time: new Date().toISOString(), level, event, ...fields };
@@ -125,16 +133,7 @@ export function createSteamPyCouponListingController({
     deductionInput.value = coupon?.deduction === null || coupon?.deduction === undefined ? "" : String(coupon.deduction);
     minimumInput.value = coupon?.minimum === null || coupon?.minimum === undefined ? "" : String(coupon.minimum);
     if (!note) return;
-    if (!coupon) {
-      note.textContent = "未选择券时手填抵扣额和交易额下限。交易额下限为 0 表示无门槛。";
-      return;
-    }
-    const missing = [];
-    if (coupon.deduction === null) missing.push("抵扣额");
-    if (coupon.minimum === null) missing.push("交易额下限");
-    note.textContent = missing.length
-      ? `「${coupon.name}」没有返回${missing.join("、")}，需要手填。`
-      : `已填入「${coupon.name}」。抵扣额 ${formatPrice(coupon.deduction)}，交易额下限 ${formatPrice(coupon.minimum)}。${coupon.gameId ? "仅适用于指定游戏。" : ""}${coupon.remark}`;
+    note.textContent = describeCoupon(coupon);
   }
 
   function restoreInputs() {
@@ -168,6 +167,17 @@ export function createSteamPyCouponListingController({
     startButton = null;
   }
 
+  function describeCoupon(coupon) {
+    if (!coupon) return MANUAL_NOTE;
+    const parts = [`「${coupon.name}」`];
+    parts.push(coupon.deduction === null ? "面额缺失" : `面额 ${formatPrice(coupon.deduction)}`);
+    if (coupon.minimum === null) parts.push("使用门槛缺失");
+    else if (coupon.minimum === 0) parts.push("无使用门槛");
+    else parts.push(`使用门槛 ${formatPrice(coupon.minimum)}`);
+    if (coupon.gameId) parts.push("仅限指定游戏");
+    return `${parts.join("，")}。`;
+  }
+
   function field(labelText, control) {
     const label = document.createElement("label");
     label.style.cssText = "display:flex;flex-direction:column;gap:.04rem;font-size:.13rem;";
@@ -193,14 +203,18 @@ export function createSteamPyCouponListingController({
     couponSelect.replaceChildren();
     const manual = document.createElement("option");
     manual.value = "";
-    manual.textContent = "手填";
+    manual.textContent = "手动填写";
     couponSelect.append(manual);
     coupons.forEach((coupon) => {
       const option = document.createElement("option");
       option.value = coupon.id;
-      const amount = coupon.deduction === null ? "面额未知" : formatPrice(coupon.deduction);
-      const floor = coupon.minimum === null ? "下限未知" : `满 ${formatPrice(coupon.minimum)}`;
-      option.textContent = `${coupon.name} · ${amount} · ${floor}`;
+      const amount = coupon.deduction === null ? "面额缺失" : `面额 ${formatPrice(coupon.deduction)}`;
+      const floor = coupon.minimum === null
+        ? "使用门槛缺失"
+        : coupon.minimum === 0
+          ? "无使用门槛"
+          : `使用门槛 ${formatPrice(coupon.minimum)}`;
+      option.textContent = `${coupon.name}，${amount}，${floor}`;
       couponSelect.append(option);
     });
     if ([...couponSelect.options].some((option) => option.value === current)) couponSelect.value = current;
@@ -209,12 +223,12 @@ export function createSteamPyCouponListingController({
   async function loadCoupons() {
     const currentRegion = region();
     if (!currentRegion) {
-      note.textContent = "当前列表地区无法识别，只能手填。";
+      note.textContent = "无法识别当前地区，请手动填写。";
       log("error", "coupon_region_unsupported", { areas: vm?.areas ?? null });
       return;
     }
     if (!client?.fetchPromoCodeList) {
-      note.textContent = "无法读取卡券中心，只能手填。";
+      note.textContent = "无法读取优惠券，请手动填写。";
       log("error", "coupon_client_missing", {});
       return;
     }
@@ -254,14 +268,14 @@ export function createSteamPyCouponListingController({
       });
       if (!note) return;
       if (!matched.length) {
-        note.textContent = "卡券中心没有当前地区未使用的网页 CDK 券，可以手填。";
+        note.textContent = "当前地区没有未使用的 CDK 优惠券，请手动填写。";
       } else if (!couponSelect?.value) {
-        note.textContent = `已读取 ${matched.length} 张当前地区 CDK 券。`;
+        note.textContent = `已读取 ${matched.length} 张未使用的 CDK 优惠券。`;
       }
     } catch (error) {
       coupons = [];
       renderCoupons();
-      if (note) note.textContent = `卡券中心读取失败：${error?.message || error}。可以手填。`;
+      if (note) note.textContent = `优惠券读取失败：${error?.message || error}。请手动填写。`;
       log("error", "coupon_list_failed", { message: error?.message || String(error) });
     }
   }
@@ -288,7 +302,7 @@ export function createSteamPyCouponListingController({
       const cell = document.createElement("td");
       cell.textContent = text;
       cell.style.cssText = "padding:.06rem .1rem;border:1px solid #e8eaec;";
-      if (index === 2 && status === "可用") cell.style.color = "#16a34a";
+      if (index === 2 && status === STATUS_USABLE) cell.style.color = "#16a34a";
       cells.push(cell);
     });
     row.replaceChildren(...cells);
@@ -333,7 +347,7 @@ export function createSteamPyCouponListingController({
         visible: visible.length,
         totalPages: Number.isFinite(page.totalPages) ? page.totalPages : null,
       });
-      setProgress(`已读取游戏列表第 ${pageNumber} 页`);
+      setProgress(`正在读取第 ${pageNumber} 页`);
       if (!page.content.length) break;
       if (totalPages !== null && pageNumber >= totalPages) break;
     }
@@ -353,7 +367,7 @@ export function createSteamPyCouponListingController({
         pageSize: LISTING_PAGE_SIZE,
       });
       const content = Array.isArray(page?.content) ? page.content : null;
-      if (!content) throw new Error("挂单列表格式无效");
+      if (!content) throw new Error("列表数据无效");
       if (totalElements === null && Number.isFinite(Number(page?.totalElements))) {
         totalElements = Number(page.totalElements);
       }
@@ -371,10 +385,10 @@ export function createSteamPyCouponListingController({
         } else if (quote.kind === "over-max") {
           if (lowestInStock === null || quote.price < lowestInStock) lowestInStock = quote.price;
           log("info", "listing_page_loaded", { gameId, pageNumber, count: content.length, invalid, outOfStock, belowMinimum, result: "over-max" });
-          return { ok: false, price: quote.price, payable: quote.payable, status: "用券后自付超过上限" };
+          return { ok: false, price: quote.price, payable: quote.payable, status: STATUS_OVER_MAX };
         } else {
           log("info", "listing_page_loaded", { gameId, pageNumber, count: content.length, invalid, outOfStock, belowMinimum, result: "usable", price: quote.price });
-          return { ok: true, price: quote.price, payable: quote.payable, status: "可用" };
+          return { ok: true, price: quote.price, payable: quote.payable, status: STATUS_USABLE };
         }
       }
       log("info", "listing_page_loaded", { gameId, pageNumber, count: content.length, invalid, outOfStock, belowMinimum, result: "continue" });
@@ -386,7 +400,7 @@ export function createSteamPyCouponListingController({
       ok: false,
       price: lowestInStock,
       payable: null,
-      status: lowestInStock === null ? "无在售挂单" : "无达到交易额下限的挂单",
+      status: lowestInStock === null ? STATUS_NO_LISTING : STATUS_BELOW_MIN,
     };
   }
 
@@ -398,19 +412,19 @@ export function createSteamPyCouponListingController({
     const pageCount = Number(pageCountInput?.value);
     const currentRegion = region();
     if (!currentRegion) {
-      setProgress("当前列表地区无法识别");
+      setProgress("无法识别当前地区");
       return;
     }
     if (deduction === null || minimum === null) {
-      setProgress("请填写抵扣额和交易额下限");
+      setProgress("请填写面额和使用门槛");
       return;
     }
     if (!Number.isInteger(pageCount) || pageCount < 1) {
-      setProgress("查询页数需要是大于等于 1 的整数");
+      setProgress("页数须为大于等于 1 的整数");
       return;
     }
     if (maxPayInput?.value.trim() && maxPay === null) {
-      setProgress("最高自付无效");
+      setProgress("实付上限无效");
       return;
     }
     persistInputs();
@@ -436,9 +450,9 @@ export function createSteamPyCouponListingController({
       let nextIndex = 0;
       const tbody = dialog?.querySelector("tbody");
       for (let index = 0; index < total; index += 1) tbody?.append(document.createElement("tr"));
-      setProgress(`已处理 0/${total} · 可用 0`);
+      setProgress(`已处理 0/${total}，可用 0`);
       if (!total) {
-        setProgress("这些页没有符合当前筛选的游戏");
+        setProgress("当前筛选下没有游戏");
         return;
       }
 
@@ -451,16 +465,16 @@ export function createSteamPyCouponListingController({
           let result = { price: null, payable: null, status: "查询失败", gameId: null };
           try {
             if (client?.isTokenInvalid?.()) {
-              result = { price: null, payable: null, status: "AccessToken 已失效", gameId: null };
-              setProgress("已停止：AccessToken 已失效，请重新登录后刷新页面");
+              result = { price: null, payable: null, status: STATUS_TOKEN, gameId: null };
+              setProgress("登录已失效，请重新登录后刷新页面");
               querying = false;
-              if (startButton) startButton.textContent = "开始查询";
+              if (startButton) startButton.textContent = "查询";
               generation += 1;
             } else {
               const gameId = await resolveGameId(game);
               if (queryGeneration !== generation) return;
-              if (!gameId) result = { price: null, payable: null, status: "缺少 gameId", gameId: null };
-              else if (coupon?.gameId && coupon.gameId !== gameId) result = { price: null, payable: null, status: "券不适用于此游戏", gameId };
+              if (!gameId) result = { price: null, payable: null, status: STATUS_NO_GAME, gameId: null };
+              else if (coupon?.gameId && coupon.gameId !== gameId) result = { price: null, payable: null, status: STATUS_WRONG_GAME, gameId };
               else result = { ...await findListing(gameId, currentRegion, minimum, deduction, maxPay, queryGeneration), gameId };
             }
           } catch (error) {
@@ -469,7 +483,7 @@ export function createSteamPyCouponListingController({
           }
           if (queryGeneration !== generation) return;
           done += 1;
-          if (result.status === "可用") usable += 1;
+          if (result.status === STATUS_USABLE) usable += 1;
           appendRow(
             index,
             gameNameOf(game),
@@ -478,14 +492,14 @@ export function createSteamPyCouponListingController({
             result.status,
             result.gameId ? `https://steampy.com/cdkDetail?name=${currentRegion}&gameId=${result.gameId}` : "",
           );
-          setProgress(`已处理 ${done}/${total} · 可用 ${usable}`);
+          setProgress(`已处理 ${done}/${total}，可用 ${usable}`);
           log("info", "game_checked", { index, status: result.status, price: result.price ?? null });
         }
       }
 
       await Promise.all(Array.from({ length: QUERY_CONCURRENCY }, () => worker()));
       if (queryGeneration !== generation) return;
-      setProgress(`查询结束 · 已处理 ${total}/${total} · 可用 ${usable}`);
+      setProgress(`已完成，可用 ${usable}`);
       log("info", "scan_finished", { total, usable });
     } catch (error) {
       if (queryGeneration !== generation) return;
@@ -494,7 +508,7 @@ export function createSteamPyCouponListingController({
     } finally {
       if (queryGeneration === generation) {
         querying = false;
-        if (startButton) startButton.textContent = "开始查询";
+        if (startButton) startButton.textContent = "查询";
       }
     }
   }
@@ -503,7 +517,7 @@ export function createSteamPyCouponListingController({
     if (querying) {
       generation += 1;
       querying = false;
-      if (startButton) startButton.textContent = "开始查询";
+      if (startButton) startButton.textContent = "查询";
       setProgress("已停止");
       log("info", "scan_cancelled", {});
       return;
@@ -521,7 +535,7 @@ export function createSteamPyCouponListingController({
     const header = document.createElement("div");
     header.style.cssText = "display:flex;align-items:center;justify-content:space-between;";
     const title = document.createElement("h3");
-    title.textContent = "按券查挂单";
+    title.textContent = "优惠券查询";
     title.style.cssText = "margin:0;font-size:.18rem;";
     const close = document.createElement("button");
     close.type = "button";
@@ -535,39 +549,42 @@ export function createSteamPyCouponListingController({
     couponSelect.addEventListener("change", () => {
       const coupon = selectedCoupon();
       if (coupon) applyCouponToInputs(coupon);
-      else if (note) note.textContent = "未选择券时手填抵扣额和交易额下限。交易额下限为 0 表示无门槛。";
+      else if (note) note.textContent = MANUAL_NOTE;
     });
-    deductionInput = numberInput("券抵扣额");
-    minimumInput = numberInput("0 表示无门槛");
-    maxPayInput = numberInput("可空");
-    pageCountInput = numberInput("从当前页起");
+    deductionInput = numberInput("");
+    minimumInput = numberInput("0");
+    maxPayInput = numberInput("不限制");
+    pageCountInput = numberInput("1");
     pageCountInput.min = "1";
     pageCountInput.step = "1";
     const form = document.createElement("div");
     form.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.1rem;";
+    const intro = document.createElement("p");
+    intro.textContent = "查找有货、达到使用门槛且实付不超过上限的游戏。";
+    intro.style.cssText = "margin:0;font-size:.13rem;color:#515a6e;";
     form.append(
-      field("CDK 券", couponSelect),
-      field("抵扣额", deductionInput),
-      field("交易额下限", minimumInput),
-      field("最高自付", maxPayInput),
-      field("查询页数", pageCountInput),
+      field("优惠券", couponSelect),
+      field("面额", deductionInput),
+      field("使用门槛", minimumInput),
+      field("实付上限", maxPayInput),
+      field("页数", pageCountInput),
     );
     note = document.createElement("div");
     note.style.cssText = "font-size:.12rem;color:#666;";
     progress = document.createElement("div");
     progress.style.cssText = "font-size:.13rem;color:#17233d;";
-    progress.textContent = "尚未查询";
+    progress.textContent = "未开始";
     startButton = document.createElement("button");
     startButton.type = "button";
     startButton.className = "ivu-btn ivu-btn-primary ivu-btn-sm";
-    startButton.textContent = "开始查询";
+    startButton.textContent = "查询";
     startButton.addEventListener("click", toggleQuery);
     const tableWrap = document.createElement("div");
     tableWrap.style.cssText = "flex:1;min-height:0;overflow:auto;";
     const table = document.createElement("table");
     table.style.cssText = "width:100%;border-collapse:collapse;font-size:.13rem;";
     const head = document.createElement("tr");
-    ["游戏", "挂单价", "用券后自付", "状态"].forEach((text) => {
+    ["游戏", "价格", "实付", "结果"].forEach((text) => {
       const cell = document.createElement("th");
       cell.textContent = text;
       cell.style.cssText = "padding:.08rem .1rem;border:1px solid #e8eaec;text-align:left;background:#f5f7fa;";
@@ -577,7 +594,7 @@ export function createSteamPyCouponListingController({
     thead.append(head);
     table.append(thead, document.createElement("tbody"));
     tableWrap.append(table);
-    panel.append(header, form, note, progress, startButton, tableWrap);
+    panel.append(header, intro, form, note, progress, startButton, tableWrap);
     overlay.append(panel);
     overlay.addEventListener("click", (event) => {
       if (event.target === overlay) closeDialog();
@@ -598,7 +615,7 @@ export function createSteamPyCouponListingController({
     button.id = BUTTON_ID;
     button.type = "button";
     button.className = "ivu-btn ivu-btn-default ivu-btn-sm";
-    button.textContent = "按券查挂单";
+    button.textContent = "优惠券查询";
     button.style.cssText = "margin-left:.08rem;";
     button.addEventListener("click", openDialog);
     anchor.append(button);

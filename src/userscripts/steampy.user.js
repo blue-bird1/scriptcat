@@ -3,9 +3,9 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.11.0
-// @description     增强购买Steampy密钥的体验，增加筛选功能，支持按 CDK 券查询挂单，支持鼠标中键打开Steam页面。
-// @description:en  Enhance Steampy key purchasing with filters, CDK coupon listing lookup, and middle-click Steam pages.
+// @version         5.11.1
+// @description     增强购买Steampy密钥的体验，增加筛选功能，支持优惠券查询，支持鼠标中键打开Steam页面。
+// @description:en  Enhance Steampy key purchasing with filters, coupon lookup, and middle-click Steam pages.
 // @match           https://steampy.com/*
 // @grant           GM_setValue
 // @grant           GM_getValue
