@@ -789,7 +789,7 @@
   var MENU_ID = "steam-py-plus-coupon-listing";
   var MANUAL_DEDUCTION_STORAGE_KEY = "steamPyPlusCouponListingDeduction";
   var MANUAL_MINIMUM_STORAGE_KEY = "steamPyPlusCouponListingMinimum";
-  var LISTING_PAGE_SIZE = 20;
+  var LISTING_PAGE_SIZE = 100;
   var QUERY_CONCURRENCY = 2;
   var REGIONS = /* @__PURE__ */ new Set(["cn", "ru", "us", "tl"]);
   var LOG_PREFIX = "[SteamPy Plus][CouponListing]";
