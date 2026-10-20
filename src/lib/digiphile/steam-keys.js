@@ -29,7 +29,7 @@ export function startDigiphileSteamKeys() {
     const content = heading.parentElement.parentElement;
     if (![...content.querySelectorAll("h3")].some(node => !node.textContent.startsWith("Available Keys"))) return;
     panel = createPanel(controller);
-    heading.before(panel.root);
+    heading.parentElement.after(panel.root);
     log("info", "digiphile.panel_mounted", lifecycleId);
     if (!initialLoadStarted) {
       initialLoadStarted = true;

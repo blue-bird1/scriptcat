@@ -259,7 +259,7 @@
           state.itemMessages.set(item.id, info.fresh ? "正在刮开…" : "正在读取…");
           update(`${state.completed}/${state.total} · ${info.fresh ? "正在刮开" : "正在读取"}：${item.title}`);
           const result = await readSteamKey(item, runId);
-          state.results.set(item.id, { ...result, source: info.fresh ? "本次新刮开" : "已刮开 · 已读取" });
+          state.results.set(item.id, { ...result, source: info.fresh ? "本次新刮开" : "本次读取" });
           state.items = state.items.map((value) => value.id === item.id ? { ...value, status: "Revealed" } : value);
           state.itemMessages.delete(item.id);
           state.completed += 1;
@@ -476,7 +476,7 @@
       const content = heading.parentElement.parentElement;
       if (![...content.querySelectorAll("h3")].some((node) => !node.textContent.startsWith("Available Keys"))) return;
       panel = createPanel(controller);
-      heading.before(panel.root);
+      heading.parentElement.after(panel.root);
       log("info", "digiphile.panel_mounted", lifecycleId);
       if (!initialLoadStarted) {
         initialLoadStarted = true;

@@ -119,7 +119,7 @@ export function createController(render) {
         state.itemMessages.set(item.id, info.fresh ? "正在刮开…" : "正在读取…");
         update(`${state.completed}/${state.total} · ${info.fresh ? "正在刮开" : "正在读取"}：${item.title}`);
         const result = await readSteamKey(item, runId);
-        state.results.set(item.id, { ...result, source: info.fresh ? "本次新刮开" : "已刮开 · 已读取" });
+        state.results.set(item.id, { ...result, source: info.fresh ? "本次新刮开" : "本次读取" });
         state.items = state.items.map(value => value.id === item.id ? { ...value, status: "Revealed" } : value);
         state.itemMessages.delete(item.id);
         state.completed += 1;
