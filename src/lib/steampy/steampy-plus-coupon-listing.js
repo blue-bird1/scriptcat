@@ -317,6 +317,7 @@ export function createSteamPyCouponListingController({
     dialog.querySelector("tbody")?.replaceChildren();
     log("info", "scan_started", {
       region: currentRegion,
+      startPage: Number(vm?.searchForm?.pageNumber) || 1,
       deduction,
       minimum,
       maxPay,
@@ -435,7 +436,7 @@ export function createSteamPyCouponListingController({
     const form = document.createElement("div");
     form.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.1rem;";
     const intro = document.createElement("p");
-    intro.textContent = "手动填写支付满减条件，查找有货、达到满减门槛且预估实付不超过上限的游戏。";
+    intro.textContent = "手动填写支付满减条件，查找有货、达到满减门槛且预估实付不超过上限的游戏。从当前商品页起，沿用页面已应用的高级筛选和排序。";
     intro.style.cssText = "margin:0;font-size:.13rem;color:#515a6e;";
     form.append(
       field("满减门槛", minimumInput),

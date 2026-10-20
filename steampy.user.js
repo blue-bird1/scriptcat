@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.13.0
+// @version         5.13.1
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件估算实付，支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, payment estimates from manually entered discounts, and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -273,7 +273,6 @@
           token
         );
         if (!Array.isArray(result?.content)) throw new Error("高级筛选返回的数据格式无效");
-        mappedAppIds.clear();
         return {
           success: true,
           result: {
@@ -1077,6 +1076,7 @@
       dialog.querySelector("tbody")?.replaceChildren();
       log("info", "scan_started", {
         region: currentRegion,
+        startPage: Number(vm?.searchForm?.pageNumber) || 1,
         deduction,
         minimum,
         maxPay,
@@ -1190,7 +1190,7 @@
       const form = document.createElement("div");
       form.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.1rem;";
       const intro = document.createElement("p");
-      intro.textContent = "手动填写支付满减条件，查找有货、达到满减门槛且预估实付不超过上限的游戏。";
+      intro.textContent = "手动填写支付满减条件，查找有货、达到满减门槛且预估实付不超过上限的游戏。从当前商品页起，沿用页面已应用的高级筛选和排序。";
       intro.style.cssText = "margin:0;font-size:.13rem;color:#515a6e;";
       form.append(
         field("满减门槛", minimumInput),

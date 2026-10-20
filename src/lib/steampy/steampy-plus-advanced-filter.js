@@ -230,7 +230,6 @@ export function createSteamPyAdvancedFilterController({
       token,
       );
       if (!Array.isArray(result?.content)) throw new Error("高级筛选返回的数据格式无效");
-      mappedAppIds.clear();
       return {
         success: true,
         result: {
