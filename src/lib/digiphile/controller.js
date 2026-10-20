@@ -37,7 +37,7 @@ export function createController(render) {
     activeRunId = runId;
     state.busy = true;
     state.stopping = false;
-    update("正在读取全部 Key 列表…");
+    update("正在读取 Key 列表…");
     log("info", "digiphile.list_started", runId);
     try {
       state.items = await listSteamKeys(runId);
@@ -49,7 +49,7 @@ export function createController(render) {
       }
       state.loaded = true;
       log("info", "digiphile.list_loaded", runId, { count: state.items.length });
-      update(state.stopping ? "已停止。列表已更新。" : `已读取全部 ${state.items.length} 项。默认仅选择未过期、自有且未刮开的 Key。`);
+      update(state.stopping ? "已停止，列表已更新。" : "列表已更新。");
     } catch (error) {
       logError("digiphile.list_failed", runId, error);
       update(`读取列表失败：${error.message}`, true);
@@ -65,7 +65,7 @@ export function createController(render) {
     if (!state.busy || state.stopping) return;
     state.stopping = true;
     log("info", "digiphile.stop_requested", activeRunId);
-    update("正在停止：当前请求完成后停止，已取得的 Key 会保留。");
+    update("当前请求完成后停止。");
   }
 
   async function run() {
@@ -81,7 +81,7 @@ export function createController(render) {
     log("info", "digiphile.batch_started", runId, {
       selected: state.items.filter(item => state.selected.has(item.id)).map(({ id, title }) => ({ id, title })),
     });
-    update("正在重新核对所选条目的最新状态…");
+    update("正在核对所选 Key…");
     try {
       state.items = await listSteamKeys(runId);
       if (state.stopping) return;
@@ -91,23 +91,23 @@ export function createController(render) {
       if (invalidIds.length) {
         state.selected = new Set(selectedIds.filter(id => itemsById.has(id) && availability(itemsById.get(id)).available));
         log("warn", "digiphile.selection_changed", runId, { unavailableIds: invalidIds });
-        update(`${invalidIds.length} 个所选条目已不可用，已取消勾选。请检查列表后重试。`, true);
+        update(`已取消选择 ${invalidIds.length} 个不可用的 Key，请检查列表后重试。`, true);
         return;
       }
       const pending = pendingIds.map(id => itemsById.get(id));
       state.total = pending.length;
       if (!pending.length) {
         log("info", "digiphile.batch_already_read", runId);
-        update("所选 Key 均已显示，可直接复制。");
+        update("所选 Key 已全部读取。");
         return;
       }
       const newCount = pending.filter(item => availability(item).fresh).length;
       const confirmation = newCount
-        ? `即将首次刮开 ${newCount} 个 Key，并读取 ${pending.length - newCount} 个已刮开 Key。\n\n首次刮开会使对应整包不可退款、不可换积分。\n本脚本不会打开 Steam，也不会在 Steam 激活。\n\n是否继续？`
-        : `即将读取 ${pending.length} 个已刮开 Key，不会打开 Steam 或激活。是否继续？`;
+        ? `本次读取 ${pending.length} 个 Key，其中 ${newCount} 个需刮开。\n刮开后，所属整包不可退款，该 Key 不可兑换积分。\n是否继续？`
+        : `读取 ${pending.length} 个已刮开的 Key？`;
       if (!window.confirm(confirmation)) {
         log("info", "digiphile.batch_cancelled", runId);
-        update("已取消，未刮开或读取任何 Key。");
+        update("已取消。");
         return;
       }
       for (const item of pending) {
@@ -119,7 +119,7 @@ export function createController(render) {
         state.itemMessages.set(item.id, info.fresh ? "正在刮开…" : "正在读取…");
         update(`${state.completed}/${state.total} · ${info.fresh ? "正在刮开" : "正在读取"}：${item.title}`);
         const result = await readSteamKey(item, runId);
-        state.results.set(item.id, { ...result, source: info.fresh ? "本次新刮开" : "本次读取" });
+        state.results.set(item.id, { ...result, source: info.fresh ? "本次刮开" : "本次读取" });
         state.items = state.items.map(value => value.id === item.id ? { ...value, status: "Revealed" } : value);
         state.itemMessages.delete(item.id);
         state.completed += 1;
@@ -128,17 +128,17 @@ export function createController(render) {
       }
       if (!state.stopping) {
         log("info", "digiphile.batch_completed", runId, { completed: state.completed });
-        update(`完成 ${state.completed}/${state.total}。已取得的 Key 可在下方选择文本或复制。`);
+        update(`已读取 ${state.completed}/${state.total} 个 Key。`);
       }
     } catch (error) {
       const uncertain = currentItem?.status === "Assigned";
-      if (currentItem) state.itemMessages.set(currentItem.id, uncertain ? "刮开结果待核对 · 重试前刷新列表" : "读取失败 · 可重试");
+      if (currentItem) state.itemMessages.set(currentItem.id, uncertain ? "刮开状态待核对" : "读取失败，请重试");
       logError("digiphile.batch_failed", runId, error, { itemId: currentItem?.id, completed: state.completed });
-      update(`已停止（${state.completed}/${state.total}）：${error.message}${uncertain ? " 刮开可能已完成；重试会先核对列表，已刮开项改为读取，不重复刮开。" : ""} 已取得的 Key 已保留。`, true);
+      update(`读取失败（${state.completed}/${state.total}）：${error.message}${uncertain ? " 请重试以核对刮开状态。" : ""}`, true);
     } finally {
       if (state.stopping) {
         log("info", "digiphile.batch_stopped", runId, { completed: state.completed, total: state.total });
-        update(`已停止（${state.completed}/${state.total}），已取得的 Key 已保留。`, state.error);
+        update(`已停止，已读取 ${state.completed}/${state.total} 个 Key。`, state.error);
       }
       state.busy = false;
       state.stopping = false;
@@ -154,10 +154,10 @@ export function createController(render) {
     try {
       GM_setClipboard(results.map(item => withTitle ? `${item.title}\t${item.steamKeyValue}` : item.steamKeyValue).join("\n"), "text");
       log("info", "digiphile.keys_copied", runId, { count: results.length, withTitle });
-      update(`已复制 ${results.length} 个已显示 Key${withTitle ? "（标题与 Key 以制表符分隔）" : ""}。`);
+      update(withTitle ? `已复制 ${results.length} 组游戏名与 Key。` : `已复制 ${results.length} 个 Key。`);
     } catch (error) {
       logError("digiphile.copy_failed", runId, error);
-      update(`复制失败：${error.message}。可在下方选择 Key 文本手动复制。`, true);
+      update(`复制失败：${error.message}。请手动复制 Key。`, true);
     }
   }
 

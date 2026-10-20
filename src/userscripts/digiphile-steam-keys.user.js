@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         Digiphile Steam Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.0.0
-// @description  在 Digiphile 库中批量刮开或读取所选 Steam Key，复制 Key 或标题与 Key，不激活 Steam
+// @version      1.0.1
+// @description  批量刮开、读取和复制 Digiphile Steam Key
 // @author       blue-bird1
 // @match        https://www.digiphile.co/customer/*
 // @grant        GM_addStyle
