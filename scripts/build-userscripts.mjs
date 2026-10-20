@@ -10,13 +10,13 @@
  * - UserScript metadata stays as the first bytes of the output file
  */
 import * as esbuild from "esbuild";
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "fs";
 import { basename, dirname, join, relative } from "path";
 import { fileURLToPath } from "url";
+import { parseArgs } from "node:util";
 
 const repoRoot = fileURLToPath(new URL("../", import.meta.url));
 const sourceDir = join(repoRoot, "src", "userscripts");
-const tmpDir = join(repoRoot, ".build", "userscripts");
 
 function log(message) {
   console.log(`[userscript-build] ${message}`);
@@ -25,6 +25,19 @@ function log(message) {
 function fail(message) {
   console.error(`[userscript-build] error: ${message}`);
   process.exit(1);
+}
+
+function parseOptions() {
+  try {
+    return parseArgs({
+      options: {
+        entry: { type: "string", multiple: true },
+        help: { type: "boolean", short: "h" },
+      },
+    }).values;
+  } catch (error) {
+    fail(error.message);
+  }
 }
 
 function collectEntries() {
@@ -76,21 +89,19 @@ function normalizeBuiltBody(body) {
 async function buildEntry(entryPath) {
   const entryName = basename(entryPath);
   const outputPath = join(repoRoot, entryName);
-  const tmpOutputPath = join(tmpDir, `${entryName}.bundle.js`);
   const source = readFileSync(entryPath, "utf8");
   const { metadata, body } = splitUserscriptMetadata(source, entryPath);
   const lintPreamble = extractLintPreamble(body);
 
-  mkdirSync(tmpDir, { recursive: true });
-
-  await esbuild.build({
+  const result = await esbuild.build({
     stdin: {
       contents: body,
       sourcefile: entryPath,
       resolveDir: dirname(entryPath),
       loader: "js",
     },
-    outfile: tmpOutputPath,
+    outfile: outputPath,
+    write: false,
     bundle: true,
     platform: "browser",
     format: "iife",
@@ -103,21 +114,41 @@ async function buildEntry(entryPath) {
     allowOverwrite: true,
   });
 
-  const builtBody = normalizeBuiltBody(readFileSync(tmpOutputPath, "utf8"));
+  const builtBody = normalizeBuiltBody(result.outputFiles[0].text);
   const preamble = lintPreamble ? `${lintPreamble}\n\n` : "";
   writeFileSync(outputPath, `${metadata}\n\n${preamble}${builtBody}\n`, "utf8");
   log(`${relative(repoRoot, entryPath)} -> ${entryName}`);
 }
 
+const options = parseOptions();
+if (options.help) {
+  console.error(`Usage: pnpm build [--entry <name.user.js>]... [--help]
+
+Build readable userscripts from src/userscripts into the repository root.
+Without --entry, build all collected entries.
+
+Options:
+  --entry <name.user.js>  Build a collected entry; repeat to select more entries.
+  -h, --help             Show this help and exit.`);
+  process.exit(0);
+}
+
 const entries = collectEntries();
-if (entries.length === 0) {
+const requestedEntries = new Set(options.entry);
+const entryNames = new Set(entries.map((entry) => basename(entry)));
+for (const name of requestedEntries) {
+  if (!entryNames.has(name)) {
+    fail(`unknown entry: ${name}; expected a filename collected from src/userscripts`);
+  }
+}
+const selectedEntries = requestedEntries.size > 0
+  ? entries.filter((entry) => requestedEntries.has(basename(entry)))
+  : entries;
+if (selectedEntries.length === 0) {
   log(`no *.user.js entries found in ${relative(repoRoot, sourceDir)}; nothing to build`);
   process.exit(0);
 }
 
-rmSync(tmpDir, { recursive: true, force: true });
-mkdirSync(tmpDir, { recursive: true });
-
-for (const entry of entries) {
+for (const entry of selectedEntries) {
   await buildEntry(entry);
 }
