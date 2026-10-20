@@ -625,9 +625,14 @@
     function applyLegacy() {
       if (!legacyVm) legacyVm = jQuery(".game_layout .game_layout").get(0)?.__vue__ || null;
       if (!legacyVm) return;
-      couponListing?.mount();
-      applySavedFilter(legacyVm, filter.shouldShow);
-      legacyVm.$nextTick?.(() => processCards(legacyVm));
+      const vm = legacyVm;
+      applySavedFilter(vm, filter.shouldShow);
+      vm.$nextTick?.(() => {
+        if (legacyVm !== vm) return;
+        couponListing?.mount();
+        filter.mount();
+        processCards(vm);
+      });
     }
     function mountProPageSizeControl(vm) {
       const pagination = document.querySelector(".page.mt-50-rem > .ivu-page");
@@ -691,10 +696,16 @@
     function applyPro() {
       if (!proVm) proVm = findVue3BuyerVm({ silent: true });
       if (!proVm) return;
-      couponListing?.mount();
-      applySavedFilter(proVm, filter.shouldShow);
-      scheduleProPageSizeMount(proVm);
-      proVm.$nextTick?.(() => processCards(proVm));
+      const vm = proVm;
+      applySavedFilter(vm, filter.shouldShow);
+      vm.$nextTick?.(() => {
+        if (proVm !== vm) return;
+        advancedFilter?.mount(vm);
+        couponListing?.mount();
+        filter.mount();
+        mountProPageSizeControl(vm);
+        processCards(vm);
+      });
     }
     async function startLegacy() {
       if (legacyStarted) return;
@@ -719,9 +730,9 @@
       if (vm.__steamPyPlusWatcherInstalled || typeof vm.$watch !== "function") return;
       vm.__steamPyPlusWatcherInstalled = true;
       vm.__steamPyPlusUnwatch = vm.$watch("gameList", () => {
+        if (proVm !== vm) return;
         captureSourceList(vm);
         applyPro();
-        vm.$nextTick?.(() => processCards(vm));
       }, { deep: false });
     }
     async function startPro() {
