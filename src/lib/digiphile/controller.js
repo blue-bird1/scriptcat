@@ -136,7 +136,7 @@ export function createController(render) {
     } finally {
       if (state.stopping) {
         log("info", "digiphile.batch_stopped", runId, { completed: state.completed, total: state.total });
-        update(`已停止，已读取 ${state.completed}/${state.total} 个 Key。`, state.error);
+        if (!state.error) update(`已停止，已读取 ${state.completed}/${state.total} 个 Key。`);
       }
       state.busy = false;
       state.stopping = false;

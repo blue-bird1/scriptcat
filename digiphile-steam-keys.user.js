@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         Digiphile Steam Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.0.2
+// @version      1.0.3
 // @description  批量刮开、读取和复制 Digiphile Steam Key
 // @author       blue-bird1
 // @match        https://www.digiphile.co/customer/*
@@ -274,7 +274,7 @@
       } finally {
         if (state.stopping) {
           log("info", "digiphile.batch_stopped", runId, { completed: state.completed, total: state.total });
-          update(`已停止，已读取 ${state.completed}/${state.total} 个 Key。`, state.error);
+          if (!state.error) update(`已停止，已读取 ${state.completed}/${state.total} 个 Key。`);
         }
         state.busy = false;
         state.stopping = false;
