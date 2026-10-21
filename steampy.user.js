@@ -1899,7 +1899,10 @@
     }
     function estimatePage(target, field) {
       const learning = loadLearning();
-      const totalPages = Number(target?.totalPage) || 0;
+      const pageSize = Number(target?.searchForm?.pageSize) || 30;
+      const totalElements = Number(target?.total) || 0;
+      const derivedPages = totalElements > 0 ? Math.ceil(totalElements / pageSize) : 0;
+      const totalPages = Math.max(Number(target?.totalPage) || 0, derivedPages);
       const nullPage = Number(learning.nullPages?.[learningKey(target, field)]) || 0;
       if (totalPages <= 0) return Math.max(1, nullPage + 1);
       const ratioPage = Math.max(1, Math.min(totalPages, Math.round(learning.ratio * totalPages)));

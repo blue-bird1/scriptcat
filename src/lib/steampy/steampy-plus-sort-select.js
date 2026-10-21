@@ -80,7 +80,11 @@ export function createSteamPySortSelectController({
   // 只用已观察结果推导落点：记住最后一个空值页，比例只增不减，避免旧观测回退。
   function estimatePage(target, field) {
     const learning = loadLearning();
-    const totalPages = Number(target?.totalPage) || 0;
+    const pageSize = Number(target?.searchForm?.pageSize) || 30;
+    const totalElements = Number(target?.total) || 0;
+    const derivedPages = totalElements > 0 ? Math.ceil(totalElements / pageSize) : 0;
+    // 站点字段可能滞后，取较大值避免低估而落回空值区。
+    const totalPages = Math.max(Number(target?.totalPage) || 0, derivedPages);
     const nullPage = Number(learning.nullPages?.[learningKey(target, field)]) || 0;
     if (totalPages <= 0) return Math.max(1, nullPage + 1);
     const ratioPage = Math.max(1, Math.min(totalPages, Math.round(learning.ratio * totalPages)));
