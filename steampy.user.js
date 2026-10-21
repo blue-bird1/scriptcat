@@ -1874,6 +1874,7 @@
     let select = null;
     let generation = 0;
     const hiddenControls = [];
+    const hiddenCards = /* @__PURE__ */ new Set();
     function hideNativeControls(toolbar) {
       for (let index = hiddenControls.length - 1; index >= 0; index -= 1) {
         if (!hiddenControls[index].element?.isConnected) hiddenControls.splice(index, 1);
@@ -1899,6 +1900,19 @@
       const sort = target?.searchForm?.sort;
       const order = target?.searchForm?.order;
       return SORT_OPTIONS.find((option) => option.sort === sort && option.order === order)?.value ?? null;
+    }
+    function applyRowVisibility(target) {
+      for (const card of hiddenCards) {
+        if (!card.isConnected) hiddenCards.delete(card);
+      }
+      const state = SORT_OPTIONS.find((option) => !option.method && option.sort === target?.searchForm?.sort && option.order === target?.searchForm?.order);
+      const games = target?.gameList ?? [];
+      Array.from(document.querySelectorAll(".gameblock")).forEach((card, index) => {
+        const value = state && games[index] ? games[index][state.sort] : null;
+        card.style.display = state && (value === null || value === void 0 || value === "") ? "none" : "";
+        if (card.style.display === "none") hiddenCards.add(card);
+        else hiddenCards.delete(card);
+      });
     }
     function syncSelect(target) {
       if (!select) return;
@@ -2000,12 +2014,17 @@
       if (!select?.isConnected) buildSelect(toolbar);
       hideNativeControls(toolbar);
       syncSelect(vm);
+      applyRowVisibility(vm);
       return true;
     }
     function unmount() {
       generation += 1;
       removeSelect();
       restoreNativeControls();
+      for (const card of hiddenCards) {
+        if (card.isConnected) card.style.display = "";
+      }
+      hiddenCards.clear();
     }
     function cleanup() {
       unmount();

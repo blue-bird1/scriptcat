@@ -49,6 +49,7 @@ export function createSteamPySortSelectController({
   let select = null;
   let generation = 0;
   const hiddenControls = [];
+  const hiddenCards = new Set();
 
   function hideNativeControls(toolbar) {
     for (let index = hiddenControls.length - 1; index >= 0; index -= 1) {
@@ -78,6 +79,23 @@ export function createSteamPySortSelectController({
     const sort = target?.searchForm?.sort;
     const order = target?.searchForm?.order;
     return SORT_OPTIONS.find((option) => option.sort === sort && option.order === order)?.value ?? null;
+  }
+
+  // 空值行只隐藏当页 DOM，不改 Vue 状态，避免与买家筛选用同一份列表互相覆盖。
+  function applyRowVisibility(target) {
+    for (const card of hiddenCards) {
+      if (!card.isConnected) hiddenCards.delete(card);
+    }
+    const state = SORT_OPTIONS.find((option) => !option.method
+      && option.sort === target?.searchForm?.sort
+      && option.order === target?.searchForm?.order);
+    const games = target?.gameList ?? [];
+    Array.from(document.querySelectorAll(".gameblock")).forEach((card, index) => {
+      const value = state && games[index] ? games[index][state.sort] : null;
+      card.style.display = state && (value === null || value === undefined || value === "") ? "none" : "";
+      if (card.style.display === "none") hiddenCards.add(card);
+      else hiddenCards.delete(card);
+    });
   }
 
   function syncSelect(target) {
@@ -185,6 +203,7 @@ export function createSteamPySortSelectController({
     if (!select?.isConnected) buildSelect(toolbar);
     hideNativeControls(toolbar);
     syncSelect(vm);
+    applyRowVisibility(vm);
     return true;
   }
 
@@ -192,6 +211,10 @@ export function createSteamPySortSelectController({
     generation += 1;
     removeSelect();
     restoreNativeControls();
+    for (const card of hiddenCards) {
+      if (card.isConnected) card.style.display = "";
+    }
+    hiddenCards.clear();
   }
 
   function cleanup() {
