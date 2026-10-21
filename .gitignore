@@ -99,16 +99,8 @@ scripts/mcp/**/*.pyc
 scripts/release_tools/__pycache__/
 scripts/release_tools/**/*.pyc
 
-# Project-scoped Codex MCP setup for ScriptCat debugging.
-!.codex/
-!.codex/config.toml
-
-# Project-scoped shared MCP config for Pi and other hosts.
-!.mcp.json
-
-# Project-scoped Cursor MCP setup and userscript validation workflow.
+# Shared Cursor rules. Local MCP client config is machine-specific and stays untracked.
 !.cursor/
-!.cursor/mcp.json
 !.cursor/rules/
 !.cursor/rules/scriptcat-context.mdc
 !.cursor/rules/scriptcat-userscript-quality.mdc
@@ -120,3 +112,9 @@ scripts/release_tools/**/*.pyc
 !.agents/skills/scriptcat-script-setup/**
 !.agents/skills/steampy-batch-cdkey-input/
 !.agents/skills/steampy-batch-cdkey-input/**
+
+# Machine-specific local MCP client configs. Paths differ per checkout.
+# Do not re-add these with a leading ! exception.
+.codex/
+.mcp.json
+.cursor/mcp.json
