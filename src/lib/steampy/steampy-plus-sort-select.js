@@ -4,6 +4,7 @@ const SELECT_ID = "steamPyPlusSortSelect";
 const DIRECTION_ID = "steamPyPlusSortDirection";
 const NOTE_ID = "steamPyPlusSortNote";
 const ENABLED_STORAGE_KEY = "steamPyPlusSortSelectEnabled";
+const PREFERENCE_STORAGE_KEY = "steamPyPlusSortPreference";
 const LEARNING_STORAGE_KEY = "steamPyPlusSortLearning";
 const MENU_ID = "steam-py-plus-sort-select";
 const LOG_PREFIX = "[SteamPy Plus][SortSelect]";
@@ -173,6 +174,35 @@ export function createSteamPySortSelectController({
     };
   }
 
+  function loadPreference() {
+    const raw = getValue(PREFERENCE_STORAGE_KEY, "");
+    if (!raw) return null;
+    try {
+      const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+      const field = SORT_FIELDS.find((item) => item.value === parsed?.field);
+      const order = parsed?.order === "asc" ? "asc" : "desc";
+      return field ? { field, order } : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function savePreference(field, order) {
+    setValue?.(PREFERENCE_STORAGE_KEY, JSON.stringify({ field: field.value, order }));
+  }
+
+  // 刷新或从其他页面回来时恢复上次的字段与方向，每个买家实例只恢复一次。
+  function restorePreference(target) {
+    if (!target || target.__steamPyPlusSortRestored) return;
+    target.__steamPyPlusSortRestored = true;
+    if (advancedFilter?.isActive?.()) return;
+    const preference = loadPreference();
+    if (!preference) return;
+    const current = target.searchForm;
+    if (current?.sort === preference.field.value && current?.order === preference.order) return;
+    applySort(preference.field, preference.order);
+  }
+
   function currentField(target) {
     const sort = target?.searchForm?.sort;
     return SORT_FIELDS.find((field) => field.value === sort) || null;
@@ -263,6 +293,7 @@ export function createSteamPySortSelectController({
     target.searchForm.sort = field.value;
     target.searchForm.order = order;
     target.searchForm.pageNumber = 1;
+    savePreference(field, order);
     applyPagination(target, useNullPrefix ? Math.max(0, basePage - 1) : 0);
     syncPaginationTotal(target);
     syncControls(target);
@@ -335,6 +366,7 @@ export function createSteamPySortSelectController({
       (Number(vm.searchForm?.pageNumber) || 1) + (pagination.vm === vm ? pagination.offset : 0),
       vm.gameList,
     );
+    restorePreference(vm);
     return true;
   }
 

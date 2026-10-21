@@ -1835,6 +1835,7 @@
   var DIRECTION_ID = "steamPyPlusSortDirection";
   var NOTE_ID = "steamPyPlusSortNote";
   var ENABLED_STORAGE_KEY2 = "steamPyPlusSortSelectEnabled";
+  var PREFERENCE_STORAGE_KEY = "steamPyPlusSortPreference";
   var LEARNING_STORAGE_KEY = "steamPyPlusSortLearning";
   var MENU_ID2 = "steam-py-plus-sort-select";
   var LOG_PREFIX2 = "[SteamPy Plus][SortSelect]";
@@ -1978,6 +1979,31 @@
         }
       };
     }
+    function loadPreference() {
+      const raw = getValue(PREFERENCE_STORAGE_KEY, "");
+      if (!raw) return null;
+      try {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const field = SORT_FIELDS.find((item) => item.value === parsed?.field);
+        const order = parsed?.order === "asc" ? "asc" : "desc";
+        return field ? { field, order } : null;
+      } catch {
+        return null;
+      }
+    }
+    function savePreference(field, order) {
+      setValue?.(PREFERENCE_STORAGE_KEY, JSON.stringify({ field: field.value, order }));
+    }
+    function restorePreference(target) {
+      if (!target || target.__steamPyPlusSortRestored) return;
+      target.__steamPyPlusSortRestored = true;
+      if (advancedFilter?.isActive?.()) return;
+      const preference = loadPreference();
+      if (!preference) return;
+      const current = target.searchForm;
+      if (current?.sort === preference.field.value && current?.order === preference.order) return;
+      applySort(preference.field, preference.order);
+    }
     function currentField(target) {
       const sort = target?.searchForm?.sort;
       return SORT_FIELDS.find((field) => field.value === sort) || null;
@@ -2058,6 +2084,7 @@
       target.searchForm.sort = field.value;
       target.searchForm.order = order;
       target.searchForm.pageNumber = 1;
+      savePreference(field, order);
       applyPagination(target, useNullPrefix ? Math.max(0, basePage - 1) : 0);
       syncPaginationTotal(target);
       syncControls(target);
@@ -2126,6 +2153,7 @@
         (Number(vm.searchForm?.pageNumber) || 1) + (pagination.vm === vm ? pagination.offset : 0),
         vm.gameList
       );
+      restorePreference(vm);
       return true;
     }
     function unmount() {
