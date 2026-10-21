@@ -1839,7 +1839,8 @@
   var BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
   var BOUNDARY_TTL_MS = 2 * 60 * 1e3;
   var DEFAULT_NULL_RATIO = 0.093;
-  var MAX_WALK_STEPS = 12;
+  var MAX_REFINE_STEPS = 6;
+  var MAX_PROBES = 16;
   var NATIVE_FLAGS = ["chooseOne", "chooseTwo", "chooseThree", "chooseFour", "chooseFive"];
   var SORT_OPTIONS = Object.freeze([
     { value: "new", label: "最新", method: "newSort", sort: "createTime", order: "desc" },
@@ -1958,18 +1959,29 @@
         return fetchPage(pageNumber);
       };
       let found = null;
-      let lastNullPage = 0;
       let totalPages = null;
+      let nullPage = 0;
       if (cached && Number.isFinite(Number(cached.page)) && Date.now() - Number(cached.at || 0) < BOUNDARY_TTL_MS) {
         log2("info", "sort_located", { field, page: Number(cached.page), probes: 0, cached: true });
         return Number(cached.page);
       }
-      if (cached && Number.isFinite(Number(cached.page))) {
-        const page = await probe(Number(cached.page));
+      const stepBackToBoundary = async (page) => {
+        let current = page;
+        for (let count = 0; count < MAX_REFINE_STEPS && current > 1; count += 1) {
+          const previous = await probe(current - 1);
+          if (token !== generation) return null;
+          if (!pageHasValue(previous, field)) break;
+          current -= 1;
+        }
+        return current;
+      };
+      const cachedPage = cached && Number.isFinite(Number(cached.page)) ? Number(cached.page) : null;
+      if (cachedPage) {
+        const page = await probe(cachedPage);
         if (token !== generation) return null;
         totalPages = Number(page?.totalPages);
-        if (pageHasValue(page, field)) found = Number(cached.page);
-        else lastNullPage = Number(cached.page);
+        if (pageHasValue(page, field)) found = await stepBackToBoundary(cachedPage);
+        else nullPage = cachedPage;
       }
       if (found === null) {
         const first = await probe(1);
@@ -1980,26 +1992,25 @@
         } else if (!Number.isFinite(totalPages) || totalPages <= 1) {
           return 1;
         } else {
-          const priorPage = cached && Number.isFinite(Number(cached.page)) ? Number(cached.page) : Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
-          if (!probes.includes(priorPage)) {
-            const page = await probe(priorPage);
+          const estimate = cachedPage ?? Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
+          if (!probes.includes(estimate)) {
+            const page = await probe(estimate);
             if (token !== generation) return null;
-            if (pageHasValue(page, field)) found = priorPage;
-            else lastNullPage = Math.max(lastNullPage, priorPage);
+            if (pageHasValue(page, field)) found = await stepBackToBoundary(estimate);
+            else nullPage = Math.max(nullPage, estimate);
           }
-          if (found === null) {
-            const step = Math.max(1, Math.ceil(totalPages / 50));
-            for (let walk = 0; walk < MAX_WALK_STEPS; walk += 1) {
-              const next = Math.min(totalPages, Math.max(lastNullPage, 1) + step * (walk + 1));
-              const page = await probe(next);
-              if (token !== generation) return null;
-              if (pageHasValue(page, field)) {
-                found = next;
-                break;
-              }
-              lastNullPage = next;
-              if (next >= totalPages) break;
+          let step = 1;
+          while (found === null && probes.length < MAX_PROBES) {
+            const next = Math.min(totalPages, Math.max(nullPage, 1) + step);
+            const page = await probe(next);
+            if (token !== generation) return null;
+            if (pageHasValue(page, field)) {
+              found = await stepBackToBoundary(next);
+              break;
             }
+            nullPage = next;
+            if (next >= totalPages) break;
+            step *= 2;
           }
         }
       }
