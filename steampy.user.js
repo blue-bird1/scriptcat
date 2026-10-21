@@ -1885,24 +1885,37 @@
         const ratio = Number(parsed?.ratio);
         return {
           ratio: Number.isFinite(ratio) && ratio >= DEFAULT_NULL_RATIO && ratio < 0.9 ? ratio : DEFAULT_NULL_RATIO,
-          nullPages: parsed?.nullPages && typeof parsed.nullPages === "object" ? parsed.nullPages : {}
+          nullPages: parsed?.nullPages && typeof parsed.nullPages === "object" ? parsed.nullPages : {},
+          normalPages: parsed?.normalPages && typeof parsed.normalPages === "object" ? parsed.normalPages : {}
         };
       } catch {
-        return { ratio: DEFAULT_NULL_RATIO, nullPages: {} };
+        return { ratio: DEFAULT_NULL_RATIO, nullPages: {}, normalPages: {} };
       }
     }
     function saveLearning(learning) {
       setValue?.(LEARNING_STORAGE_KEY, JSON.stringify(learning));
     }
+    function rememberNormalPages(target) {
+      const pageSize = Number(target?.searchForm?.pageSize) || 30;
+      const totalElements = Number(target?.total) || 0;
+      const pages = Math.max(Number(target?.totalPage) || 0, totalElements > 0 ? Math.ceil(totalElements / pageSize) : 0);
+      if (pages <= 0) return;
+      const learning = loadLearning();
+      learning.normalPages = learning.normalPages || {};
+      learning.normalPages[target?.areas || "cn"] = pages;
+      saveLearning(learning);
+    }
     function learningKey(target, field) {
       return `${target?.areas || "cn"}:${field}:${Number(target?.searchForm?.pageSize) || 30}`;
     }
-    function estimatePage(target, field) {
+    function estimatePage(target, field, useNormalPages = false) {
       const learning = loadLearning();
       const pageSize = Number(target?.searchForm?.pageSize) || 30;
       const totalElements = Number(target?.total) || 0;
       const derivedPages = totalElements > 0 ? Math.ceil(totalElements / pageSize) : 0;
-      const totalPages = Math.max(Number(target?.totalPage) || 0, derivedPages);
+      const region = target?.areas || "cn";
+      const normalPages = useNormalPages ? Number(learning.normalPages?.[region]) || 0 : 0;
+      const totalPages = Math.max(Number(target?.totalPage) || 0, derivedPages, normalPages);
       const nullPage = Number(learning.nullPages?.[learningKey(target, field)]) || 0;
       if (totalPages <= 0) return Math.max(1, nullPage + 1);
       const ratioPage = Math.max(1, Math.min(totalPages, Math.round(learning.ratio * totalPages)));
@@ -1992,14 +2005,15 @@
     function applySort(field, order) {
       const target = vm;
       if (!field || !target?.searchForm) return;
-      if (advancedFilter?.isActive?.()) advancedFilter.deactivate();
+      const wasAdvanced = advancedFilter?.isActive?.() === true;
+      if (wasAdvanced) advancedFilter.deactivate();
       for (const flag of NATIVE_FLAGS) {
         if (flag in target) target[flag] = false;
       }
       const useNullPrefix = field.nullPrefix && order === "asc";
       target.searchForm.sort = field.value;
       target.searchForm.order = order;
-      target.searchForm.pageNumber = useNullPrefix ? estimatePage(target, field.value) : 1;
+      target.searchForm.pageNumber = useNullPrefix ? estimatePage(target, field.value, wasAdvanced) : 1;
       syncControls(target);
       target.getGameList?.();
       log2("info", "sort_applied", {
@@ -2058,6 +2072,7 @@
       hideNativeControls(toolbar);
       syncControls(vm);
       applyRowVisibility(vm);
+      if (currentField(vm)) rememberNormalPages(vm);
       learnPage(vm, currentField(vm), Number(vm.searchForm?.pageNumber) || 1, vm.gameList);
       return true;
     }
