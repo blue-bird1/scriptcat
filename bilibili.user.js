@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         B站番剧显示BGM评分
-// @namespace    http://tampermonkey.net/
-// @version      1.3
+// @namespace    https://github.com/blue-bird1/scriptcat
+// @version      1.3.1
 // @description  在B站番剧页面显示动漫和BGM评分,播放页面添加BGM评分
-// @author       blue bird
+// @author       blue-bird1
 // @match        https://www.bilibili.com/anime/index/*
 // @match        https://www.bilibili.com/bangumi/play/ep*
 // @match        https://www.bilibili.com/bangumi/play/ss*
@@ -17,7 +17,7 @@
 // @grant        GM_setValue
 // @connect      api.bgm.tv
 // @run-at       document-start
-// @license MIT
+// @license      MIT
 // ==/UserScript==
 
 /*global elmGetter,ajaxHooker*/

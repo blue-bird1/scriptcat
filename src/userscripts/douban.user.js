@@ -1,9 +1,9 @@
 // ==UserScript==
 // @name         豆瓣丛书增强
-// @namespace    https://github.com/yourname/scriptcat
-// @version      0.2.0
+// @namespace    https://github.com/blue-bird1/scriptcat
+// @version      0.2.1
 // @description  针对豆瓣丛书页的批量操作脚本
-// @author       GitHub Copilot
+// @author       blue-bird1
 // @match        https://book.douban.com/series/*
 // @grant        GM_xmlhttpRequest
 // @grant        GM_registerMenuCommand
