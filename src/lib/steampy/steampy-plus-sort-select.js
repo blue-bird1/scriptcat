@@ -84,11 +84,14 @@ export function createSteamPySortSelectController({
     const totalPages = Number(target?.totalPage) || 0;
     const valuePage = Number(learning.valuePage);
     const nullPage = Number(learning.nullPage);
+    const ratioPage = totalPages > 0
+      ? Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)))
+      : 1;
     // 有值页必须晚于空值页，否则视为旧观测作废。
     if (Number.isFinite(valuePage) && (!Number.isFinite(nullPage) || valuePage > nullPage)) return valuePage;
-    if (Number.isFinite(nullPage)) return Math.max(1, nullPage + 1);
-    if (totalPages > 0) return Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
-    return 1;
+    // 已知空值页时直接用比例估计跳过空值区，避免逐页爬行。
+    if (Number.isFinite(nullPage)) return Math.max(nullPage + 1, ratioPage);
+    return ratioPage;
   }
 
   function learnPage(target, field, currentPage, games) {

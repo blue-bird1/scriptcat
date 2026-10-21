@@ -1903,10 +1903,10 @@
       const totalPages = Number(target?.totalPage) || 0;
       const valuePage = Number(learning.valuePage);
       const nullPage = Number(learning.nullPage);
+      const ratioPage = totalPages > 0 ? Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages))) : 1;
       if (Number.isFinite(valuePage) && (!Number.isFinite(nullPage) || valuePage > nullPage)) return valuePage;
-      if (Number.isFinite(nullPage)) return Math.max(1, nullPage + 1);
-      if (totalPages > 0) return Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
-      return 1;
+      if (Number.isFinite(nullPage)) return Math.max(nullPage + 1, ratioPage);
+      return ratioPage;
     }
     function learnPage(target, field, currentPage, games) {
       if (!target || !field?.nullPrefix || target?.searchForm?.order !== "asc") return;
