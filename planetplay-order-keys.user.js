@@ -1,8 +1,11 @@
 // ==UserScript==
 // @name         PlanetPlay Order Key Helper
+// @name:zh-CN   PlanetPlay 订单 Key 助手
+// @name:en      PlanetPlay Order Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.0.0
+// @version      1.0.1
 // @description  自动提取 PlanetPlay 订单页已显示的 Key，支持批量复制游戏名与 Key、手动批量激活 Steam
+// @description:en Extract keys on PlanetPlay order pages; batch-copy names/keys and optionally activate on Steam
 // @author       blue-bird1
 // @match        https://planetplay.com/*/orders*
 // @grant        GM_addStyle

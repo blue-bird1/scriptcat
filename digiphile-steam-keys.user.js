@@ -1,8 +1,11 @@
 // ==UserScript==
 // @name         Digiphile Steam Key Helper
+// @name:zh-CN   Digiphile Steam Key 助手
+// @name:en      Digiphile Steam Key Helper
 // @namespace    https://github.com/blue-bird1/scriptcat
-// @version      1.1.0
+// @version      1.1.1
 // @description  批量读取、复制和激活 Digiphile Steam Key
+// @description:en Batch read, copy, and activate Digiphile Steam keys
 // @author       blue-bird1
 // @match        https://www.digiphile.co/customer/*
 // @grant        GM_addStyle
