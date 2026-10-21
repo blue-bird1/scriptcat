@@ -1998,7 +1998,7 @@
       if (!target.searchForm) return;
       target.searchForm.sort = option.sort;
       target.searchForm.order = option.order;
-      target.searchForm.pageNumber = estimatePage(target, option);
+      target.searchForm.pageNumber = option.order === "asc" ? estimatePage(target, option) : 1;
       syncSelect(target);
       target.getGameList?.();
       log2("info", "sort_applied", {
