@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.15.0
+// @version         5.15.1
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, payment estimates for base games from manually entered discounts, a compact sort dropdown (payment price, average trade price, rating), and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -1832,14 +1832,12 @@
   var TOOLBAR_SELECTOR2 = ".tag.flex-row.align-items-center";
   var NATIVE_CONTROL_SELECTOR = ":scope > .tagBtn, :scope > .tagBtnTwo";
   var SELECT_ID = "steamPyPlusSortSelect";
+  var NOTE_ID = "steamPyPlusSortNote";
   var ENABLED_STORAGE_KEY2 = "steamPyPlusSortSelectEnabled";
+  var BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
   var MENU_ID2 = "steam-py-plus-sort-select";
   var LOG_PREFIX2 = "[SteamPy Plus][SortSelect]";
-  var LOCATE_PAGE_SIZE = 100;
-  var BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
   var DEFAULT_NULL_RATIO = 0.093;
-  var MAX_REFINE_STEPS = 6;
-  var MAX_PROBES = 16;
   var NATIVE_FLAGS = ["chooseOne", "chooseTwo", "chooseThree", "chooseFour", "chooseFive"];
   var SORT_OPTIONS = Object.freeze([
     { value: "new", label: "最新", method: "newSort", sort: "createTime", order: "desc" },
@@ -1861,12 +1859,7 @@
     const value = row?.[field];
     return value !== null && value !== void 0 && value !== "";
   }
-  function pageHasValue(page, field) {
-    const content = Array.isArray(page?.content) ? page.content : [];
-    return content.some((row) => hasValue(row, field));
-  }
   function createSteamPySortSelectController({
-    client,
     advancedFilter = null,
     getValue = GM_getValue,
     setValue = GM_setValue,
@@ -1876,9 +1869,84 @@
     let menusRegistered = false;
     let vm = null;
     let select = null;
-    let generation = 0;
+    let note = null;
     const hiddenControls = [];
     const hiddenCards = /* @__PURE__ */ new Set();
+    function loadBoundary() {
+      const raw = getValue(BOUNDARY_STORAGE_KEY, "");
+      if (!raw) return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+      try {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const ratio = Number(parsed?.ratio);
+        return {
+          ratio: Number.isFinite(ratio) && ratio > 0 && ratio < 0.9 ? ratio : DEFAULT_NULL_RATIO,
+          fields: parsed?.fields && typeof parsed.fields === "object" ? parsed.fields : {}
+        };
+      } catch {
+        return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+      }
+    }
+    function saveBoundary(boundary) {
+      setValue?.(BOUNDARY_STORAGE_KEY, JSON.stringify(boundary));
+    }
+    function boundaryKey(target, field) {
+      return `${target?.areas || "cn"}:${field}`;
+    }
+    function estimatePage(target, option) {
+      const boundary = loadBoundary();
+      const learning = boundary.fields?.[boundaryKey(target, option.sort)] || {};
+      const totalPages = Number(target?.totalPage) || 0;
+      if (Number.isFinite(Number(learning.valuePage))) return Number(learning.valuePage);
+      if (Number.isFinite(Number(learning.nullPage))) return Math.max(1, Number(learning.nullPage) + 1);
+      if (totalPages > 0) {
+        return Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
+      }
+      return 1;
+    }
+    function learnPage(target, option, currentPage, games) {
+      if (!target || !option || option.method || option.order !== "asc") return;
+      if (!Array.isArray(games) || games.length === 0) return;
+      const key = boundaryKey(target, option.sort);
+      const boundary = loadBoundary();
+      const learning = boundary.fields[key] || {};
+      const priced = games.filter((game) => hasValue(game, option.sort)).length;
+      if (priced === 0) {
+        learning.nullPage = Math.max(Number(learning.nullPage) || 0, currentPage);
+      } else {
+        learning.valuePage = Number(learning.valuePage) || currentPage;
+        learning.valuePage = Math.min(learning.valuePage, currentPage);
+        const totalPages = Number(target.totalPage) || 0;
+        if (totalPages > 0) boundary.ratio = Math.min(0.9, Math.max(1e-3, currentPage / totalPages));
+      }
+      learning.at = Date.now();
+      boundary.fields[key] = learning;
+      saveBoundary(boundary);
+    }
+    function currentOption(target) {
+      return SORT_OPTIONS.find((option) => !option.method && option.sort === target?.searchForm?.sort && option.order === target?.searchForm?.order) || null;
+    }
+    function updateNote(target) {
+      if (!note) return;
+      const option = currentOption(target);
+      const games = Array.isArray(target?.gameList) ? target.gameList : [];
+      const emptyPage = Boolean(option && option.order === "asc" && games.length > 0 && !games.some((game) => hasValue(game, option.sort)));
+      note.hidden = !emptyPage;
+      note.textContent = emptyPage ? "本页无成交价数据，翻到下一页查看" : "";
+    }
+    function applyRowVisibility(target) {
+      for (const card of hiddenCards) {
+        if (!card.isConnected) hiddenCards.delete(card);
+      }
+      const option = currentOption(target);
+      const games = Array.isArray(target?.gameList) ? target.gameList : [];
+      Array.from(document.querySelectorAll(".gameblock")).forEach((card, index) => {
+        const hide = Boolean(option && games[index] && !hasValue(games[index], option.sort));
+        card.style.display = hide ? "none" : "";
+        if (hide) hiddenCards.add(card);
+        else hiddenCards.delete(card);
+      });
+      updateNote(target);
+    }
     function hideNativeControls(toolbar) {
       for (let index = hiddenControls.length - 1; index >= 0; index -= 1) {
         if (!hiddenControls[index].element?.isConnected) hiddenControls.splice(index, 1);
@@ -1897,6 +1965,8 @@
       hiddenControls.length = 0;
     }
     function removeSelect() {
+      note?.remove();
+      note = null;
       select?.remove();
       select = null;
     }
@@ -1905,127 +1975,15 @@
       const order = target?.searchForm?.order;
       return SORT_OPTIONS.find((option) => option.sort === sort && option.order === order)?.value ?? null;
     }
-    function applyRowVisibility(target) {
-      for (const card of hiddenCards) {
-        if (!card.isConnected) hiddenCards.delete(card);
-      }
-      const state = SORT_OPTIONS.find((option) => !option.method && option.sort === target?.searchForm?.sort && option.order === target?.searchForm?.order);
-      const games = target?.gameList ?? [];
-      Array.from(document.querySelectorAll(".gameblock")).forEach((card, index) => {
-        const value = state && games[index] ? games[index][state.sort] : null;
-        card.style.display = state && (value === null || value === void 0 || value === "") ? "none" : "";
-        if (card.style.display === "none") hiddenCards.add(card);
-        else hiddenCards.delete(card);
-      });
-    }
     function syncSelect(target) {
       if (!select) return;
       const value = valueForState(target);
       if (value) select.value = value;
     }
-    function loadBoundary() {
-      const raw = getValue(BOUNDARY_STORAGE_KEY, "");
-      if (!raw) return { ratio: DEFAULT_NULL_RATIO, fields: {} };
-      try {
-        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-        const ratio = Number(parsed?.ratio);
-        return {
-          ratio: Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : DEFAULT_NULL_RATIO,
-          fields: parsed?.fields && typeof parsed.fields === "object" ? parsed.fields : {}
-        };
-      } catch {
-        return { ratio: DEFAULT_NULL_RATIO, fields: {} };
-      }
-    }
-    function saveBoundary(boundary) {
-      setValue?.(BOUNDARY_STORAGE_KEY, JSON.stringify(boundary));
-    }
-    async function locateFirstPageWithValue(target, field, token) {
-      const fetchPage = async (pageNumber) => client.fetchSteamGameKeyHot({
-        region: target.areas,
-        pageNumber,
-        pageSize: LOCATE_PAGE_SIZE,
-        sort: field,
-        order: "asc",
-        startDate: "",
-        endDate: ""
-      });
-      const boundary = loadBoundary();
-      const cached = boundary.fields?.[field];
-      const probes = [];
-      const probe = async (pageNumber) => {
-        probes.push(pageNumber);
-        return fetchPage(pageNumber);
-      };
-      let found = null;
-      let totalPages = null;
-      let nullPage = 0;
-      const stepBackToBoundary = async (page) => {
-        let current = page;
-        for (let count = 0; count < MAX_REFINE_STEPS && current > 1; count += 1) {
-          const previous = await probe(current - 1);
-          if (token !== generation) return null;
-          if (!pageHasValue(previous, field)) break;
-          current -= 1;
-        }
-        return current;
-      };
-      const cachedPage = cached && Number.isFinite(Number(cached.page)) ? Number(cached.page) : null;
-      if (cachedPage) {
-        const page = await probe(cachedPage);
-        if (token !== generation) return null;
-        totalPages = Number(page?.totalPages);
-        if (pageHasValue(page, field)) found = await stepBackToBoundary(cachedPage);
-        else nullPage = cachedPage;
-      }
-      if (found === null) {
-        const first = await probe(1);
-        if (token !== generation) return null;
-        totalPages = Number(first?.totalPages);
-        if (pageHasValue(first, field)) {
-          found = 1;
-        } else if (!Number.isFinite(totalPages) || totalPages <= 1) {
-          return 1;
-        } else {
-          const estimate = cachedPage ?? Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
-          if (!probes.includes(estimate)) {
-            const page = await probe(estimate);
-            if (token !== generation) return null;
-            if (pageHasValue(page, field)) found = await stepBackToBoundary(estimate);
-            else nullPage = Math.max(nullPage, estimate);
-          }
-          let step = 1;
-          while (found === null && probes.length < MAX_PROBES) {
-            const next = Math.min(totalPages, Math.max(nullPage, 1) + step);
-            const page = await probe(next);
-            if (token !== generation) return null;
-            if (pageHasValue(page, field)) {
-              found = await stepBackToBoundary(next);
-              break;
-            }
-            nullPage = next;
-            if (next >= totalPages) break;
-            step *= 2;
-          }
-        }
-      }
-      if (found === null) {
-        log2("error", "sort_locate_exhausted", { field, probes: probes.length });
-        return null;
-      }
-      if (Number.isFinite(totalPages) && totalPages > 0) {
-        boundary.ratio = Math.min(0.9, Math.max(1e-3, (found - 1) / totalPages));
-        boundary.fields[field] = { page: found, totalPages, at: Date.now() };
-        saveBoundary(boundary);
-      }
-      log2("info", "sort_located", { field, page: found, probes: probes.length });
-      return found;
-    }
-    async function applyOption(value) {
+    function applyOption(value) {
       const option = SORT_OPTIONS.find((item) => item.value === value);
       const target = vm;
       if (!option || !target) return;
-      const token = ++generation;
       if (advancedFilter?.isActive?.()) advancedFilter.deactivate();
       const nativeMethod = option.method ? target[option.method] : null;
       if (typeof nativeMethod === "function") {
@@ -2037,28 +1995,19 @@
       for (const flag of NATIVE_FLAGS) {
         if (flag in target) target[flag] = false;
       }
-      let pageNumber = 1;
-      if (option.order === "asc") {
-        try {
-          const located = await locateFirstPageWithValue(target, option.sort, token);
-          if (token !== generation) return;
-          if (located) {
-            const firstIndex = (located - 1) * LOCATE_PAGE_SIZE;
-            const pageSize = Number(target.searchForm?.pageSize) || 1;
-            pageNumber = Math.floor(firstIndex / pageSize) + 1;
-          }
-        } catch (error) {
-          log2("error", "sort_locate_failed", { field: option.sort, message: error?.message || String(error) });
-        }
-      }
-      if (token !== generation) return;
       if (!target.searchForm) return;
       target.searchForm.sort = option.sort;
       target.searchForm.order = option.order;
-      target.searchForm.pageNumber = pageNumber;
+      target.searchForm.pageNumber = estimatePage(target, option);
       syncSelect(target);
       target.getGameList?.();
-      log2("info", "sort_applied", { value, native: false, sort: option.sort, order: option.order, pageNumber });
+      log2("info", "sort_applied", {
+        value,
+        native: false,
+        sort: option.sort,
+        order: option.order,
+        pageNumber: target.searchForm.pageNumber
+      });
     }
     function buildSelect(toolbar) {
       removeSelect();
@@ -2072,11 +2021,17 @@
         element.append(item);
       }
       element.addEventListener("change", () => {
-        void applyOption(element.value);
+        applyOption(element.value);
       });
       const anchor = toolbar.querySelector(NATIVE_CONTROL_SELECTOR);
       toolbar.insertBefore(element, anchor);
       select = element;
+      const hint = document.createElement("span");
+      hint.id = NOTE_ID;
+      hint.hidden = true;
+      hint.style.cssText = "margin-left:.06rem;font-size:.12rem;color:#ed4014;";
+      element.after(hint);
+      note = hint;
     }
     function mount(nextVm) {
       if (nextVm) vm = nextVm;
@@ -2087,10 +2042,10 @@
       hideNativeControls(toolbar);
       syncSelect(vm);
       applyRowVisibility(vm);
+      learnPage(vm, currentOption(vm), Number(vm.searchForm?.pageNumber) || 1, vm.gameList);
       return true;
     }
     function unmount() {
-      generation += 1;
       removeSelect();
       restoreNativeControls();
       for (const card of hiddenCards) {
@@ -3488,10 +3443,7 @@
       fetchSteamGameByAppId: xbootClient.fetchSteamGameByAppId,
       setHideDlcSuspended: filter.setHideDlcSuspended
     });
-    const sortSelect = createSteamPySortSelectController({
-      client: xbootClient,
-      advancedFilter
-    });
+    const sortSelect = createSteamPySortSelectController({ advancedFilter });
     const couponListing = createSteamPyCouponListingController({
       client: xbootClient,
       shouldShow: filter.shouldShow,

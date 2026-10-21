@@ -42,10 +42,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
     fetchSteamGameByAppId: xbootClient.fetchSteamGameByAppId,
     setHideDlcSuspended: filter.setHideDlcSuspended,
   });
-  const sortSelect = createSteamPySortSelectController({
-    client: xbootClient,
-    advancedFilter,
-  });
+  const sortSelect = createSteamPySortSelectController({ advancedFilter });
   const couponListing = createSteamPyCouponListingController({
     client: xbootClient,
     shouldShow: filter.shouldShow,
