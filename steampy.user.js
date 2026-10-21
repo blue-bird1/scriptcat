@@ -1901,21 +1901,28 @@
       const boundary = loadBoundary();
       const learning = boundary.fields?.[boundaryKey(target, field)] || {};
       const totalPages = Number(target?.totalPage) || 0;
-      if (Number.isFinite(Number(learning.valuePage))) return Number(learning.valuePage);
-      if (Number.isFinite(Number(learning.nullPage))) return Math.max(1, Number(learning.nullPage) + 1);
+      const valuePage = Number(learning.valuePage);
+      const nullPage = Number(learning.nullPage);
+      if (Number.isFinite(valuePage) && (!Number.isFinite(nullPage) || valuePage > nullPage)) return valuePage;
+      if (Number.isFinite(nullPage)) return Math.max(1, nullPage + 1);
       if (totalPages > 0) return Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
       return 1;
     }
     function learnPage(target, field, currentPage, games) {
-      if (!target || !field?.nullPrefix || !Array.isArray(games) || games.length === 0) return;
+      if (!target || !field?.nullPrefix || target?.searchForm?.order !== "asc") return;
+      if (!Array.isArray(games) || games.length === 0) return;
       const key = boundaryKey(target, field.value);
       const boundary = loadBoundary();
       const learning = boundary.fields[key] || {};
       const priced = games.filter((game) => hasValue(game, field.value)).length;
+      const knownValuePage = Number(learning.valuePage);
+      const knownNullPage = Number(learning.nullPage);
       if (priced === 0) {
-        learning.nullPage = Math.max(Number(learning.nullPage) || 0, currentPage);
+        learning.nullPage = Math.max(Number.isFinite(knownNullPage) ? knownNullPage : 0, currentPage);
+        if (Number.isFinite(knownValuePage) && knownValuePage <= learning.nullPage) delete learning.valuePage;
       } else {
-        learning.valuePage = Math.min(Number(learning.valuePage) || currentPage, currentPage);
+        const reusable = Number.isFinite(knownValuePage) && (!Number.isFinite(knownNullPage) || knownValuePage > knownNullPage) ? Math.min(knownValuePage, currentPage) : currentPage;
+        learning.valuePage = reusable;
         const totalPages = Number(target.totalPage) || 0;
         if (totalPages > 0) boundary.ratio = Math.min(0.9, Math.max(1e-3, currentPage / totalPages));
       }
