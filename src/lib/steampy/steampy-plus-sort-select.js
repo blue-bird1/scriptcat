@@ -257,6 +257,8 @@ export function createSteamPySortSelectController({
       if (flag in target) target[flag] = false;
     }
     const useNullPrefix = field.nullPrefix && order === "asc";
+    // 先撤销上一轮的偏移与 total 调整，再按真实总数估算落点。
+    clearPagination();
     const basePage = useNullPrefix ? estimatePage(target, field.value, wasAdvanced) : 1;
     target.searchForm.sort = field.value;
     target.searchForm.order = order;

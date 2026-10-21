@@ -2053,6 +2053,7 @@
         if (flag in target) target[flag] = false;
       }
       const useNullPrefix = field.nullPrefix && order === "asc";
+      clearPagination();
       const basePage = useNullPrefix ? estimatePage(target, field.value, wasAdvanced) : 1;
       target.searchForm.sort = field.value;
       target.searchForm.order = order;
