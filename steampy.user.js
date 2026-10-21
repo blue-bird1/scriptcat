@@ -1956,10 +1956,13 @@
         try {
           const located = await locateFirstPageWithValue(target, option.sort, token);
           if (token !== generation) return;
-          pageNumber = located ?? 1;
+          if (located) {
+            const firstIndex = (located - 1) * LOCATE_PAGE_SIZE;
+            const pageSize = Number(target.searchForm?.pageSize) || 1;
+            pageNumber = Math.floor(firstIndex / pageSize) + 1;
+          }
         } catch (error) {
           log2("error", "sort_locate_failed", { field: option.sort, message: error?.message || String(error) });
-          pageNumber = 1;
         }
       }
       if (token !== generation) return;

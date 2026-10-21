@@ -138,10 +138,14 @@ export function createSteamPySortSelectController({
       try {
         const located = await locateFirstPageWithValue(target, option.sort, token);
         if (token !== generation) return;
-        pageNumber = located ?? 1;
+        if (located) {
+          // 定位按固定页大小完成，换算成当前列表页大小对应的页码。
+          const firstIndex = (located - 1) * LOCATE_PAGE_SIZE;
+          const pageSize = Number(target.searchForm?.pageSize) || 1;
+          pageNumber = Math.floor(firstIndex / pageSize) + 1;
+        }
       } catch (error) {
         log("error", "sort_locate_failed", { field: option.sort, message: error?.message || String(error) });
-        pageNumber = 1;
       }
     }
     if (token !== generation) return;
