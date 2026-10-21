@@ -1936,6 +1936,41 @@
       }
       saveLearning(learning);
     }
+    let pageOffset = { vm: null, offset: 0, originals: null };
+    function clearPageOffset() {
+      const { vm: target, originals } = pageOffset;
+      if (target && originals) {
+        target.changePage = originals.changePage;
+        target.pageHandler = originals.pageHandler;
+        target.changePageSize = originals.changePageSize;
+      }
+      pageOffset = { vm: null, offset: 0, originals: null };
+    }
+    function applyPageOffset(target, offset) {
+      if (!target) return;
+      if (pageOffset.vm === target && pageOffset.offset === offset) return;
+      clearPageOffset();
+      if (!offset) return;
+      const originals = {
+        changePage: target.changePage,
+        pageHandler: target.pageHandler,
+        changePageSize: target.changePageSize
+      };
+      pageOffset = { vm: target, offset, originals };
+      const shift = (page) => (Number(page) || 1) + offset;
+      target.changePage = function pagedChangePage(page) {
+        return originals.changePage.call(this, shift(page));
+      };
+      target.pageHandler = function pagedPageHandler(page) {
+        return originals.pageHandler.call(this, shift(page));
+      };
+      target.changePageSize = function pagedChangePageSize(pageSize) {
+        this.searchForm.pageSize = pageSize;
+        const base = estimatePage(this, currentField(this)?.value) + offset;
+        this.searchForm.pageNumber = base;
+        this.getGameList?.();
+      };
+    }
     function currentField(target) {
       const sort = target?.searchForm?.sort;
       return SORT_FIELDS.find((field) => field.value === sort) || null;
@@ -2014,6 +2049,7 @@
       target.searchForm.sort = field.value;
       target.searchForm.order = order;
       target.searchForm.pageNumber = useNullPrefix ? estimatePage(target, field.value, wasAdvanced) : 1;
+      applyPageOffset(target, useNullPrefix ? target.searchForm.pageNumber - 1 : 0);
       syncControls(target);
       target.getGameList?.();
       log2("info", "sort_applied", {
@@ -2077,6 +2113,7 @@
       return true;
     }
     function unmount() {
+      clearPageOffset();
       removeControls();
       restoreNativeControls();
       for (const card of hiddenCards) {
