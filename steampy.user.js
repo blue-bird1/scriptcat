@@ -1837,7 +1837,6 @@
   var LOG_PREFIX2 = "[SteamPy Plus][SortSelect]";
   var LOCATE_PAGE_SIZE = 100;
   var BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
-  var BOUNDARY_TTL_MS = 2 * 60 * 1e3;
   var DEFAULT_NULL_RATIO = 0.093;
   var MAX_REFINE_STEPS = 6;
   var MAX_PROBES = 16;
@@ -1961,10 +1960,6 @@
       let found = null;
       let totalPages = null;
       let nullPage = 0;
-      if (cached && Number.isFinite(Number(cached.page)) && Date.now() - Number(cached.at || 0) < BOUNDARY_TTL_MS) {
-        log2("info", "sort_located", { field, page: Number(cached.page), probes: 0, cached: true });
-        return Number(cached.page);
-      }
       const stepBackToBoundary = async (page) => {
         let current = page;
         for (let count = 0; count < MAX_REFINE_STEPS && current > 1; count += 1) {

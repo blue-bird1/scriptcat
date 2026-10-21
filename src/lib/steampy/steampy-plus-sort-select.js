@@ -6,7 +6,6 @@ const MENU_ID = "steam-py-plus-sort-select";
 const LOG_PREFIX = "[SteamPy Plus][SortSelect]";
 const LOCATE_PAGE_SIZE = 100;
 const BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
-const BOUNDARY_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_NULL_RATIO = 0.093;
 const MAX_REFINE_STEPS = 6;
 const MAX_PROBES = 16;
@@ -149,11 +148,6 @@ export function createSteamPySortSelectController({
     let found = null;
     let totalPages = null;
     let nullPage = 0;
-    // 缓存新鲜时直接信任先验，不再探测。
-    if (cached && Number.isFinite(Number(cached.page)) && Date.now() - Number(cached.at || 0) < BOUNDARY_TTL_MS) {
-      log("info", "sort_located", { field, page: Number(cached.page), probes: 0, cached: true });
-      return Number(cached.page);
-    }
     // 命中既有页后逐页回退，直到上一页已无值，避免跳过最便宜的一段。
     const stepBackToBoundary = async (page) => {
       let current = page;
@@ -167,6 +161,7 @@ export function createSteamPySortSelectController({
     };
     const cachedPage = cached && Number.isFinite(Number(cached.page)) ? Number(cached.page) : null;
     if (cachedPage) {
+      // 先验只用于选探测点：命中后再确认前一页，避免先验漂移。
       const page = await probe(cachedPage);
       if (token !== generation) return null;
       totalPages = Number(page?.totalPages);
