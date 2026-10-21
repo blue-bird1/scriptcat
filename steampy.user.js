@@ -1835,7 +1835,7 @@
   var DIRECTION_ID = "steamPyPlusSortDirection";
   var NOTE_ID = "steamPyPlusSortNote";
   var ENABLED_STORAGE_KEY2 = "steamPyPlusSortSelectEnabled";
-  var BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
+  var LEARNING_STORAGE_KEY = "steamPyPlusSortLearning";
   var MENU_ID2 = "steam-py-plus-sort-select";
   var LOG_PREFIX2 = "[SteamPy Plus][SortSelect]";
   var DEFAULT_NULL_RATIO = 0.093;
@@ -1877,58 +1877,48 @@
     let note = null;
     const hiddenControls = [];
     const hiddenCards = /* @__PURE__ */ new Set();
-    function loadBoundary() {
-      const raw = getValue(BOUNDARY_STORAGE_KEY, "");
-      if (!raw) return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+    function loadLearning() {
+      const raw = getValue(LEARNING_STORAGE_KEY, "");
+      if (!raw) return { ratio: DEFAULT_NULL_RATIO, nullPages: {} };
       try {
         const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
         const ratio = Number(parsed?.ratio);
         return {
-          ratio: Number.isFinite(ratio) && ratio > 0 && ratio < 0.9 ? ratio : DEFAULT_NULL_RATIO,
-          fields: parsed?.fields && typeof parsed.fields === "object" ? parsed.fields : {}
+          ratio: Number.isFinite(ratio) && ratio >= DEFAULT_NULL_RATIO && ratio < 0.9 ? ratio : DEFAULT_NULL_RATIO,
+          nullPages: parsed?.nullPages && typeof parsed.nullPages === "object" ? parsed.nullPages : {}
         };
       } catch {
-        return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+        return { ratio: DEFAULT_NULL_RATIO, nullPages: {} };
       }
     }
-    function saveBoundary(boundary) {
-      setValue?.(BOUNDARY_STORAGE_KEY, JSON.stringify(boundary));
+    function saveLearning(learning) {
+      setValue?.(LEARNING_STORAGE_KEY, JSON.stringify(learning));
     }
-    function boundaryKey(target, field) {
-      return `${target?.areas || "cn"}:${field}`;
+    function learningKey(target, field) {
+      return `${target?.areas || "cn"}:${field}:${Number(target?.searchForm?.pageSize) || 30}`;
     }
     function estimatePage(target, field) {
-      const boundary = loadBoundary();
-      const learning = boundary.fields?.[boundaryKey(target, field)] || {};
+      const learning = loadLearning();
       const totalPages = Number(target?.totalPage) || 0;
-      const valuePage = Number(learning.valuePage);
-      const nullPage = Number(learning.nullPage);
-      const ratioPage = totalPages > 0 ? Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages))) : 1;
-      if (Number.isFinite(valuePage) && (!Number.isFinite(nullPage) || valuePage > nullPage)) return valuePage;
-      if (Number.isFinite(nullPage)) return Math.max(nullPage + 1, ratioPage);
-      return ratioPage;
+      const nullPage = Number(learning.nullPages?.[learningKey(target, field)]) || 0;
+      if (totalPages <= 0) return Math.max(1, nullPage + 1);
+      const ratioPage = Math.max(1, Math.min(totalPages, Math.round(learning.ratio * totalPages)));
+      const step = Math.max(1, Math.round(totalPages * 0.02));
+      const fromNullPage = nullPage >= ratioPage ? nullPage + step : 0;
+      return Math.max(1, Math.min(totalPages, Math.max(ratioPage, nullPage + 1, fromNullPage)));
     }
     function learnPage(target, field, currentPage, games) {
       if (!target || !field?.nullPrefix || target?.searchForm?.order !== "asc") return;
       if (!Array.isArray(games) || games.length === 0) return;
-      const key = boundaryKey(target, field.value);
-      const boundary = loadBoundary();
-      const learning = boundary.fields[key] || {};
-      const priced = games.filter((game) => hasValue(game, field.value)).length;
-      const knownValuePage = Number(learning.valuePage);
-      const knownNullPage = Number(learning.nullPage);
-      if (priced === 0) {
-        learning.nullPage = Math.max(Number.isFinite(knownNullPage) ? knownNullPage : 0, currentPage);
-        if (Number.isFinite(knownValuePage) && knownValuePage <= learning.nullPage) delete learning.valuePage;
-      } else {
-        const reusable = Number.isFinite(knownValuePage) && (!Number.isFinite(knownNullPage) || knownValuePage > knownNullPage) ? Math.min(knownValuePage, currentPage) : currentPage;
-        learning.valuePage = reusable;
-        const totalPages = Number(target.totalPage) || 0;
-        if (totalPages > 0) boundary.ratio = Math.min(0.9, Math.max(1e-3, currentPage / totalPages));
+      if (games.some((game) => hasValue(game, field.value))) return;
+      const key = learningKey(target, field.value);
+      const learning = loadLearning();
+      learning.nullPages[key] = Math.max(Number(learning.nullPages[key]) || 0, currentPage);
+      const totalPages = Number(target.totalPage) || 0;
+      if (totalPages > 0) {
+        learning.ratio = Math.max(learning.ratio, Math.min(0.9, currentPage / totalPages));
       }
-      learning.at = Date.now();
-      boundary.fields[key] = learning;
-      saveBoundary(boundary);
+      saveLearning(learning);
     }
     function currentField(target) {
       const sort = target?.searchForm?.sort;

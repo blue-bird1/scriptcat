@@ -4,15 +4,15 @@ const SELECT_ID = "steamPyPlusSortSelect";
 const DIRECTION_ID = "steamPyPlusSortDirection";
 const NOTE_ID = "steamPyPlusSortNote";
 const ENABLED_STORAGE_KEY = "steamPyPlusSortSelectEnabled";
-const BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
+const LEARNING_STORAGE_KEY = "steamPyPlusSortLearning";
 const MENU_ID = "steam-py-plus-sort-select";
 const LOG_PREFIX = "[SteamPy Plus][SortSelect]";
-// 空值前缀约占列表前 9%，来自实测；学习后的比例会覆盖它，区域差异靠翻页观察校正。
+// 空值前缀约占列表前 9%，来自实测；学习只会把比例与空值页向上修正。
 const DEFAULT_NULL_RATIO = 0.093;
 const NATIVE_FLAGS = ["chooseOne", "chooseTwo", "chooseThree", "chooseFour", "chooseFive"];
 const DIRECTION_LABEL = { asc: "升序 ↑", desc: "降序 ↓" };
 
-// nullPrefix 表示该字段升序时接口把空值排在最前，需要先落到有值页。
+// nullPrefix 表示该字段升序时接口把空值排在最前，需要跳到有值页。
 const SORT_FIELDS = Object.freeze([
   { value: "createTime", label: "最新", defaultOrder: "desc" },
   { value: "cdkCount", label: "周销量", defaultOrder: "desc" },
@@ -54,70 +54,53 @@ export function createSteamPySortSelectController({
   const hiddenControls = [];
   const hiddenCards = new Set();
 
-  function loadBoundary() {
-    const raw = getValue(BOUNDARY_STORAGE_KEY, "");
-    if (!raw) return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+  function loadLearning() {
+    const raw = getValue(LEARNING_STORAGE_KEY, "");
+    if (!raw) return { ratio: DEFAULT_NULL_RATIO, nullPages: {} };
     try {
       const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
       const ratio = Number(parsed?.ratio);
       return {
-        ratio: Number.isFinite(ratio) && ratio > 0 && ratio < 0.9 ? ratio : DEFAULT_NULL_RATIO,
-        fields: parsed?.fields && typeof parsed.fields === "object" ? parsed.fields : {},
+        ratio: Number.isFinite(ratio) && ratio >= DEFAULT_NULL_RATIO && ratio < 0.9 ? ratio : DEFAULT_NULL_RATIO,
+        nullPages: parsed?.nullPages && typeof parsed.nullPages === "object" ? parsed.nullPages : {},
       };
     } catch {
-      return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+      return { ratio: DEFAULT_NULL_RATIO, nullPages: {} };
     }
   }
 
-  function saveBoundary(boundary) {
-    setValue?.(BOUNDARY_STORAGE_KEY, JSON.stringify(boundary));
+  function saveLearning(learning) {
+    setValue?.(LEARNING_STORAGE_KEY, JSON.stringify(learning));
   }
 
-  function boundaryKey(target, field) {
-    return `${target?.areas || "cn"}:${field}`;
+  function learningKey(target, field) {
+    return `${target?.areas || "cn"}:${field}:${Number(target?.searchForm?.pageSize) || 30}`;
   }
 
-  // 只用已观察结果推导落点：有值页与空值页各自记忆，不发探测请求。
+  // 只用已观察结果推导落点：记住最后一个空值页，比例只增不减，避免旧观测回退。
   function estimatePage(target, field) {
-    const boundary = loadBoundary();
-    const learning = boundary.fields?.[boundaryKey(target, field)] || {};
+    const learning = loadLearning();
     const totalPages = Number(target?.totalPage) || 0;
-    const valuePage = Number(learning.valuePage);
-    const nullPage = Number(learning.nullPage);
-    const ratioPage = totalPages > 0
-      ? Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)))
-      : 1;
-    // 有值页必须晚于空值页，否则视为旧观测作废。
-    if (Number.isFinite(valuePage) && (!Number.isFinite(nullPage) || valuePage > nullPage)) return valuePage;
-    // 已知空值页时直接用比例估计跳过空值区，避免逐页爬行。
-    if (Number.isFinite(nullPage)) return Math.max(nullPage + 1, ratioPage);
-    return ratioPage;
+    const nullPage = Number(learning.nullPages?.[learningKey(target, field)]) || 0;
+    if (totalPages <= 0) return Math.max(1, nullPage + 1);
+    const ratioPage = Math.max(1, Math.min(totalPages, Math.round(learning.ratio * totalPages)));
+    const step = Math.max(1, Math.round(totalPages * 0.02));
+    const fromNullPage = nullPage >= ratioPage ? nullPage + step : 0;
+    return Math.max(1, Math.min(totalPages, Math.max(ratioPage, nullPage + 1, fromNullPage)));
   }
 
   function learnPage(target, field, currentPage, games) {
     if (!target || !field?.nullPrefix || target?.searchForm?.order !== "asc") return;
     if (!Array.isArray(games) || games.length === 0) return;
-    const key = boundaryKey(target, field.value);
-    const boundary = loadBoundary();
-    const learning = boundary.fields[key] || {};
-    const priced = games.filter((game) => hasValue(game, field.value)).length;
-    const knownValuePage = Number(learning.valuePage);
-    const knownNullPage = Number(learning.nullPage);
-    if (priced === 0) {
-      learning.nullPage = Math.max(Number.isFinite(knownNullPage) ? knownNullPage : 0, currentPage);
-      if (Number.isFinite(knownValuePage) && knownValuePage <= learning.nullPage) delete learning.valuePage;
-    } else {
-      const reusable = Number.isFinite(knownValuePage)
-        && (!Number.isFinite(knownNullPage) || knownValuePage > knownNullPage)
-        ? Math.min(knownValuePage, currentPage)
-        : currentPage;
-      learning.valuePage = reusable;
-      const totalPages = Number(target.totalPage) || 0;
-      if (totalPages > 0) boundary.ratio = Math.min(0.9, Math.max(0.001, currentPage / totalPages));
+    if (games.some((game) => hasValue(game, field.value))) return;
+    const key = learningKey(target, field.value);
+    const learning = loadLearning();
+    learning.nullPages[key] = Math.max(Number(learning.nullPages[key]) || 0, currentPage);
+    const totalPages = Number(target.totalPage) || 0;
+    if (totalPages > 0) {
+      learning.ratio = Math.max(learning.ratio, Math.min(0.9, currentPage / totalPages));
     }
-    learning.at = Date.now();
-    boundary.fields[key] = learning;
-    saveBoundary(boundary);
+    saveLearning(learning);
   }
 
   function currentField(target) {
