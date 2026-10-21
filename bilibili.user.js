@@ -17,7 +17,7 @@
 // @grant        GM_setValue
 // @connect      api.bgm.tv
 // @run-at       document-start
-// @license MIT
+// @license      MIT
 // ==/UserScript==
 
 /*global elmGetter,ajaxHooker*/
