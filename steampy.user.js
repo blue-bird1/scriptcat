@@ -1840,7 +1840,6 @@
   var BOUNDARY_TTL_MS = 2 * 60 * 1e3;
   var DEFAULT_NULL_RATIO = 0.093;
   var MAX_WALK_STEPS = 12;
-  var MAX_BACK_STEPS = 2;
   var NATIVE_FLAGS = ["chooseOne", "chooseTwo", "chooseThree", "chooseFour", "chooseFive"];
   var SORT_OPTIONS = Object.freeze([
     { value: "new", label: "最新", method: "newSort", sort: "createTime", order: "desc" },
@@ -1962,6 +1961,10 @@
       let lastNullPage = 0;
       let totalPages = null;
       if (cached && Number.isFinite(Number(cached.page)) && Date.now() - Number(cached.at || 0) < BOUNDARY_TTL_MS) {
+        log2("info", "sort_located", { field, page: Number(cached.page), probes: 0, cached: true });
+        return Number(cached.page);
+      }
+      if (cached && Number.isFinite(Number(cached.page))) {
         const page = await probe(Number(cached.page));
         if (token !== generation) return null;
         totalPages = Number(page?.totalPages);
@@ -2003,12 +2006,6 @@
       if (found === null) {
         log2("error", "sort_locate_exhausted", { field, probes: probes.length });
         return null;
-      }
-      for (let back = 0; back < MAX_BACK_STEPS && found > 1; back += 1) {
-        const page = await probe(found - 1);
-        if (token !== generation) return null;
-        if (!pageHasValue(page, field)) break;
-        found -= 1;
       }
       if (Number.isFinite(totalPages) && totalPages > 0) {
         boundary.ratio = Math.min(0.9, Math.max(1e-3, (found - 1) / totalPages));

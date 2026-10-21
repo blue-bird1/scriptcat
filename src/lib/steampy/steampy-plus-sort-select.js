@@ -9,7 +9,6 @@ const BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
 const BOUNDARY_TTL_MS = 2 * 60 * 1000;
 const DEFAULT_NULL_RATIO = 0.093;
 const MAX_WALK_STEPS = 12;
-const MAX_BACK_STEPS = 2;
 const NATIVE_FLAGS = ["chooseOne", "chooseTwo", "chooseThree", "chooseFour", "chooseFive"];
 
 // 原生方法会连同排序状态一起更新页面，优先复用；自定义项直接改写查询参数。
@@ -149,7 +148,12 @@ export function createSteamPySortSelectController({
     let found = null;
     let lastNullPage = 0;
     let totalPages = null;
+    // 缓存新鲜时直接信任先验，不再探测。
     if (cached && Number.isFinite(Number(cached.page)) && Date.now() - Number(cached.at || 0) < BOUNDARY_TTL_MS) {
+      log("info", "sort_located", { field, page: Number(cached.page), probes: 0, cached: true });
+      return Number(cached.page);
+    }
+    if (cached && Number.isFinite(Number(cached.page))) {
       const page = await probe(Number(cached.page));
       if (token !== generation) return null;
       totalPages = Number(page?.totalPages);
@@ -193,12 +197,6 @@ export function createSteamPySortSelectController({
     if (found === null) {
       log("error", "sort_locate_exhausted", { field, probes: probes.length });
       return null;
-    }
-    for (let back = 0; back < MAX_BACK_STEPS && found > 1; back += 1) {
-      const page = await probe(found - 1);
-      if (token !== generation) return null;
-      if (!pageHasValue(page, field)) break;
-      found -= 1;
     }
     if (Number.isFinite(totalPages) && totalPages > 0) {
       boundary.ratio = Math.min(0.9, Math.max(0.001, (found - 1) / totalPages));
