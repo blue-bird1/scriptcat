@@ -9,7 +9,7 @@
 - managed 扩展：`~/.local/share/scriptcat-extension/managed`。
 - 代理：`http://127.0.0.1:7891`，用于页面流量及 MCP 的 HTTP/HTTPS 请求。
 
-Pi 读取 `.mcp.json`，Codex 读取 `.codex/config.toml`。配置中的 `--workspace` 授予仓库文件访问权限，文件操作仍接受 filesystem roots 校验。
+Pi 读取 `.mcp.json`，Codex 读取 `.codex/config.toml`，Cursor 读取 `.cursor/mcp.json`。这三个文件属于本机配置，含各自的绝对路径，已被 `.gitignore` 忽略且不纳入版本库，需在检出目录自行创建。配置中的 `--workspace` 授予仓库文件访问权限，文件操作仍接受 filesystem roots 校验。
 
 ## 会话与脚本
 
@@ -27,4 +27,4 @@ Pi 读取 `.mcp.json`，Codex 读取 `.codex/config.toml`。配置中的 `--work
 uv run --project scripts --python 3.12 python scripts/mcp/control.py status
 ```
 
-`control.py` 从 `.codex/config.toml` 复用启动参数。`stop` 拒绝仍有活跃客户端的停机请求，只用于明确维护或系统退出，不用于调试清理或正常发布。
+`control.py` 从本机的 `.codex/config.toml` 复用启动参数。`stop` 拒绝仍有活跃客户端的停机请求，只用于明确维护或系统退出，不用于调试清理或正常发布。
