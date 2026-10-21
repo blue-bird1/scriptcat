@@ -449,5 +449,5 @@ export function createSteamPyAdvancedFilterController({
     applied = createEmptyState();
   }
 
-  return { cleanup, mount };
+  return { cleanup, deactivate: () => disable({ refreshList: false }), isActive: () => active, mount };
 }

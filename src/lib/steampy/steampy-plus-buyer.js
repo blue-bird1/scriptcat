@@ -132,6 +132,7 @@ export function createSteamPyBuyerController({
   filter,
   rating,
   couponListing = null,
+  sortSelect = null,
   getValue = GM_getValue,
   setValue = GM_setValue,
 }) {
@@ -154,6 +155,7 @@ export function createSteamPyBuyerController({
     vm.$nextTick?.(() => {
       if (legacyVm !== vm) return;
       couponListing?.mount();
+      sortSelect?.mount(vm);
       filter.mount();
       processCards(vm);
     });
@@ -232,6 +234,7 @@ export function createSteamPyBuyerController({
     vm.$nextTick?.(() => {
       if (proVm !== vm) return;
       advancedFilter?.mount(vm);
+      sortSelect?.mount(vm);
       couponListing?.mount();
       filter.mount();
       mountProPageSizeControl(vm);

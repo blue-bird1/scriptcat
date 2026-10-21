@@ -6,6 +6,7 @@ import { createSteamPyCouponListingController } from "./steampy-plus-coupon-list
 import { createSteamPyPriceFilter } from "./steampy-plus-filter.js";
 import { createSteamPyRatingEnhancer } from "./steampy-plus-rating.js";
 import { createSteamPySaleStartTimeController } from "./steampy-plus-sale-start-time.js";
+import { createSteamPySortSelectController } from "./steampy-plus-sort-select.js";
 import {
   parseBatchCsv,
   preflightBatch,
@@ -41,6 +42,10 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
     fetchSteamGameByAppId: xbootClient.fetchSteamGameByAppId,
     setHideDlcSuspended: filter.setHideDlcSuspended,
   });
+  const sortSelect = createSteamPySortSelectController({
+    client: xbootClient,
+    advancedFilter,
+  });
   const couponListing = createSteamPyCouponListingController({
     client: xbootClient,
     shouldShow: filter.shouldShow,
@@ -53,6 +58,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
     filter,
     rating,
     couponListing,
+    sortSelect,
   });
   const seller = createSteamPySellerController({
     client: xbootClient,
@@ -65,6 +71,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
   installSteamPyAjaxHooks({ ajaxHooker, jQuery, onHotGames: rating.setHotGameData });
   libraryManager.registerMenus();
   couponListing.registerMenus();
+  sortSelect.registerMenus();
   elmGetter.selector(jQuery);
 
   let legacyActive = false;
