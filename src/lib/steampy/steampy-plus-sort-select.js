@@ -124,42 +124,52 @@ export function createSteamPySortSelectController({
     saveLearning(learning);
   }
 
-  // 分页控件按常规页码给出 1、2、3…；有值页排序时把页码整体平移到有值区。
-  let pageOffset = { vm: null, offset: 0, originals: null };
+  // 分页控件保留 1、2、3… 的“相对页码”，只在请求时加上空值区偏移；
+  // 同时把 total 减去被跳过的条数，使页数与相对页码一致。
+  let pagination = { vm: null, offset: 0, originals: null, absoluteTotal: 0, appliedTotal: 0 };
 
-  function clearPageOffset() {
-    const { vm: target, originals } = pageOffset;
-    if (target && originals) {
-      target.changePage = originals.changePage;
-      target.pageHandler = originals.pageHandler;
-      target.changePageSize = originals.changePageSize;
+  function restoreTotal(target) {
+    if (target && pagination.appliedTotal > 0 && Number(target.total) === pagination.appliedTotal) {
+      target.total = pagination.absoluteTotal;
     }
-    pageOffset = { vm: null, offset: 0, originals: null };
   }
 
-  function applyPageOffset(target, offset) {
+  function clearPagination() {
+    const { vm: target, originals } = pagination;
+    if (target && originals) {
+      target.getGameList = originals.getGameList;
+      restoreTotal(target);
+    }
+    pagination = { vm: null, offset: 0, originals: null, absoluteTotal: 0, appliedTotal: 0 };
+  }
+
+  function syncPaginationTotal(target) {
+    if (!target || pagination.vm !== target || !pagination.offset) return;
+    const pageSize = Number(target.searchForm?.pageSize) || 30;
+    const current = Number(target.total) || 0;
+    if (pagination.appliedTotal > 0 && current === pagination.appliedTotal) return;
+    pagination.absoluteTotal = current;
+    pagination.appliedTotal = Math.max(0, current - pagination.offset * pageSize);
+    target.total = pagination.appliedTotal;
+  }
+
+  function applyPagination(target, offset) {
     if (!target) return;
-    if (pageOffset.vm === target && pageOffset.offset === offset) return;
-    clearPageOffset();
+    if (pagination.vm === target && pagination.offset === offset) return;
+    clearPagination();
     if (!offset) return;
-    const originals = {
-      changePage: target.changePage,
-      pageHandler: target.pageHandler,
-      changePageSize: target.changePageSize,
-    };
-    pageOffset = { vm: target, offset, originals };
-    const shift = (page) => (Number(page) || 1) + offset;
-    target.changePage = function pagedChangePage(page) {
-      return originals.changePage.call(this, shift(page));
-    };
-    target.pageHandler = function pagedPageHandler(page) {
-      return originals.pageHandler.call(this, shift(page));
-    };
-    target.changePageSize = function pagedChangePageSize(pageSize) {
-      this.searchForm.pageSize = pageSize;
-      const base = estimatePage(this, currentField(this)?.value) + offset;
-      this.searchForm.pageNumber = base;
-      this.getGameList?.();
+    const originals = { getGameList: target.getGameList };
+    pagination = { vm: target, offset, originals, absoluteTotal: 0, appliedTotal: 0 };
+    target.getGameList = function pagedGetGameList(...args) {
+      const form = this.searchForm;
+      if (!form || !pagination.offset) return originals.getGameList.apply(this, args);
+      const relative = Number(form.pageNumber) || 1;
+      form.pageNumber = relative + pagination.offset;
+      try {
+        return originals.getGameList.apply(this, args);
+      } finally {
+        form.pageNumber = relative;
+      }
     };
   }
 
@@ -247,10 +257,12 @@ export function createSteamPySortSelectController({
       if (flag in target) target[flag] = false;
     }
     const useNullPrefix = field.nullPrefix && order === "asc";
+    const basePage = useNullPrefix ? estimatePage(target, field.value, wasAdvanced) : 1;
     target.searchForm.sort = field.value;
     target.searchForm.order = order;
-    target.searchForm.pageNumber = useNullPrefix ? estimatePage(target, field.value, wasAdvanced) : 1;
-    applyPageOffset(target, useNullPrefix ? target.searchForm.pageNumber - 1 : 0);
+    target.searchForm.pageNumber = 1;
+    applyPagination(target, useNullPrefix ? Math.max(0, basePage - 1) : 0);
+    syncPaginationTotal(target);
     syncControls(target);
     target.getGameList?.();
     log("info", "sort_applied", {
@@ -314,12 +326,18 @@ export function createSteamPySortSelectController({
     syncControls(vm);
     applyRowVisibility(vm);
     if (currentField(vm)) rememberNormalPages(vm);
-    learnPage(vm, currentField(vm), Number(vm.searchForm?.pageNumber) || 1, vm.gameList);
+    syncPaginationTotal(vm);
+    learnPage(
+      vm,
+      currentField(vm),
+      (Number(vm.searchForm?.pageNumber) || 1) + (pagination.vm === vm ? pagination.offset : 0),
+      vm.gameList,
+    );
     return true;
   }
 
   function unmount() {
-    clearPageOffset();
+    clearPagination();
     removeControls();
     restoreNativeControls();
     for (const card of hiddenCards) {
