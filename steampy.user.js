@@ -1836,6 +1836,11 @@
   var MENU_ID2 = "steam-py-plus-sort-select";
   var LOG_PREFIX2 = "[SteamPy Plus][SortSelect]";
   var LOCATE_PAGE_SIZE = 100;
+  var BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
+  var BOUNDARY_TTL_MS = 2 * 60 * 1e3;
+  var DEFAULT_NULL_RATIO = 0.093;
+  var MAX_WALK_STEPS = 12;
+  var MAX_BACK_STEPS = 2;
   var NATIVE_FLAGS = ["chooseOne", "chooseTwo", "chooseThree", "chooseFour", "chooseFive"];
   var SORT_OPTIONS = Object.freeze([
     { value: "new", label: "最新", method: "newSort", sort: "createTime", order: "desc" },
@@ -1919,6 +1924,23 @@
       const value = valueForState(target);
       if (value) select.value = value;
     }
+    function loadBoundary() {
+      const raw = getValue(BOUNDARY_STORAGE_KEY, "");
+      if (!raw) return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+      try {
+        const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+        const ratio = Number(parsed?.ratio);
+        return {
+          ratio: Number.isFinite(ratio) && ratio > 0 && ratio < 1 ? ratio : DEFAULT_NULL_RATIO,
+          fields: parsed?.fields && typeof parsed.fields === "object" ? parsed.fields : {}
+        };
+      } catch {
+        return { ratio: DEFAULT_NULL_RATIO, fields: {} };
+      }
+    }
+    function saveBoundary(boundary) {
+      setValue?.(BOUNDARY_STORAGE_KEY, JSON.stringify(boundary));
+    }
     async function locateFirstPageWithValue(target, field, token) {
       const fetchPage = async (pageNumber) => client.fetchSteamGameKeyHot({
         region: target.areas,
@@ -1929,24 +1951,71 @@
         startDate: "",
         endDate: ""
       });
-      const first = await fetchPage(1);
-      if (pageHasValue(first, field)) return 1;
-      const totalPages = Number(first?.totalPages);
-      if (!Number.isFinite(totalPages) || totalPages <= 1) return 1;
-      let low = 2;
-      let high = totalPages;
+      const boundary = loadBoundary();
+      const cached = boundary.fields?.[field];
+      const probes = [];
+      const probe = async (pageNumber) => {
+        probes.push(pageNumber);
+        return fetchPage(pageNumber);
+      };
       let found = null;
-      while (low <= high) {
+      let lastNullPage = 0;
+      let totalPages = null;
+      if (cached && Number.isFinite(Number(cached.page)) && Date.now() - Number(cached.at || 0) < BOUNDARY_TTL_MS) {
+        const page = await probe(Number(cached.page));
         if (token !== generation) return null;
-        const middle = Math.floor((low + high) / 2);
-        const page = await fetchPage(middle);
-        if (pageHasValue(page, field)) {
-          found = middle;
-          high = middle - 1;
+        totalPages = Number(page?.totalPages);
+        if (pageHasValue(page, field)) found = Number(cached.page);
+        else lastNullPage = Number(cached.page);
+      }
+      if (found === null) {
+        const first = await probe(1);
+        if (token !== generation) return null;
+        totalPages = Number(first?.totalPages);
+        if (pageHasValue(first, field)) {
+          found = 1;
+        } else if (!Number.isFinite(totalPages) || totalPages <= 1) {
+          return 1;
         } else {
-          low = middle + 1;
+          const priorPage = cached && Number.isFinite(Number(cached.page)) ? Number(cached.page) : Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
+          if (!probes.includes(priorPage)) {
+            const page = await probe(priorPage);
+            if (token !== generation) return null;
+            if (pageHasValue(page, field)) found = priorPage;
+            else lastNullPage = Math.max(lastNullPage, priorPage);
+          }
+          if (found === null) {
+            const step = Math.max(1, Math.ceil(totalPages / 50));
+            for (let walk = 0; walk < MAX_WALK_STEPS; walk += 1) {
+              const next = Math.min(totalPages, Math.max(lastNullPage, 1) + step * (walk + 1));
+              const page = await probe(next);
+              if (token !== generation) return null;
+              if (pageHasValue(page, field)) {
+                found = next;
+                break;
+              }
+              lastNullPage = next;
+              if (next >= totalPages) break;
+            }
+          }
         }
       }
+      if (found === null) {
+        log2("error", "sort_locate_exhausted", { field, probes: probes.length });
+        return null;
+      }
+      for (let back = 0; back < MAX_BACK_STEPS && found > 1; back += 1) {
+        const page = await probe(found - 1);
+        if (token !== generation) return null;
+        if (!pageHasValue(page, field)) break;
+        found -= 1;
+      }
+      if (Number.isFinite(totalPages) && totalPages > 0) {
+        boundary.ratio = Math.min(0.9, Math.max(1e-3, (found - 1) / totalPages));
+        boundary.fields[field] = { page: found, totalPages, at: Date.now() };
+        saveBoundary(boundary);
+      }
+      log2("info", "sort_located", { field, page: found, probes: probes.length });
       return found;
     }
     async function applyOption(value) {
