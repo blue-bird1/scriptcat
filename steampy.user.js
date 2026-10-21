@@ -3,7 +3,7 @@
 // @name:zh-CN      SteamPy Plus
 // @name:en         SteamPy Plus
 // @namespace       https://github.com/blue-bird1/scriptcat
-// @version         5.15.1
+// @version         5.16.0
 // @description     增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
 // @description:en  Enhance Steampy key purchasing with filters, payment estimates for base games from manually entered discounts, a compact sort dropdown (payment price, average trade price, rating), and middle-click Steam pages.
 // @match           https://steampy.com/*
@@ -1832,6 +1832,7 @@
   var TOOLBAR_SELECTOR2 = ".tag.flex-row.align-items-center";
   var NATIVE_CONTROL_SELECTOR = ":scope > .tagBtn, :scope > .tagBtnTwo";
   var SELECT_ID = "steamPyPlusSortSelect";
+  var DIRECTION_ID = "steamPyPlusSortDirection";
   var NOTE_ID = "steamPyPlusSortNote";
   var ENABLED_STORAGE_KEY2 = "steamPyPlusSortSelectEnabled";
   var BOUNDARY_STORAGE_KEY = "steamPyPlusSortBoundary";
@@ -1839,16 +1840,16 @@
   var LOG_PREFIX2 = "[SteamPy Plus][SortSelect]";
   var DEFAULT_NULL_RATIO = 0.093;
   var NATIVE_FLAGS = ["chooseOne", "chooseTwo", "chooseThree", "chooseFour", "chooseFive"];
-  var SORT_OPTIONS = Object.freeze([
-    { value: "new", label: "最新", method: "newSort", sort: "createTime", order: "desc" },
-    { value: "week", label: "周销量", method: "weekSort", sort: "cdkCount", order: "desc" },
-    { value: "sales", label: "销量", method: "saleSort", sort: "keyTx", order: "desc" },
-    { value: "discount", label: "折扣", method: "disCountSort", sort: "keyDiscount", order: "asc" },
-    { value: "price-asc", label: "价格从低到高", method: "priceUp", sort: "keyPrice", order: "asc" },
-    { value: "price-desc", label: "价格从高到低", method: "priceDown", sort: "keyPrice", order: "desc" },
-    { value: "txamt-asc", label: "实付价从低到高", sort: "keyTxAmt", order: "asc" },
-    { value: "aveamt-asc", label: "成交均价从低到高", sort: "keyAveAmt", order: "asc" },
-    { value: "rating-desc", label: "好评率从高到低", sort: "rating", order: "desc" }
+  var DIRECTION_LABEL = { asc: "升序 ↑", desc: "降序 ↓" };
+  var SORT_FIELDS = Object.freeze([
+    { value: "createTime", label: "最新", defaultOrder: "desc" },
+    { value: "cdkCount", label: "周销量", defaultOrder: "desc" },
+    { value: "keyTx", label: "销量", defaultOrder: "desc" },
+    { value: "keyDiscount", label: "折扣", defaultOrder: "asc" },
+    { value: "keyPrice", label: "价格", defaultOrder: "asc" },
+    { value: "keyTxAmt", label: "实付价", defaultOrder: "asc", nullPrefix: true },
+    { value: "keyAveAmt", label: "成交均价", defaultOrder: "asc", nullPrefix: true },
+    { value: "rating", label: "好评率", defaultOrder: "desc", nullPrefix: true }
   ]);
   function log2(level, event, fields = {}) {
     const entry = { time: (/* @__PURE__ */ new Date()).toISOString(), level, event, ...fields };
@@ -1858,6 +1859,9 @@
   function hasValue(row, field) {
     const value = row?.[field];
     return value !== null && value !== void 0 && value !== "";
+  }
+  function flipOrder(order) {
+    return order === "asc" ? "desc" : "asc";
   }
   function createSteamPySortSelectController({
     advancedFilter = null,
@@ -1869,6 +1873,7 @@
     let menusRegistered = false;
     let vm = null;
     let select = null;
+    let direction = null;
     let note = null;
     const hiddenControls = [];
     const hiddenCards = /* @__PURE__ */ new Set();
@@ -1892,29 +1897,25 @@
     function boundaryKey(target, field) {
       return `${target?.areas || "cn"}:${field}`;
     }
-    function estimatePage(target, option) {
+    function estimatePage(target, field) {
       const boundary = loadBoundary();
-      const learning = boundary.fields?.[boundaryKey(target, option.sort)] || {};
+      const learning = boundary.fields?.[boundaryKey(target, field)] || {};
       const totalPages = Number(target?.totalPage) || 0;
       if (Number.isFinite(Number(learning.valuePage))) return Number(learning.valuePage);
       if (Number.isFinite(Number(learning.nullPage))) return Math.max(1, Number(learning.nullPage) + 1);
-      if (totalPages > 0) {
-        return Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
-      }
+      if (totalPages > 0) return Math.max(1, Math.min(totalPages, Math.round(boundary.ratio * totalPages)));
       return 1;
     }
-    function learnPage(target, option, currentPage, games) {
-      if (!target || !option || option.method || option.order !== "asc") return;
-      if (!Array.isArray(games) || games.length === 0) return;
-      const key = boundaryKey(target, option.sort);
+    function learnPage(target, field, currentPage, games) {
+      if (!target || !field?.nullPrefix || !Array.isArray(games) || games.length === 0) return;
+      const key = boundaryKey(target, field.value);
       const boundary = loadBoundary();
       const learning = boundary.fields[key] || {};
-      const priced = games.filter((game) => hasValue(game, option.sort)).length;
+      const priced = games.filter((game) => hasValue(game, field.value)).length;
       if (priced === 0) {
         learning.nullPage = Math.max(Number(learning.nullPage) || 0, currentPage);
       } else {
-        learning.valuePage = Number(learning.valuePage) || currentPage;
-        learning.valuePage = Math.min(learning.valuePage, currentPage);
+        learning.valuePage = Math.min(Number(learning.valuePage) || currentPage, currentPage);
         const totalPages = Number(target.totalPage) || 0;
         if (totalPages > 0) boundary.ratio = Math.min(0.9, Math.max(1e-3, currentPage / totalPages));
       }
@@ -1922,14 +1923,20 @@
       boundary.fields[key] = learning;
       saveBoundary(boundary);
     }
-    function currentOption(target) {
-      return SORT_OPTIONS.find((option) => !option.method && option.sort === target?.searchForm?.sort && option.order === target?.searchForm?.order) || null;
+    function currentField(target) {
+      const sort = target?.searchForm?.sort;
+      return SORT_FIELDS.find((field) => field.value === sort) || null;
+    }
+    function activeNullPrefix(target) {
+      const field = currentField(target);
+      if (!field?.nullPrefix || target?.searchForm?.order !== "asc") return null;
+      return field;
     }
     function updateNote(target) {
       if (!note) return;
-      const option = currentOption(target);
+      const field = activeNullPrefix(target);
       const games = Array.isArray(target?.gameList) ? target.gameList : [];
-      const emptyPage = Boolean(option && option.order === "asc" && games.length > 0 && !games.some((game) => hasValue(game, option.sort)));
+      const emptyPage = Boolean(field && games.length > 0 && !games.some((game) => hasValue(game, field.value)));
       note.hidden = !emptyPage;
       note.textContent = emptyPage ? "本页无成交价数据，翻到下一页查看" : "";
     }
@@ -1937,10 +1944,10 @@
       for (const card of hiddenCards) {
         if (!card.isConnected) hiddenCards.delete(card);
       }
-      const option = currentOption(target);
+      const field = activeNullPrefix(target);
       const games = Array.isArray(target?.gameList) ? target.gameList : [];
       Array.from(document.querySelectorAll(".gameblock")).forEach((card, index) => {
-        const hide = Boolean(option && games[index] && !hasValue(games[index], option.sort));
+        const hide = Boolean(field && games[index] && !hasValue(games[index], field.value));
         card.style.display = hide ? "none" : "";
         if (hide) hiddenCards.add(card);
         else hiddenCards.delete(card);
@@ -1964,73 +1971,82 @@
       }
       hiddenControls.length = 0;
     }
-    function removeSelect() {
+    function removeControls() {
       note?.remove();
       note = null;
+      direction?.remove();
+      direction = null;
       select?.remove();
       select = null;
     }
-    function valueForState(target) {
-      const sort = target?.searchForm?.sort;
-      const order = target?.searchForm?.order;
-      return SORT_OPTIONS.find((option) => option.sort === sort && option.order === order)?.value ?? null;
-    }
-    function syncSelect(target) {
+    function syncControls(target) {
       if (!select) return;
-      const value = valueForState(target);
-      if (value) select.value = value;
+      const field = currentField(target);
+      const order = target?.searchForm?.order === "asc" ? "asc" : "desc";
+      if (field) select.value = field.value;
+      direction.textContent = DIRECTION_LABEL[order];
+      direction.dataset.order = order;
+      direction.disabled = !field;
+      direction.title = field ? `按${field.label}${order === "asc" ? "升序" : "降序"}排列` : "";
     }
-    function applyOption(value) {
-      const option = SORT_OPTIONS.find((item) => item.value === value);
+    function applySort(field, order) {
       const target = vm;
-      if (!option || !target) return;
+      if (!field || !target?.searchForm) return;
       if (advancedFilter?.isActive?.()) advancedFilter.deactivate();
-      const nativeMethod = option.method ? target[option.method] : null;
-      if (typeof nativeMethod === "function") {
-        nativeMethod.call(target, 0);
-        syncSelect(target);
-        log2("info", "sort_applied", { value, native: true });
-        return;
-      }
       for (const flag of NATIVE_FLAGS) {
         if (flag in target) target[flag] = false;
       }
-      if (!target.searchForm) return;
-      target.searchForm.sort = option.sort;
-      target.searchForm.order = option.order;
-      target.searchForm.pageNumber = option.order === "asc" ? estimatePage(target, option) : 1;
-      syncSelect(target);
+      const useNullPrefix = field.nullPrefix && order === "asc";
+      target.searchForm.sort = field.value;
+      target.searchForm.order = order;
+      target.searchForm.pageNumber = useNullPrefix ? estimatePage(target, field.value) : 1;
+      syncControls(target);
       target.getGameList?.();
       log2("info", "sort_applied", {
-        value,
-        native: false,
-        sort: option.sort,
-        order: option.order,
-        pageNumber: target.searchForm.pageNumber
+        field: field.value,
+        order,
+        pageNumber: target.searchForm.pageNumber,
+        nullPrefix: useNullPrefix
       });
     }
-    function buildSelect(toolbar) {
-      removeSelect();
+    function buildControls(toolbar) {
+      removeControls();
       const element = document.createElement("select");
       element.id = SELECT_ID;
-      element.style.cssText = "height:.3rem;min-width:1.5rem;padding:0 .06rem;border:1px solid #dcdee2;border-radius:.04rem;background:#fff;color:#17233d;font-size:.13rem;margin-left:.05rem;";
-      for (const option of SORT_OPTIONS) {
+      element.style.cssText = "height:.3rem;min-width:1.15rem;padding:0 .06rem;border:1px solid #dcdee2;border-radius:.04rem;background:#fff;color:#17233d;font-size:.13rem;margin-left:.05rem;";
+      for (const field of SORT_FIELDS) {
         const item = document.createElement("option");
-        item.value = option.value;
-        item.textContent = option.label;
+        item.value = field.value;
+        item.textContent = field.label;
         element.append(item);
       }
       element.addEventListener("change", () => {
-        applyOption(element.value);
+        const field = SORT_FIELDS.find((item) => item.value === element.value);
+        applySort(field, field?.defaultOrder);
       });
       const anchor = toolbar.querySelector(NATIVE_CONTROL_SELECTOR);
       toolbar.insertBefore(element, anchor);
       select = element;
+      const toggle = document.createElement("button");
+      toggle.id = DIRECTION_ID;
+      toggle.type = "button";
+      toggle.className = "ivu-btn ivu-btn-default ivu-btn-sm";
+      toggle.style.cssText = "margin-left:.05rem;min-width:.62rem;";
+      toggle.textContent = DIRECTION_LABEL.desc;
+      toggle.dataset.order = "desc";
+      toggle.addEventListener("click", () => {
+        const field = currentField(vm) || SORT_FIELDS.find((item) => item.value === select?.value);
+        if (!field) return;
+        const current = vm?.searchForm?.order === "asc" ? "asc" : "desc";
+        applySort(field, flipOrder(current));
+      });
+      element.after(toggle);
+      direction = toggle;
       const hint = document.createElement("span");
       hint.id = NOTE_ID;
       hint.hidden = true;
       hint.style.cssText = "margin-left:.06rem;font-size:.12rem;color:#ed4014;";
-      element.after(hint);
+      toggle.after(hint);
       note = hint;
     }
     function mount(nextVm) {
@@ -2038,15 +2054,15 @@
       if (!enabled || !vm) return false;
       const toolbar = document.querySelector(TOOLBAR_SELECTOR2);
       if (!toolbar) return false;
-      if (!select?.isConnected) buildSelect(toolbar);
+      if (!select?.isConnected) buildControls(toolbar);
       hideNativeControls(toolbar);
-      syncSelect(vm);
+      syncControls(vm);
       applyRowVisibility(vm);
-      learnPage(vm, currentOption(vm), Number(vm.searchForm?.pageNumber) || 1, vm.gameList);
+      learnPage(vm, currentField(vm), Number(vm.searchForm?.pageNumber) || 1, vm.gameList);
       return true;
     }
     function unmount() {
-      removeSelect();
+      removeControls();
       restoreNativeControls();
       for (const card of hiddenCards) {
         if (card.isConnected) card.style.display = "";
