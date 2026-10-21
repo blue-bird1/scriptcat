@@ -96,10 +96,12 @@ export function createSteamPySortSelectController({
     const totalElements = Number(target?.total) || 0;
     const derivedPages = totalElements > 0 ? Math.ceil(totalElements / pageSize) : 0;
     const region = target?.areas || "cn";
-    // 高级筛选的列表条数与常规列表不同，切换回常规排序时使用常规页数记忆。
-    const normalPages = useNormalPages ? Number(learning.normalPages?.[region]) || 0 : 0;
+    // 高级筛选的列表条数与常规列表不同：从高级筛选切回时必须只用常规页数记忆。
+    const remembered = Number(learning.normalPages?.[region]) || 0;
     // 站点字段可能滞后，取较大值避免低估而落回空值区。
-    const totalPages = Math.max(Number(target?.totalPage) || 0, derivedPages, normalPages);
+    const totalPages = useNormalPages && remembered > 0
+      ? remembered
+      : Math.max(Number(target?.totalPage) || 0, derivedPages);
     const nullPage = Number(learning.nullPages?.[learningKey(target, field)]) || 0;
     if (totalPages <= 0) return Math.max(1, nullPage + 1);
     const ratioPage = Math.max(1, Math.min(totalPages, Math.round(learning.ratio * totalPages)));
