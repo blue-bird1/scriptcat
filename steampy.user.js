@@ -3,10 +3,10 @@
 // @name:zh-CN         SteamPy Plus
 // @name:en            SteamPy Plus
 // @namespace          https://github.com/blue-bird1/scriptcat
-// @version            5.16.0
-// @description        增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
-// @description:zh-CN  增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
-// @description:en     Enhance Steampy key purchasing with filters, payment estimates for base games from manually entered discounts, a compact sort dropdown (payment price, average trade price, rating), and middle-click Steam pages.
+// @version            5.17.0
+// @description        增强购买Steampy密钥的体验，增加筛选功能，支持在 CDKey 列表显示或隐藏已拥有游戏，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
+// @description:zh-CN  增强购买Steampy密钥的体验，增加筛选功能，支持在 CDKey 列表显示或隐藏已拥有游戏，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
+// @description:en     Enhance Steampy key purchasing with filters, a switch to show or hide games already owned on Steam, payment estimates for base games from manually entered discounts, a compact sort dropdown (payment price, average trade price, rating), and middle-click Steam pages.
 // @match              https://steampy.com/*
 // @grant              GM_setValue
 // @grant              GM_getValue
@@ -1259,7 +1259,7 @@
       const form = document.createElement("div");
       form.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.1rem;";
       const intro = document.createElement("p");
-      intro.textContent = "从当前商品页起，沿用页面已应用的高级筛选和排序，跳过已拥有的游戏并排除 DLC。有货且达到门槛的本体按预估实付升序显示；保留超限项，供选择接近目标的候选。其他结果默认折叠。";
+      intro.textContent = "从当前商品页起，沿用页面已应用的高级筛选、排序和「隐藏已拥有」开关，并排除 DLC。有货且达到门槛的本体按预估实付升序显示；保留超限项，供选择接近目标的候选。其他结果默认折叠。";
       intro.style.cssText = "margin:0;font-size:.13rem;color:#515a6e;";
       form.append(
         field("满减门槛", minimumInput),
@@ -1416,11 +1416,13 @@
 
   // src/lib/steampy/steampy-plus-filter.js
   var FILTER_STORAGE_KEY = "steamPriceFilterState";
+  var OWNED_MENU_ID = "steam-py-plus-hide-owned";
   var DEFAULT_FILTER_STATE = {
     minPrice: 0,
     maxPrice: 9999,
     isActive: false,
-    hideDlc: false
+    hideDlc: false,
+    hideOwned: true
   };
   var INPUT_STYLE = "width:.7rem;height:.28rem;padding:0 .08rem;border:1px solid #ccc;border-radius:.04rem;box-sizing:border-box;font-size:.13rem;line-height:.12rem;";
   var PRESET_STYLE = "padding:.04rem .1rem;border-radius:.04rem;cursor:pointer;font-size:.13rem;border:1px solid #ddd;color:#666;background:transparent;transition:all .2s;box-sizing:border-box;height:.25rem;line-height:.17rem;";
@@ -1437,18 +1439,57 @@
   function createSteamPyPriceFilter({ libraryManager, onApply }) {
     const state = loadFilterState();
     let hideDlcSuspended = false;
+    let ownedMenuRegistered = false;
     function save() {
       GM_setValue(FILTER_STORAGE_KEY, JSON.stringify(state));
+    }
+    function hidesOwnedGames() {
+      return state.hideOwned !== false;
     }
     function shouldShow(game) {
       const price = Number(game?.keyTxAmt ?? game?.keyPrice);
       const matchesPrice = !state.isActive || price >= state.minPrice && price <= state.maxPrice;
-      return matchesPrice && (hideDlcSuspended || !state.hideDlc || game?.steamApp?.type !== "dlc") && !libraryManager.isGameOwned(game?.appId) && !libraryManager.isGameIgnored(game?.appId);
+      const ownedHidden = hidesOwnedGames() && libraryManager.isGameOwned(game?.appId);
+      return matchesPrice && (hideDlcSuspended || !state.hideDlc || game?.steamApp?.type !== "dlc") && !ownedHidden && !libraryManager.isGameIgnored(game?.appId);
     }
     function setHideDlcSuspended(suspended) {
       hideDlcSuspended = Boolean(suspended);
     }
+    function notifyOwnedVisibility() {
+      const text = hidesOwnedGames() ? "CDKey 列表已隐藏已拥有游戏" : "CDKey 列表已显示已拥有游戏";
+      try {
+        GM_notification({ title: "SteamPy Plus", text, timeout: 3e3 });
+      } catch (error) {
+        console.log(`[SteamPy Plus] ${text}`, error);
+      }
+    }
+    function syncOwnedControl() {
+      const input = document.getElementById("steamPyPlusHideOwned");
+      if (input) input.checked = hidesOwnedGames();
+    }
+    function registerOwnedMenu() {
+      if (typeof GM_registerMenuCommand !== "function") return;
+      const stateLabel = hidesOwnedGames() ? "隐藏（点击显示）" : "显示（点击隐藏）";
+      GM_registerMenuCommand(`已拥有游戏：${stateLabel}`, toggleHideOwned, { id: OWNED_MENU_ID });
+      ownedMenuRegistered = true;
+    }
+    function setHideOwned(hideOwned, { notifyUser = false } = {}) {
+      state.hideOwned = hideOwned !== false;
+      save();
+      syncOwnedControl();
+      registerOwnedMenu();
+      if (notifyUser) notifyOwnedVisibility();
+      apply();
+    }
+    function toggleHideOwned() {
+      setHideOwned(!hidesOwnedGames(), { notifyUser: true });
+    }
+    function registerMenus() {
+      if (ownedMenuRegistered) return;
+      registerOwnedMenu();
+    }
     function apply() {
+      syncOwnedControl();
       onApply();
     }
     function syncInputs() {
@@ -1480,6 +1521,7 @@
     }
     function mount() {
       mountSteamPyBuyerToolbar();
+      syncOwnedControl();
       if (document.getElementById("priceFilterContainer")) return;
       const target = document.querySelector(".tag.flex-row.align-items-center");
       if (!target) return;
@@ -1510,6 +1552,16 @@
       const hideDlcLabel = document.createElement("label");
       hideDlcLabel.htmlFor = hideDlcInput.id;
       hideDlcLabel.textContent = "隐藏 DLC";
+      const hideOwnedInput = document.createElement("input");
+      hideOwnedInput.id = "steamPyPlusHideOwned";
+      hideOwnedInput.type = "checkbox";
+      hideOwnedInput.checked = hidesOwnedGames();
+      hideOwnedInput.addEventListener("change", (event) => {
+        setHideOwned(event.target.checked);
+      });
+      const hideOwnedLabel = document.createElement("label");
+      hideOwnedLabel.htmlFor = hideOwnedInput.id;
+      hideOwnedLabel.textContent = "隐藏已拥有";
       const minInput = document.createElement("input");
       minInput.id = "priceFilterMin";
       minInput.type = "number";
@@ -1540,13 +1592,13 @@
         apply();
         updatePresets(false);
       };
-      inputs.append(hideDlcInput, hideDlcLabel, minInput, document.createTextNode("-"), maxInput, button);
+      inputs.append(hideDlcInput, hideDlcLabel, hideOwnedInput, hideOwnedLabel, minInput, document.createTextNode("-"), maxInput, button);
       container.append(title, presets, inputs);
       target.appendChild(container);
       syncInputs();
       updatePresets();
     }
-    return { apply, mount, setHideDlcSuspended, shouldShow };
+    return { apply, hidesOwnedGames, mount, registerMenus, setHideDlcSuspended, shouldShow };
   }
 
   // src/lib/steampy/steampy-plus-rating.js
@@ -3560,7 +3612,7 @@
     const couponListing = createSteamPyCouponListingController({
       client: xbootClient,
       shouldShow: filter.shouldShow,
-      isGameOwned: libraryManager.isGameOwned
+      isGameOwned: (appId) => filter.hidesOwnedGames() && libraryManager.isGameOwned(appId)
     });
     buyer = createSteamPyBuyerController({
       advancedFilter,
@@ -3580,6 +3632,7 @@
     const saleStartTime = createSteamPySaleStartTimeController();
     installSteamPyAjaxHooks({ ajaxHooker: ajaxHooker2, jQuery, onHotGames: rating.setHotGameData });
     libraryManager.registerMenus();
+    filter.registerMenus();
     couponListing.registerMenus();
     sortSelect.registerMenus();
     elmGetter2.selector(jQuery);

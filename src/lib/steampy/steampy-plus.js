@@ -46,7 +46,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
   const couponListing = createSteamPyCouponListingController({
     client: xbootClient,
     shouldShow: filter.shouldShow,
-    isGameOwned: libraryManager.isGameOwned,
+    isGameOwned: (appId) => filter.hidesOwnedGames() && libraryManager.isGameOwned(appId),
   });
   buyer = createSteamPyBuyerController({
     advancedFilter,
@@ -67,6 +67,7 @@ export function startSteamPyPlus({ ajaxHooker, elmGetter, jQuery }) {
 
   installSteamPyAjaxHooks({ ajaxHooker, jQuery, onHotGames: rating.setHotGameData });
   libraryManager.registerMenus();
+  filter.registerMenus();
   couponListing.registerMenus();
   sortSelect.registerMenus();
   elmGetter.selector(jQuery);
