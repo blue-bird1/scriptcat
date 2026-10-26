@@ -506,7 +506,7 @@ export function createSteamPyCouponListingController({
     const form = document.createElement("div");
     form.style.cssText = "display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:.1rem;";
     const intro = document.createElement("p");
-    intro.textContent = "从当前商品页起，沿用页面已应用的高级筛选和排序，跳过已拥有的游戏并排除 DLC。有货且达到门槛的本体按预估实付升序显示；保留超限项，供选择接近目标的候选。其他结果默认折叠。";
+    intro.textContent = "从当前商品页起，沿用页面已应用的高级筛选、排序和「隐藏已拥有」开关，并排除 DLC。有货且达到门槛的本体按预估实付升序显示；保留超限项，供选择接近目标的候选。其他结果默认折叠。";
     intro.style.cssText = "margin:0;font-size:.13rem;color:#515a6e;";
     form.append(
       field("满减门槛", minimumInput),

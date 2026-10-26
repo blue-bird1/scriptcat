@@ -3,10 +3,10 @@
 // @name:zh-CN         SteamPy Plus
 // @name:en            SteamPy Plus
 // @namespace          https://github.com/blue-bird1/scriptcat
-// @version            5.16.0
-// @description        增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
-// @description:zh-CN  增强购买Steampy密钥的体验，增加筛选功能，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
-// @description:en     Enhance Steampy key purchasing with filters, payment estimates for base games from manually entered discounts, a compact sort dropdown (payment price, average trade price, rating), and middle-click Steam pages.
+// @version            5.17.0
+// @description        增强购买Steampy密钥的体验，增加筛选功能，支持在 CDKey 列表显示或隐藏已拥有游戏，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
+// @description:zh-CN  增强购买Steampy密钥的体验，增加筛选功能，支持在 CDKey 列表显示或隐藏已拥有游戏，支持手填支付满减条件筛选游戏本体并估算实付，支持合并排序下拉框（含实付价、成交均价、好评率），支持鼠标中键打开Steam页面。
+// @description:en     Enhance Steampy key purchasing with filters, a switch to show or hide games already owned on Steam, payment estimates for base games from manually entered discounts, a compact sort dropdown (payment price, average trade price, rating), and middle-click Steam pages.
 // @match              https://steampy.com/*
 // @grant              GM_setValue
 // @grant              GM_getValue

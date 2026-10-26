@@ -20,3 +20,7 @@ SteamPy Plus 将 `rgIgnoredApps` 对象的键转换为 ignored AppID 集合。
 请求使用 `family_groupid=0`，并包含已排除、免费、非游戏及自有项目。响应中，`exclude_reason === 0` 且 `owner_steamids` 不含 `owner_steamid` 的项目计入可借用家庭库。
 
 实现位于 `src/lib/steampy/steam-library.js`。
+
+## 列表中的已拥有游戏
+
+自有库中的 AppID 视为已拥有；开启「家庭库游戏视为已拥有」后，可借用家庭库 AppID 同样视为已拥有。CDKey 列表筛选栏的「隐藏已拥有」默认勾选，已拥有游戏不进入列表。取消勾选后，这些游戏与未拥有游戏一样，仍接受价格、DLC 和已忽略过滤。ScriptCat 菜单「已拥有游戏」切换同一设置。状态保存在 `steamPriceFilterState` 的 `hideOwned`，缺省为 `true`。

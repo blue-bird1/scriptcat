@@ -36,6 +36,6 @@
 
 脚本将 `miniPrice` 映射为 `keyPrice`；价格有效且 `oriPrice > 0` 时，`keyDiscount=miniPrice/oriPrice`。这些记录不提供 `keyTxAmt`、`keySales`、`gameUrl` 或 `id`，不能按原生商品对象补造这些字段。
 
-高级筛选期间，隐藏 DLC 控件暂停并禁用；退出后恢复原勾选状态。价格、拥有和忽略过滤仍然生效。
+高级筛选期间，隐藏 DLC 控件暂停并禁用；退出后恢复原勾选状态。价格与忽略过滤仍然生效。已拥有游戏是否显示沿用筛选栏「隐藏已拥有」，默认隐藏；高级筛选不会暂停这个开关。
 
 实现位于 `src/lib/steampy/steampy-plus-advanced-filter.js`。
