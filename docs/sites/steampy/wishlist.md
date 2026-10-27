@@ -9,7 +9,14 @@ GET https://steampy.com/xboot/appUserDetail/wishGame
 GET https://steampy.com/xboot/appUserDetail/pywishGame
 ```
 
-两个接口返回同结构的 Spring 分页对象，内容不同。同一账号实测分别返回 57 条与 19 条，`pywishGame` 的条目带 `arsMkPrice`、`endDisc`。列表名称以 `gameName` 为准，两者在 App 内分别对应不同入口，未从界面确认标签。
+两个接口返回同结构的 Spring 分页对象，语义不同：
+
+| 接口 | 含义 |
+| --- | --- |
+| `wishGame` | Steam 愿望单 |
+| `pywishGame` | SteamPy 收藏夹 |
+
+同一账号实测分别返回 57 条与 19 条，`pywishGame` 的条目额外带 `arsMkPrice`、`endDisc`。两条列表有交叉，同一 AppID 可同时出现在两边。
 
 请求头：
 
@@ -88,5 +95,6 @@ curl -sS 'https://steampy.com/xboot/appUserDetail/wishGame?pageNumber=1&pageSize
 - 2026-10-27，App 3.1.1（`com.steampy.app`），Web 端 `accessToken`。
 - `wishGame`：57 条，`pageSize=100` 一次取回；`pageNumber=2&pageSize=5` 返回第 6–10 条。
 - `pywishGame`：19 条。
+- 两者语义（Steam 愿望单 / SteamPy 收藏夹）由用户于 2026-10-27 确认。
 - 无令牌返回 `code=401`。
 - App 3.2.0 与 3.1.1 签名证书一致（SHA-256 `44f45f32678ae9a31aa3e95a667727374dbbcedaeaea91857db4488d0e9395d6`）。
